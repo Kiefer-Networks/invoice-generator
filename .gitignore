@@ -1,0 +1,20 @@
+# Build
+invoice
+
+# Generated output
+*.pdf
+*.xml
+template.html
+
+# AI
+.claude/
+.cursor/
+.aider*
+.copilot/
+.continue/
+.codeium/
+*.ai
+
+# OS
+.DS_Store
+Thumbs.db

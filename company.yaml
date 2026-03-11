@@ -1,0 +1,31 @@
+# Company config
+# Usage: invoice -company company.yaml invoice.yaml
+
+logo: "./logo.svg"
+
+sprache: "en"
+farbe: "#5B9BD5"
+waehrung: "EUR"
+
+firma:
+  name: "Doe Digital Solutions"
+  adresse: "Musterstraße 42"
+  plz: "10115"
+  ort: "Berlin"
+  land: "DE"
+  telefon: "+49 30 12345678"
+  email: "info@doe-digital.example"
+  website: "www.doe-digital.example"
+  ust_id: "DE123456789"
+  bank:
+    name: "Example Bank"
+    iban: "DE89 3704 0044 0532 0130 00"
+    bic: "COBADEFFXXX"
+    kontoinhaber: "John Doe"
+
+mwst:
+  pflichtig: true
+  satz: 19.0
+
+zahlungsbedingungen: "Payable within 14 days of invoice date."
+zahlungsmethode: "Bank transfer"

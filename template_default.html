@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="{{ .Lang }}">
+<head>
+<meta charset="UTF-8">
+<title>{{ .Title }} {{ .InvNumber }}</title>
+<style>
+/* ================================================================
+   Invoice Template — Kiefer Networks Brand
+   Matches kiefer-networks.de: blue/gray palette, Inter font,
+   clean tech aesthetic. Edit CSS vars to customize.
+   Extract: invoice init template
+   ================================================================ */
+
+@page { size: A4; margin: 0; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+    --ac: {{ .Color }};
+    --ac2: {{ .ColorDark }};
+    --ink: #1a2332;
+    --body: #3d4f63;
+    --soft: #6b7f94;
+    --faint: #9aacbd;
+    --line: #dde5ed;
+    --wash: #f4f7fa;
+    --white: #ffffff;
+    --gray: #bdbdbd;
+}
+
+body {
+    font-family: 'Inter', 'SF Pro Display', system-ui, -apple-system, sans-serif;
+    color: var(--body);
+    background: var(--white);
+    font-size: 10.5px;
+    line-height: 1.5;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+}
+
+/* ===================== HEADER ===================== */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 36px 48px 24px;
+    border-bottom: 2px solid var(--ac);
+}
+
+.header .logo img {
+    height: 38px;
+    display: block;
+}
+
+.header .inv-badge {
+    text-align: right;
+}
+
+.header .inv-badge h1 {
+    font-size: 28px;
+    font-weight: 300;
+    color: var(--ac);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    line-height: 1;
+}
+
+.header .inv-badge .inv-nr {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink);
+    margin-top: 4px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ===================== INFO BAR ===================== */
+.info-bar {
+    display: flex;
+    gap: 0;
+    padding: 0 48px;
+    margin-top: 20px;
+    margin-bottom: 24px;
+}
+
+.info-bar .ib-block {
+    flex: 1;
+    padding: 12px 16px;
+    background: var(--wash);
+    border-left: 3px solid var(--ac);
+}
+
+.info-bar .ib-block + .ib-block {
+    margin-left: 12px;
+}
+
+.info-bar .ib-label {
+    font-size: 7.5px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 3px;
+}
+
+.info-bar .ib-value {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+}
+
+.pill {
+    display: inline-block;
+    padding: 2px 12px;
+    border-radius: 3px;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    background: var(--ac);
+    color: var(--white);
+}
+.pill.paid    { background: #10b981; }
+.pill.overdue { background: #ef4444; }
+.pill.draft   { background: var(--gray); }
+
+/* ===================== ADDRESSES ===================== */
+.addresses {
+    display: flex;
+    padding: 0 48px;
+    gap: 48px;
+    margin-bottom: 28px;
+}
+
+.addr-from, .addr-to { flex: 1; }
+
+.addr-label {
+    font-size: 7.5px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--ac);
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--line);
+}
+
+.addr-from .company-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 2px;
+}
+
+.addr-from .company-details {
+    font-size: 9.5px;
+    color: var(--soft);
+    line-height: 1.7;
+}
+
+.addr-to .cust-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--ink);
+    margin-bottom: 2px;
+}
+
+.addr-to .cust-details {
+    font-size: 9.5px;
+    color: var(--soft);
+    line-height: 1.7;
+}
+
+/* ===================== TABLE ===================== */
+.tbl-wrap { padding: 0 48px; margin-bottom: 20px; }
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+thead th {
+    padding: 10px 14px;
+    font-size: 7.5px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--white);
+    background: var(--ac);
+    text-align: left;
+}
+thead th:first-child { border-radius: 4px 0 0 0; }
+thead th:last-child  { border-radius: 0 4px 0 0; }
+thead th.r { text-align: right; }
+
+tbody tr { page-break-inside: avoid; }
+
+tbody tr:nth-child(even) td {
+    background: var(--wash);
+}
+
+tbody td {
+    padding: 9px 14px;
+    vertical-align: top;
+    border-bottom: 1px solid var(--line);
+    font-size: 10px;
+}
+
+tbody tr:last-child td { border-bottom: 2px solid var(--ac); }
+
+td.r { text-align: right; font-variant-numeric: tabular-nums; }
+
+.d-title { font-weight: 600; color: var(--ink); }
+.d-sub { font-size: 9px; color: var(--soft); margin-top: 1px; }
+.amt { font-weight: 700; color: var(--ink); }
+
+/* ===================== SUMMARY ===================== */
+.sum-area {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0 48px;
+    margin-bottom: 20px;
+}
+
+.sum { width: 260px; }
+
+.sr {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 10px;
+}
+.sr .l { color: var(--soft); }
+.sr .v { font-variant-numeric: tabular-nums; color: var(--ink); }
+
+.sum-line { border: none; border-top: 1px solid var(--line); margin: 4px 0; }
+
+.grand {
+    background: var(--ac);
+    border-radius: 4px;
+    padding: 12px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-top: 6px;
+}
+
+.grand .gl {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: rgba(255,255,255,0.85);
+}
+
+.grand .gv {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--white);
+    letter-spacing: -0.3px;
+    font-variant-numeric: tabular-nums;
+}
+
+.tax-micro {
+    display: flex;
+    justify-content: space-between;
+    font-size: 8px;
+    color: var(--faint);
+    padding-top: 6px;
+    margin-top: 4px;
+}
+
+/* ===================== NOTES ===================== */
+.notes-area { padding: 0 48px; margin-bottom: 14px; }
+
+.note-text {
+    font-size: 10px;
+    color: var(--soft);
+    padding-left: 12px;
+    border-left: 2px solid var(--ac);
+    margin-top: 4px;
+}
+
+.notice { font-size: 8.5px; color: var(--faint); padding: 0 48px; margin-bottom: 12px; }
+
+/* ===================== PAYMENT ===================== */
+.pay-area { padding: 0 48px; }
+
+.pay-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 20px;
+    padding: 14px 0;
+    border-top: 1px solid var(--line);
+}
+
+.pay-grid .pc-lbl {
+    font-size: 7.5px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--ac);
+    margin-bottom: 4px;
+}
+
+.pay-grid .pc-val {
+    font-size: 9.5px;
+    color: var(--soft);
+    line-height: 1.6;
+}
+
+/* ===================== FOOTER ===================== */
+.foot {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 7px;
+    color: var(--faint);
+    padding: 10px 48px;
+    line-height: 1.7;
+    border-top: 2px solid var(--ac);
+    background: var(--white);
+}
+</style>
+</head>
+<body>
+
+<!-- Header: Logo + Invoice title -->
+<div class="header">
+    <div class="logo">
+        {{ if .LogoPath }}<img src="{{ .LogoPath }}" alt="{{ .CompanyName }}">{{ end }}
+    </div>
+    <div class="inv-badge">
+        <h1>{{ .Title }}</h1>
+        <div class="inv-nr"># {{ .InvNumber }}</div>
+    </div>
+</div>
+
+<!-- Info bar: Date, Due, Status -->
+<div class="info-bar">
+    <div class="ib-block">
+        <div class="ib-label">{{ .LB.InvoiceDate }}</div>
+        <div class="ib-value">{{ .InvDate }}</div>
+    </div>
+    <div class="ib-block">
+        <div class="ib-label">{{ .LB.DueDate }}</div>
+        <div class="ib-value">{{ .DueDate }}</div>
+    </div>
+    {{ if .Status }}
+    <div class="ib-block">
+        <div class="ib-label">Status</div>
+        <div class="ib-value"><span class="pill {{ .StatusClass }}">{{ .Status }}</span></div>
+    </div>
+    {{ end }}
+</div>
+
+<!-- Addresses: From / To -->
+<div class="addresses">
+    <div class="addr-from">
+        <div class="addr-label">{{ .LB.InvoiceFrom }}</div>
+        <div class="company-name">{{ .CompanyName }}</div>
+        <div class="company-details">
+            {{ .CompanyAddr }}<br>
+            {{ .CompanyContact }}
+            {{ if .TaxID }}<br>{{ .LB.TaxID }}: {{ .TaxID }}{{ end }}
+        </div>
+    </div>
+    <div class="addr-to">
+        <div class="addr-label">{{ .LB.InvoiceTo }}</div>
+        <div class="cust-name">{{ .CustName }}</div>
+        <div class="cust-details">{{ range .CustLines }}{{ . }}<br>{{ end }}</div>
+    </div>
+</div>
+
+<!-- Items table -->
+<div class="tbl-wrap">
+<table>
+    <thead>
+        <tr>
+            <th>{{ .LB.Description }}</th>
+            <th class="r">{{ .LB.Quantity }}</th>
+            <th class="r">{{ .LB.UnitPrice }}</th>
+            <th class="r">{{ .LB.Amount }}</th>
+        </tr>
+    </thead>
+    <tbody>
+    {{ range .Rows }}
+        <tr>
+            <td><div class="d-title">{{ .Desc }}</div>{{ if .Det }}<div class="d-sub">{{ .Det }}</div>{{ end }}</td>
+            <td class="r">{{ .Qty }}</td>
+            <td class="r">{{ .Price }}</td>
+            <td class="r amt">{{ .Amt }}</td>
+        </tr>
+    {{ end }}
+    </tbody>
+</table>
+</div>
+
+<!-- Summary -->
+<div class="sum-area"><div class="sum">
+    {{ if .HasVAT }}
+    <div class="sr"><span class="l">{{ .LB.Subtotal }}</span><span class="v">{{ .Subtotal }}</span></div>
+    <div class="sr"><span class="l">{{ .TaxLabel }}</span><span class="v">{{ .TaxAmt }}</span></div>
+    <hr class="sum-line">
+    {{ end }}
+    <div class="grand">
+        <span class="gl">{{ .LB.Total }}</span>
+        <span class="gv">{{ .GrossTotal }}</span>
+    </div>
+    {{ if .HasVAT }}
+    <div class="tax-micro">
+        <span>{{ .TaxRate }}% {{ .LB.Tax }}</span>
+        <span>{{ .Subtotal }} → {{ .TaxAmt }}</span>
+    </div>
+    {{ end }}
+</div></div>
+
+{{ if .Notice }}<div class="notice">{{ .Notice }}</div>{{ end }}
+
+{{ if .Notes }}
+<div class="notes-area">
+    <div class="addr-label">{{ .LB.Notes }}</div>
+    <div class="note-text">{{ .Notes }}</div>
+</div>
+{{ end }}
+
+{{ if .HasPay }}
+<div class="pay-area">
+    <div class="pay-grid">
+        {{ if .PayTerms }}<div><div class="pc-lbl">{{ .LB.PaymentTerms }}</div><div class="pc-val">{{ .PayTerms }}</div></div>{{ end }}
+        {{ if .PayMethod }}<div><div class="pc-lbl">{{ .LB.PaymentMethods }}</div><div class="pc-val">{{ .PayMethod }}</div></div>{{ end }}
+        {{ if .HasBank }}<div><div class="pc-lbl">{{ .LB.BankAccount }}</div><div class="pc-val">{{ .BankName }}<br>IBAN: {{ .BankIBAN }}{{ if .BankBIC }}<br>BIC: {{ .BankBIC }}{{ end }}</div></div>{{ end }}
+    </div>
+</div>
+{{ end }}
+
+<div class="foot">
+    {{ .CompanyName }} · {{ .CompanyAddr }} · {{ .CompanyContact }}{{ if .HasBank }}<br>IBAN: {{ .BankIBAN }} · BIC: {{ .BankBIC }} · {{ .BankName }}{{ end }}
+</div>
+
+</body>
+</html>

@@ -1,0 +1,43 @@
+kunde:
+  name: "Acme Corp"
+  ansprechpartner: "Jane Smith"
+  email: "jane.smith@acme.example"
+  adresse: "Innovation Drive 7"
+  plz: "80331"
+  ort: "Munich"
+  land: "DE"
+  land_name: "Germany"
+  ust_id: "DE987654321"
+
+rechnung:
+  nummer: 2026-001
+  datum: "01.03.2026"
+  faelligkeit: "15.03.2026"
+  status: "SENT"
+
+positionen:
+  - beschreibung: "Server security audit and hardening"
+    details: "Analysis of attack vectors, patching vulnerabilities, configuring firewall rules"
+    menge: 3.5
+    einheit: "hours"
+    preis: 95.00
+
+  - beschreibung: "System updates and maintenance"
+    details: "OS updates, Docker environment maintenance, service restarts"
+    menge: 1.5
+    einheit: "hours"
+    preis: 95.00
+
+  - beschreibung: "Intrusion detection setup"
+    details: "Installation and configuration of CrowdSec and Fail2Ban"
+    menge: 2.0
+    einheit: "hours"
+    preis: 95.00
+
+  - beschreibung: "Cloud platform migration"
+    details: "Nextcloud upgrade and data migration to new infrastructure"
+    menge: 4.0
+    einheit: "hours"
+    preis: 95.00
+
+notizen: "Thank you for your business."
