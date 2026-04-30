@@ -1,6 +1,6 @@
 module github.com/kiefer-networks/invoice-generator
 
-go 1.26.1
+go 1.25.9
 
 require (
 	github.com/BurntSushi/toml v1.6.0
