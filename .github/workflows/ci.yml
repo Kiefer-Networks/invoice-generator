@@ -48,7 +48,7 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2 # v2 line — matches the v2 config schema in .golangci.yml
           args: --timeout=5m
