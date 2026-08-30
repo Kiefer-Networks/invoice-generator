@@ -11,11 +11,13 @@
    Extract: invoice init template
    ================================================================ */
 
-/* Reserves real print-safe top/bottom margins on every page (including
-   continuation pages of a multi-page invoice) instead of letting content
-   render flush to the physical page edge. Left/right stay at 0 here —
-   each section already carries its own 48px (~12.7mm) horizontal padding. */
-@page { size: A4; margin: 10mm 0 15mm 0; }
+/* Actual page margins for the generated PDF are set via Chrome's
+   Page.printToPDF margin parameters (see render.go), not here — those
+   also carve out room for the native footer template. This @page rule
+   only matters if someone prints the raw HTML (e.g. the -html export)
+   straight from a browser's own print dialog. Left/right stay at 0
+   since each section already carries its own 48px (~12.7mm) padding. */
+@page { size: A4; margin: 10mm 0; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
@@ -293,31 +295,14 @@ td.r { text-align: right; font-variant-numeric: tabular-nums; }
     page-break-inside: avoid;
 }
 
-/* ===================== FOOTER ===================== */
-/* Deliberately NOT position:fixed: a fixed element is painted outside
-   normal document flow, so Chrome's print pagination doesn't reserve
-   room for it — on a multi-page invoice, flowing content (e.g. the
-   last table row before a page break) can end up rendered underneath
-   it regardless of how generous the @page bottom margin is. As a
-   normal flowing block it participates in the same page-break-inside
-   rules as every other section here, so it can never collide with
-   what came before it — it just appears once, after everything else,
-   on whichever page that ends up being. */
-.foot {
-    display: flex;
-    gap: 32px;
-    padding: 10px 48px 0;
-    margin-top: 16px;
-    border-top: 1px solid var(--line);
-    page-break-inside: avoid;
-}
-
-.foot .fc {
-    flex: 1;
-    font-size: 7.5px;
-    line-height: 1.6;
-    color: var(--faint);
-}
+/* No in-body footer here on purpose. The repeating per-page footer is
+   rendered by Chrome's own print header/footer mechanism (CDP
+   Page.printToPDF's footerTemplate — see internal/render/render.go,
+   footerTemplateHTML) instead of being faked with position:fixed CSS.
+   That native mechanism reserves its own margin box, so it cannot
+   collide with page content the way earlier CSS-only attempts did.
+   A plain "invoice init template" / -html export therefore won't show
+   footer content — it's only added by the PDF print step. */
 </style>
 </head>
 <body>
@@ -417,26 +402,6 @@ td.r { text-align: right; font-variant-numeric: tabular-nums; }
 {{ if or .PayTerms .PayMethod }}
 <div class="pay-note">{{ .PayTerms }}{{ if .PayMethod }} {{ .PayMethod }}.{{ end }}</div>
 {{ end }}
-
-<div class="foot">
-    <div class="fc">
-        <strong>{{ .CompanyName }}</strong><br>
-        {{ range .CompanyAddrLines }}{{ . }}<br>{{ end }}
-    </div>
-    <div class="fc">
-        {{ if .CompanyWebsite }}{{ .CompanyWebsite }}<br>{{ end }}
-        {{ if .CompanyEmail }}{{ .CompanyEmail }}<br>{{ end }}
-        {{ .CompanyPhone }}
-    </div>
-    <div class="fc">
-        {{ if .HasBank }}
-        {{ .BankName }}<br>
-        IBAN: {{ .BankIBAN }}<br>
-        {{ if .BankBIC }}BIC: {{ .BankBIC }}<br>{{ end }}
-        {{ end }}
-        {{ if .TaxID }}{{ .LB.TaxID }}: {{ .TaxID }}{{ end }}
-    </div>
-</div>
 
 </body>
 </html>

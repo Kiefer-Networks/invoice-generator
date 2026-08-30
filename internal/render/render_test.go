@@ -234,7 +234,10 @@ func TestHTMLProducesValidOutput(t *testing.T) {
 	}
 }
 
-func TestHTMLFooterHasThreeColumns(t *testing.T) {
+func TestHTMLBodyHasNoInlineFooter(t *testing.T) {
+	// The repeating footer is now rendered by Chrome's native
+	// Page.printToPDF footerTemplate (see FromTemplate), not baked into
+	// the document body — verify it stays that way.
 	cfg := sampleConfig()
 	loc := resolveLoc(cfg)
 	dir := t.TempDir()
@@ -243,15 +246,46 @@ func TestHTMLFooterHasThreeColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HTML failed: %v", err)
 	}
+	if strings.Contains(html, "https://test.de") {
+		t.Error("expected the document body to no longer embed footer/contact content")
+	}
+}
+
+func TestFooterTemplateHTMLHasThreeColumns(t *testing.T) {
+	cfg := sampleConfig()
+	loc := resolveLoc(cfg)
+	data := PrepareTplData(cfg, loc, config.DocInvoice)
+
+	footerHTML, err := footerTemplateHTML(data)
+	if err != nil {
+		t.Fatalf("footerTemplateHTML failed: %v", err)
+	}
 	// The footer must surface company/address, website/email/phone, and
 	// bank/tax-ID details — matching the reference three-column layout.
-	for _, want := range []string{"https://test.de", "info@test.de", "+49 30 123456", "Test Bank", "DE89370400440532013000"} {
-		if !strings.Contains(html, want) {
-			t.Errorf("footer missing expected content %q", want)
+	for _, want := range []string{"Test GmbH", "https://test.de", "info@test.de", "+49 30 123456", "Test Bank", "DE89370400440532013000"} {
+		if !strings.Contains(footerHTML, want) {
+			t.Errorf("footer template missing expected content %q", want)
 		}
 	}
-	if !strings.Contains(html, `class="fc"`) {
-		t.Error("expected the footer to use the three-column .fc layout")
+	if !strings.Contains(footerHTML, `class="pageNumber"`) || !strings.Contains(footerHTML, `class="totalPages"`) {
+		t.Error("expected footer template to use Chrome's pageNumber/totalPages placeholders")
+	}
+}
+
+func TestFooterTemplateHTMLPreservesPlainText(t *testing.T) {
+	// Regression test: an earlier html/template-based version mangled
+	// plain content like phone numbers via contextual autoescaping,
+	// turning "+49 30 123456" into "&#43;49 30 123456".
+	cfg := sampleConfig()
+	loc := resolveLoc(cfg)
+	data := PrepareTplData(cfg, loc, config.DocInvoice)
+
+	footerHTML, err := footerTemplateHTML(data)
+	if err != nil {
+		t.Fatalf("footerTemplateHTML failed: %v", err)
+	}
+	if !strings.Contains(footerHTML, "+49 30 123456") {
+		t.Errorf("expected phone number to appear unmangled, got: %s", footerHTML)
 	}
 }
 

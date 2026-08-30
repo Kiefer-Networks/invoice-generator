@@ -15,6 +15,9 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/chromedp"
+
 	"github.com/kiefer-networks/invoice-generator/internal/config"
 	"github.com/kiefer-networks/invoice-generator/internal/locale"
 )
@@ -353,7 +356,64 @@ func FindChrome() string {
 	return ""
 }
 
+// footerTemplateSrc is Chrome's native print footer template (see
+// Page.printToPDF's footerTemplate parameter). It runs in an isolated
+// context with no access to the main document's stylesheet, so every
+// style needed has to be inlined here. The "pageNumber"/"totalPages"
+// classes are filled in by Chrome itself on every page — see
+// https://chromedevtools.github.io/devtools-protocol/tot/Page#method-printToPDF
+const footerTemplateSrc = `
+<div style="width:100%; font-size:7.5px; font-family:Helvetica,Arial,sans-serif; color:#9aacbd; padding:0 48px; display:flex; justify-content:space-between; gap:16px; box-sizing:border-box;">
+  <div style="flex:1;">
+    <span style="color:#6b7f94; font-weight:700;">{{.CompanyName}}</span><br>
+    {{.CompanyAddr}}
+  </div>
+  <div style="flex:1;">
+    {{if .CompanyWebsite}}{{.CompanyWebsite}}<br>{{end}}
+    {{if .CompanyEmail}}{{.CompanyEmail}}<br>{{end}}
+    {{.CompanyPhone}}
+  </div>
+  <div style="flex:1;">
+    {{if .HasBank}}{{.BankName}} &middot; IBAN: {{.BankIBAN}}{{if .BankBIC}} &middot; BIC: {{.BankBIC}}{{end}}<br>{{end}}
+    {{if .TaxID}}{{.LB.TaxID}}: {{.TaxID}}{{end}}
+  </div>
+  <div style="text-align:right; white-space:nowrap;">
+    {{.LB.Page}} <span class="pageNumber"></span>/<span class="totalPages"></span>
+  </div>
+</div>
+`
+
+// footerTemplateHTML renders Chrome's native per-page footer template
+// from the same TplData used for the invoice body. Uses text/template
+// like the main body template (not html/template — its contextual
+// autoescaping mangled plain content such as phone numbers, e.g.
+// "+49 30 123456" into "&#43;49 30 123456"). Company/bank data comes
+// from the user's own config file for their own output, the same trust
+// level as the rest of this tool, so this matches existing precedent
+// rather than being a new gap.
+func footerTemplateHTML(data *TplData) (string, error) {
+	tmpl, err := template.New("footer").Parse(footerTemplateSrc)
+	if err != nil {
+		return "", fmt.Errorf("footer template parse error: %w", err)
+	}
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("footer template execute error: %w", err)
+	}
+	return buf.String(), nil
+}
+
 // FromTemplate renders the invoice/quote via HTML template + Chrome headless PDF.
+//
+// The repeating per-page footer is produced by Chrome's own print
+// header/footer mechanism (Page.printToPDF's footerTemplate) rather than
+// CSS position:fixed. That was tried first and rejected: Chrome's print
+// pagination does not reserve layout space for position:fixed content,
+// so on some invoices the last table row (or even the grand-total bar)
+// rendered underneath the fixed footer, clipping real invoice amounts.
+// printToPDF's native template mechanism reserves its own margin box
+// as part of the same pagination pass, so it cannot collide with body
+// content the way the CSS approach did.
 func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType, outputPath, tmplPath, configDir string) error {
 	chrome := FindChrome()
 	if chrome == "" {
@@ -361,6 +421,10 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 	}
 
 	html, err := HTML(cfg, loc, docType, tmplPath, configDir)
+	if err != nil {
+		return err
+	}
+	footerHTML, err := footerTemplateHTML(PrepareTplData(cfg, loc, docType))
 	if err != nil {
 		return err
 	}
@@ -381,48 +445,75 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 		return fmt.Errorf("could not close temp file: %w", err)
 	}
 
-	// Chrome headless → PDF (bounded by chromeTimeout to avoid hangs)
-	ctx, cancel := context.WithTimeout(context.Background(), chromeTimeout)
-	defer cancel()
-
 	abs, err := filepath.Abs(outputPath)
 	if err != nil {
 		return fmt.Errorf("could not resolve output path: %w", err)
 	}
 
-	// Use a dedicated, isolated user-data-dir so concurrent/parallel runs
-	// never share browser profile state (avoids cross-process interference).
-	profileDir, err := os.MkdirTemp("", "invoice-chrome-profile-*")
-	if err != nil {
-		return fmt.Errorf("could not create Chrome profile dir: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(profileDir) }()
-
-	args := []string{
-		"--headless",
-		"--disable-gpu",
-		"--disable-software-rasterizer",
-		"--disable-extensions",
-		"--disable-sync",
-		"--no-first-run",
-		"--user-data-dir=" + profileDir,
-		"--run-all-compositor-stages-before-draw",
-		"--no-pdf-header-footer",
-	}
+	// Chrome headless → PDF (bounded by chromeTimeout to avoid hangs).
+	// chromedp's exec allocator creates and cleans up its own isolated
+	// temporary user-data-dir, so concurrent/parallel runs never share
+	// browser profile state.
+	allocOpts := append([]chromedp.ExecAllocatorOption{},
+		chromedp.DefaultExecAllocatorOptions[:]...)
+	allocOpts = append(allocOpts,
+		chromedp.ExecPath(chrome),
+		chromedp.DisableGPU,
+	)
 	// Chrome refuses to start its sandbox as root (common in containers).
 	// Only relax the sandbox in that specific, already-unprivileged-boundary case.
 	if runtime.GOOS != "windows" && os.Geteuid() == 0 {
-		args = append(args, "--no-sandbox")
+		allocOpts = append(allocOpts, chromedp.NoSandbox)
 	}
-	args = append(args, "--print-to-pdf="+abs, "file://"+tmpPath)
 
-	cmd := exec.CommandContext(ctx, chrome, args...)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), allocOpts...)
+	defer cancelAlloc()
+	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
+	defer cancelBrowser()
+	ctx, cancel := context.WithTimeout(browserCtx, chromeTimeout)
+	defer cancel()
+
+	const (
+		mmPerInch     = 25.4
+		marginTopMM   = 10.0
+		marginBotMM   = 20.0              // room for the native footer template above
+		paperWidthIn  = 210.0 / mmPerInch // A4
+		paperHeightIn = 297.0 / mmPerInch
+	)
+
+	var pdfBytes []byte
+	err = chromedp.Run(ctx,
+		chromedp.Navigate("file://"+filepath.ToSlash(tmpPath)),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			data, _, err := page.PrintToPDF().
+				WithDisplayHeaderFooter(true).
+				WithHeaderTemplate("<span></span>").
+				WithFooterTemplate(footerHTML).
+				WithPrintBackground(true).
+				WithPaperWidth(paperWidthIn).
+				WithPaperHeight(paperHeightIn).
+				WithMarginTop(marginTopMM / mmPerInch).
+				WithMarginBottom(marginBotMM / mmPerInch).
+				WithMarginLeft(0).
+				WithMarginRight(0).
+				Do(ctx)
+			if err != nil {
+				return err
+			}
+			pdfBytes = data
+			return nil
+		}),
+	)
+	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("rendering PDF via Chrome timed out after %s", chromeTimeout)
 		}
 		return fmt.Errorf("rendering PDF via Chrome failed: %w", err)
+	}
+
+	// 0600: the PDF contains customer/company PII and financial data.
+	if err := os.WriteFile(abs, pdfBytes, 0600); err != nil {
+		return fmt.Errorf("could not write PDF: %w", err)
 	}
 	return nil
 }

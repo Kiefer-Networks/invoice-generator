@@ -58,7 +58,7 @@ version, along with checksums and build provenance attestations.
 
 ### Requirements
 
-- **Go 1.25+** to build
+- **Go 1.26+** to build
 - **Chrome, Chromium, or Edge** (optional) — for HTML template rendering. Falls back to the built-in renderer automatically if none is found.
 
 ## Usage
@@ -236,6 +236,8 @@ invoice -t template.html -company company.yaml invoice.yaml
 ```
 
 The template uses Go's `text/template` syntax with CSS custom properties for easy theming. All data is pre-formatted — the template only needs to place values, no logic required.
+
+Note: the repeating per-page footer (company/bank details, page numbers) is rendered by Chrome's native print header/footer mechanism, not baked into this template's HTML — it only appears in the generated PDF, not in a `-html` export or when previewing `template.html` directly in a browser.
 
 ## E-Invoicing (ZUGFeRD / Factur-X)
 
