@@ -42,10 +42,14 @@ type TplData struct {
 	LogoPath  string
 
 	// Company
-	CompanyName    string
-	CompanyAddr    string
-	CompanyContact string
-	TaxID          string
+	CompanyName      string
+	CompanyAddr      string   // single-line (Street, ZIP City), for the footer's address column
+	CompanyAddrLines []string // Street / ZIP City / Country, for the "from" block
+	CompanyContact   string   // "email  ·  phone", for custom templates (not used by the default one — see CompanyEmail/CompanyPhone)
+	CompanyWebsite   string
+	CompanyEmail     string
+	CompanyPhone     string
+	TaxID            string
 
 	// Invoice
 	InvNumber   string
@@ -122,7 +126,9 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 		}
 	}
 
-	// Company address line
+	// Company address: multi-line (Street / ZIP City / Country) for the
+	// "from" block, and a single comma-joined line for the compact footer.
+	companyAddrLines := config.AddressLines(cfg.Company.Address, cfg.Company.ZIP, cfg.Company.City, cfg.Company.Country, "", cfg.Language)
 	compAddr := cfg.Company.Address
 	if cfg.Company.ZIP != "" || cfg.Company.City != "" {
 		compAddr += ", " + strings.TrimSpace(cfg.Company.ZIP+" "+cfg.Company.City)
@@ -143,31 +149,17 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 		taxID = cfg.Company.TaxNumber
 	}
 
-	// Customer lines
+	// Customer lines: contact person, then the postal address as
+	// Street / ZIP City / Country, then the VAT ID. No email/phone here —
+	// this is the postal address block, not a contact card.
 	var custLines []string
 	if cfg.Customer.Contact != "" {
 		custLines = append(custLines, cfg.Customer.Contact)
 	}
-	if cfg.Customer.Email != "" {
-		custLines = append(custLines, cfg.Customer.Email)
-	}
-	zipCity := strings.TrimSpace(cfg.Customer.ZIP + " " + cfg.Customer.City)
-	addr := cfg.Customer.Address
-	if zipCity != "" && !strings.Contains(addr, zipCity) {
-		if addr != "" {
-			addr += ", " + zipCity
-		} else {
-			addr = zipCity
-		}
-	}
-	if addr != "" {
-		custLines = append(custLines, addr)
-	}
-	if cfg.Customer.CountryName != "" {
-		custLines = append(custLines, cfg.Customer.CountryName)
-	} else if cfg.Customer.Country != "" {
-		custLines = append(custLines, cfg.Customer.Country)
-	}
+	custLines = append(custLines, config.AddressLines(
+		cfg.Customer.Address, cfg.Customer.ZIP, cfg.Customer.City,
+		cfg.Customer.Country, cfg.Customer.CountryName, cfg.Language,
+	)...)
 	if cfg.Customer.VatID != "" {
 		custLines = append(custLines, lb.TaxID+": "+cfg.Customer.VatID)
 	}
@@ -225,10 +217,14 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 		LB:        lb,
 		LogoPath:  logoPath,
 
-		CompanyName:    cfg.Company.Name,
-		CompanyAddr:    compAddr,
-		CompanyContact: contact,
-		TaxID:          taxID,
+		CompanyName:      cfg.Company.Name,
+		CompanyAddr:      compAddr,
+		CompanyAddrLines: companyAddrLines,
+		CompanyContact:   contact,
+		CompanyWebsite:   cfg.Company.Website,
+		CompanyEmail:     cfg.Company.Email,
+		CompanyPhone:     cfg.Company.Phone,
+		TaxID:            taxID,
 
 		InvNumber:   fmt.Sprintf("%v", cfg.Invoice.Number),
 		InvDate:     loc.FormatDate(cfg.Invoice.Date),

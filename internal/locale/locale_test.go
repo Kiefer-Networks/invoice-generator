@@ -195,3 +195,21 @@ func TestDarkenColor(t *testing.T) {
 		t.Errorf("DarkenColor should produce a strictly darker color: got (%d,%d,%d) from (%d,%d,%d)", r, g, b, origR, origG, origB)
 	}
 }
+
+func TestCountryName(t *testing.T) {
+	cases := []struct{ code, lang, want string }{
+		{"DE", "de", "Deutschland"},
+		{"DE", "en", "Germany"},
+		{"de", "en", "Germany"}, // lowercase code input
+		{"AT", "fr", "Autriche"},
+		{"XX", "de", "XX"}, // unmapped code falls back to itself
+		{"DE", "xx", "DE"}, // unmapped language falls back to the code
+		{"", "de", ""},
+		{"  fr  ", "en", "France"}, // surrounding whitespace trimmed
+	}
+	for _, c := range cases {
+		if got := CountryName(c.code, c.lang); got != c.want {
+			t.Errorf("CountryName(%q, %q) = %q, want %q", c.code, c.lang, got, c.want)
+		}
+	}
+}

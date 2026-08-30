@@ -84,6 +84,26 @@ func TestGenerateProducesNonEmptyPDF(t *testing.T) {
 	}
 }
 
+func TestGenerateWithThreeLineCompanyAddress(t *testing.T) {
+	// Company.Country set means the sender header grows to three address
+	// lines (Street / ZIP City / Country) instead of two — verifies the
+	// dynamic header height doesn't break layout or crash fpdf.
+	cfg := sampleConfig()
+	cfg.Company.Country = "DE"
+	requireFonts(t, cfg)
+	loc := locale.Resolve(cfg.Language, locale.Formatting{})
+
+	dir := t.TempDir()
+	out := filepath.Join(dir, "invoice.pdf")
+	if err := Generate(cfg, loc, config.DocInvoice, out, nil); err != nil {
+		t.Fatalf("Generate with 3-line company address failed: %v", err)
+	}
+	info, err := os.Stat(out)
+	if err != nil || info.Size() < 100 {
+		t.Fatalf("expected a valid non-trivial PDF, got err=%v info=%v", err, info)
+	}
+}
+
 func TestGenerateQuoteUsesQuoteTitle(t *testing.T) {
 	cfg := sampleConfig()
 	requireFonts(t, cfg)

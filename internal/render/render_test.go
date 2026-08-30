@@ -3,6 +3,7 @@ package render
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -22,6 +23,7 @@ func sampleConfig() *config.Config {
 			City:    "Berlin",
 			Email:   "info@test.de",
 			Phone:   "+49 30 123456",
+			Website: "https://test.de",
 			VatID:   "DE123456789",
 			Bank:    config.BankInfo{Name: "Test Bank", IBAN: "DE89370400440532013000", BIC: "COBADEFFXXX"},
 		},
@@ -91,6 +93,30 @@ func TestPrepareTplDataTotals(t *testing.T) {
 	}
 	if d.DueDate == "" {
 		t.Error("expected due date to be set for an invoice")
+	}
+}
+
+func TestPrepareTplDataAddressBlocks(t *testing.T) {
+	cfg := sampleConfig()
+	cfg.Company.Country = "DE"
+	loc := resolveLoc(cfg)
+	d := PrepareTplData(cfg, loc, config.DocInvoice)
+
+	// sampleConfig uses Language: "en", so the country resolves to its
+	// English display name.
+	wantCompany := []string{"Main St 1", "12345 Berlin", "Germany"}
+	if !reflect.DeepEqual(d.CompanyAddrLines, wantCompany) {
+		t.Errorf("CompanyAddrLines = %#v, want %#v", d.CompanyAddrLines, wantCompany)
+	}
+
+	// Customer address (Country: "DE") must appear as three separate
+	// lines (Street / ZIP City / Country) within CustLines, not merged
+	// onto one line — and the country must be shown even though it
+	// matches the seller's country (both sender and recipient always
+	// get the full ISO-style block).
+	joined := strings.Join(d.CustLines, "|")
+	if !strings.Contains(joined, "Client Rd 42|54321 Munich|Germany") {
+		t.Errorf("expected a clean 3-line customer address block, got CustLines=%#v", d.CustLines)
 	}
 }
 
@@ -205,6 +231,43 @@ func TestHTMLProducesValidOutput(t *testing.T) {
 	}
 	if strings.Contains(html, "{{") || strings.Contains(html, "}}") {
 		t.Error("rendered HTML still contains unresolved template directives")
+	}
+}
+
+func TestHTMLFooterHasThreeColumns(t *testing.T) {
+	cfg := sampleConfig()
+	loc := resolveLoc(cfg)
+	dir := t.TempDir()
+
+	html, err := HTML(cfg, loc, config.DocInvoice, "", dir)
+	if err != nil {
+		t.Fatalf("HTML failed: %v", err)
+	}
+	// The footer must surface company/address, website/email/phone, and
+	// bank/tax-ID details — matching the reference three-column layout.
+	for _, want := range []string{"https://test.de", "info@test.de", "+49 30 123456", "Test Bank", "DE89370400440532013000"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("footer missing expected content %q", want)
+		}
+	}
+	if !strings.Contains(html, `class="fc"`) {
+		t.Error("expected the footer to use the three-column .fc layout")
+	}
+}
+
+func TestPrepareTplDataCompanyContactFields(t *testing.T) {
+	cfg := sampleConfig()
+	loc := resolveLoc(cfg)
+	d := PrepareTplData(cfg, loc, config.DocInvoice)
+
+	if d.CompanyWebsite != "https://test.de" {
+		t.Errorf("CompanyWebsite = %q, want %q", d.CompanyWebsite, "https://test.de")
+	}
+	if d.CompanyEmail != "info@test.de" {
+		t.Errorf("CompanyEmail = %q, want %q", d.CompanyEmail, "info@test.de")
+	}
+	if d.CompanyPhone != "+49 30 123456" {
+		t.Errorf("CompanyPhone = %q, want %q", d.CompanyPhone, "+49 30 123456")
 	}
 }
 

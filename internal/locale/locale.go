@@ -225,6 +225,68 @@ func RegisterCurrencySymbol(code, symbol string) {
 	currencySymbols[strings.ToUpper(strings.TrimSpace(code))] = symbol
 }
 
+// countryNames maps common ISO 3166-1 alpha-2 codes to their localized
+// display name, per supported language. Codes not listed here fall back
+// to the raw code (see CountryName) — this covers the countries that
+// come up in everyday DACH/EU invoicing, not an exhaustive ISO list.
+var countryNames = map[string]map[string]string{
+	"de": {
+		"DE": "Deutschland", "AT": "Österreich", "CH": "Schweiz", "FR": "Frankreich",
+		"IT": "Italien", "ES": "Spanien", "PT": "Portugal", "NL": "Niederlande",
+		"BE": "Belgien", "LU": "Luxemburg", "PL": "Polen", "CZ": "Tschechien",
+		"DK": "Dänemark", "SE": "Schweden", "NO": "Norwegen", "GB": "Vereinigtes Königreich",
+		"US": "USA", "IE": "Irland",
+	},
+	"en": {
+		"DE": "Germany", "AT": "Austria", "CH": "Switzerland", "FR": "France",
+		"IT": "Italy", "ES": "Spain", "PT": "Portugal", "NL": "Netherlands",
+		"BE": "Belgium", "LU": "Luxembourg", "PL": "Poland", "CZ": "Czechia",
+		"DK": "Denmark", "SE": "Sweden", "NO": "Norway", "GB": "United Kingdom",
+		"US": "United States", "IE": "Ireland",
+	},
+	"fr": {
+		"DE": "Allemagne", "AT": "Autriche", "CH": "Suisse", "FR": "France",
+		"IT": "Italie", "ES": "Espagne", "PT": "Portugal", "NL": "Pays-Bas",
+		"BE": "Belgique", "LU": "Luxembourg", "GB": "Royaume-Uni", "US": "États-Unis",
+	},
+	"es": {
+		"DE": "Alemania", "AT": "Austria", "CH": "Suiza", "FR": "Francia",
+		"IT": "Italia", "ES": "España", "PT": "Portugal", "NL": "Países Bajos",
+		"BE": "Bélgica", "GB": "Reino Unido", "US": "Estados Unidos",
+	},
+	"it": {
+		"DE": "Germania", "AT": "Austria", "CH": "Svizzera", "FR": "Francia",
+		"IT": "Italia", "ES": "Spagna", "PT": "Portogallo", "NL": "Paesi Bassi",
+		"BE": "Belgio", "GB": "Regno Unito", "US": "Stati Uniti",
+	},
+	"nl": {
+		"DE": "Duitsland", "AT": "Oostenrijk", "CH": "Zwitserland", "FR": "Frankrijk",
+		"IT": "Italië", "ES": "Spanje", "PT": "Portugal", "NL": "Nederland",
+		"BE": "België", "GB": "Verenigd Koninkrijk", "US": "Verenigde Staten",
+	},
+	"pt": {
+		"DE": "Alemanha", "AT": "Áustria", "CH": "Suíça", "FR": "França",
+		"IT": "Itália", "ES": "Espanha", "PT": "Portugal", "NL": "Países Baixos",
+		"BE": "Bélgica", "GB": "Reino Unido", "US": "Estados Unidos",
+	},
+}
+
+// CountryName resolves an ISO 3166-1 alpha-2 code to a display name in
+// the given invoice language. Falls back to the raw code if the
+// language or code isn't in the (intentionally small) lookup table.
+func CountryName(code, lang string) string {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if code == "" {
+		return ""
+	}
+	if names, ok := countryNames[lang]; ok {
+		if name, ok := names[code]; ok {
+			return name
+		}
+	}
+	return code
+}
+
 // CurrencySymbol returns the display symbol for a currency code, falling
 // back to the code itself (or "€" if empty) when the symbol is unknown.
 func CurrencySymbol(code string) string {

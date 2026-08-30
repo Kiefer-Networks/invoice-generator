@@ -152,7 +152,14 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 	pdf.AddPage()
 
 	// ========== COLORED HEADER BAND ==========
+	// Height grows with the number of sender address lines (Street / ZIP
+	// City / Country) so a 3-line ISO-style address never overflows into
+	// the white area below the header.
+	companyAddrLines := config.AddressLines(cfg.Company.Address, cfg.Company.ZIP, cfg.Company.City, cfg.Company.Country, "", cfg.Language)
 	headerH := 42.0
+	if extra := len(companyAddrLines) - 2; extra > 0 {
+		headerH += float64(extra) * 3.8
+	}
 	pdf.SetFillColor(aR, aG, aB)
 	pdf.Rect(0, 0, pageW, headerH, "F")
 	// Subtle darker strip at bottom of header
@@ -170,25 +177,12 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 	pdf.SetXY(lm, 19)
 	pdf.CellFormat(100, 5, cfg.Company.Name, "", 2, "L", false, 0, "")
 
-	// Company address details (white, smaller)
+	// Company address details (white, smaller): Street / ZIP City / Country
 	pdf.SetFont("inv", "", 8)
 	pdf.SetTextColor(230, 240, 255)
-	compAddr := cfg.Company.Address
-	if cfg.Company.ZIP != "" || cfg.Company.City != "" {
-		compAddr += ", " + strings.TrimSpace(cfg.Company.ZIP+" "+cfg.Company.City)
-	}
-	pdf.SetX(lm)
-	pdf.CellFormat(100, 3.8, compAddr, "", 2, "L", false, 0, "")
-	if cfg.Company.Email != "" || cfg.Company.Phone != "" {
+	for _, l := range companyAddrLines {
 		pdf.SetX(lm)
-		contact := cfg.Company.Email
-		if cfg.Company.Phone != "" {
-			if contact != "" {
-				contact += "  ·  "
-			}
-			contact += cfg.Company.Phone
-		}
-		pdf.CellFormat(100, 3.8, contact, "", 2, "L", false, 0, "")
+		pdf.CellFormat(100, 3.8, l, "", 2, "L", false, 0, "")
 	}
 
 	// Right side: invoice details (white text on header)
@@ -281,31 +275,16 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 	pdf.SetXY(lm, custStartY)
 	pdf.CellFormat(60, 4.5, lb.InvoiceTo, "", 0, "L", false, 0, "")
 
-	// Build customer lines
+	// Build customer lines: contact person, then Street / ZIP City / Country,
+	// then VAT ID. No email/phone here — this is the postal address block.
 	var custLines []string
 	if cfg.Customer.Contact != "" {
 		custLines = append(custLines, cfg.Customer.Contact)
 	}
-	if cfg.Customer.Email != "" {
-		custLines = append(custLines, cfg.Customer.Email)
-	}
-	zipCity := strings.TrimSpace(cfg.Customer.ZIP + " " + cfg.Customer.City)
-	addrLine := cfg.Customer.Address
-	if zipCity != "" && !strings.Contains(addrLine, zipCity) {
-		if addrLine != "" {
-			addrLine += ", " + zipCity
-		} else {
-			addrLine = zipCity
-		}
-	}
-	if addrLine != "" {
-		custLines = append(custLines, addrLine)
-	}
-	if cfg.Customer.CountryName != "" {
-		custLines = append(custLines, cfg.Customer.CountryName)
-	} else if cfg.Customer.Country != "" {
-		custLines = append(custLines, cfg.Customer.Country)
-	}
+	custLines = append(custLines, config.AddressLines(
+		cfg.Customer.Address, cfg.Customer.ZIP, cfg.Customer.City,
+		cfg.Customer.Country, cfg.Customer.CountryName, cfg.Language,
+	)...)
 	if cfg.Customer.VatID != "" {
 		custLines = append(custLines, lb.TaxID+": "+cfg.Customer.VatID)
 	}
@@ -509,26 +488,6 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 	pdf.CellFormat(sumValueW-4, totalBarH-2, loc.FormatCurrency(grossTotal, curr), "", 0, "R", false, 0, "")
 	sumY += totalBarH
 
-	// Tax overview (small, below total)
-	if cfg.VAT.Liable && cfg.VAT.Rate > 0 {
-		sumY += 3
-		pdf.SetFont("inv", "", 6.5)
-		pdf.SetTextColor(140, 140, 140)
-		overW := sumW / 3
-		pdf.SetXY(sumX, sumY)
-		pdf.CellFormat(overW, 3.5, lb.Tax, "", 0, "L", false, 0, "")
-		pdf.CellFormat(overW, 3.5, lb.Taxable, "", 0, "R", false, 0, "")
-		pdf.CellFormat(overW, 3.5, lb.TaxAmount, "", 0, "R", false, 0, "")
-		sumY += 3.5
-		pdf.SetXY(sumX, sumY)
-		pdf.SetFont("inv", "", 7)
-		pdf.SetTextColor(100, 100, 100)
-		pdf.CellFormat(overW, 3.5, loc.FormatQuantity(cfg.VAT.Rate)+"%", "", 0, "L", false, 0, "")
-		pdf.CellFormat(overW, 3.5, loc.FormatCurrency(netTotal, curr), "", 0, "R", false, 0, "")
-		pdf.CellFormat(overW, 3.5, loc.FormatCurrency(taxAmt, curr), "", 0, "R", false, 0, "")
-		sumY += 5
-	}
-
 	pdf.SetY(sumY + 2)
 
 	// ========== TAX NOTICE (small business exemption etc.) ==========
@@ -571,80 +530,26 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 		pdf.Rect(lm+0.5, notesY-1, 1.2, endY-notesY+2, "F")
 	}
 
-	// ========== PAYMENT SECTION ==========
-	hasPayment := cfg.PayTerms != "" || cfg.PayMethod != "" || cfg.Company.Bank.IBAN != ""
-	if hasPayment {
+	// ========== PAYMENT NOTE ==========
+	// Plain sentence, no heading/box — bank details already live in the
+	// page footer, so this is just the terms (and method, if set).
+	if cfg.PayTerms != "" || cfg.PayMethod != "" {
+		payNote := cfg.PayTerms
+		if cfg.PayMethod != "" {
+			if payNote != "" {
+				payNote += " "
+			}
+			payNote += cfg.PayMethod + "."
+		}
 		payY := pdf.GetY() + 5
-		// Payment section needs ~30mm; ensure it fits on current page
-		if payY+30 > pageH-22 {
+		if payY > pageH-30 {
 			pdf.AddPage()
-			pdf.SetFillColor(aR, aG, aB)
-			pdf.Rect(0, 0, pageW, 3, "F")
 			payY = 10
 		}
-
-		// Disable auto page break to keep columns aligned
-		pdf.SetAutoPageBreak(false, 0)
-
-		// Thin divider
-		pdf.SetDrawColor(220, 220, 225)
-		pdf.SetLineWidth(0.2)
-		pdf.Line(lm, payY, pageW-rm, payY)
-		payY += 5
-
-		colWidth := cw / 3
-		lnH := 3.8
-
-		// Column 1: Payment terms
-		if cfg.PayTerms != "" {
-			pdf.SetFont("inv", "B", 7.5)
-			pdf.SetTextColor(aR, aG, aB)
-			pdf.SetXY(lm, payY)
-			pdf.CellFormat(colWidth, 4.5, lb.PaymentTerms, "", 0, "L", false, 0, "")
-			pdf.SetFont("inv", "", 7.5)
-			pdf.SetTextColor(90, 90, 90)
-			lines := splitLines(pdf, cfg.PayTerms, colWidth-4)
-			for i, l := range lines {
-				pdf.SetXY(lm, payY+5.5+float64(i)*lnH)
-				pdf.CellFormat(colWidth-4, lnH, l, "", 0, "L", false, 0, "")
-			}
-		}
-
-		// Column 2: Payment method
-		if cfg.PayMethod != "" {
-			pdf.SetFont("inv", "B", 7.5)
-			pdf.SetTextColor(aR, aG, aB)
-			pdf.SetXY(lm+colWidth, payY)
-			pdf.CellFormat(colWidth, 4.5, lb.PaymentMethods, "", 0, "L", false, 0, "")
-			pdf.SetFont("inv", "", 7.5)
-			pdf.SetTextColor(90, 90, 90)
-			pdf.SetXY(lm+colWidth, payY+5.5)
-			pdf.CellFormat(colWidth-4, lnH, cfg.PayMethod, "", 0, "L", false, 0, "")
-		}
-
-		// Column 3: Bank details
-		if cfg.Company.Bank.IBAN != "" {
-			pdf.SetFont("inv", "B", 7.5)
-			pdf.SetTextColor(aR, aG, aB)
-			pdf.SetXY(lm+2*colWidth, payY)
-			pdf.CellFormat(colWidth, 4.5, lb.BankAccount, "", 0, "L", false, 0, "")
-			pdf.SetFont("inv", "", 7.5)
-			pdf.SetTextColor(90, 90, 90)
-			bY := payY + 5.5
-			pdf.SetXY(lm+2*colWidth, bY)
-			pdf.CellFormat(colWidth, lnH, cfg.Company.Bank.Name, "", 0, "L", false, 0, "")
-			bY += lnH
-			pdf.SetXY(lm+2*colWidth, bY)
-			pdf.CellFormat(colWidth, lnH, "IBAN: "+cfg.Company.Bank.IBAN, "", 0, "L", false, 0, "")
-			if cfg.Company.Bank.BIC != "" {
-				bY += lnH
-				pdf.SetXY(lm+2*colWidth, bY)
-				pdf.CellFormat(colWidth, lnH, "BIC: "+cfg.Company.Bank.BIC, "", 0, "L", false, 0, "")
-			}
-		}
-
-		// Re-enable auto page break
-		pdf.SetAutoPageBreak(true, 22)
+		pdf.SetXY(lm, payY)
+		pdf.SetFont("inv", "", 8)
+		pdf.SetTextColor(90, 90, 90)
+		pdf.MultiCell(cw, 4, payNote, "", "L", false)
 	}
 
 	// ========== ZUGFERD ATTACHMENT ==========
