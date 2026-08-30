@@ -125,7 +125,7 @@ EXAMPLES
 func handleInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	lang := fs.String("lang", "de", "Template language")
-	fs.Parse(args)
+	_ = fs.Parse(args) // flag.ExitOnError already terminates the process on a parse error
 
 	if fs.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: invoice init company|invoice|quote|template [--lang de]")
@@ -153,7 +153,7 @@ func writeTemplate(filename, content string) {
 		fmt.Fprintf(os.Stderr, "%s already exists. Delete or rename it, then try again.\n", filename)
 		os.Exit(1)
 	}
-	if err := os.WriteFile(filename, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(filename, []byte(content), 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -175,12 +175,14 @@ func ensureGitignoreHasLocalOverridePattern() {
 	}
 	addition := "\n# Local config overrides — never commit real company/bank data\n" +
 		"*.local.yaml\n*.local.yml\n*.local.toml\n"
-	f, err := os.OpenFile(".gitignore", os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(".gitignore", os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	f.WriteString(addition)
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString(addition); err != nil {
+		return
+	}
 	fmt.Println("Updated .gitignore: local config overrides (*.local.yaml etc.) are now excluded.")
 }
 
@@ -201,7 +203,7 @@ func handleGenerate(docType config.DocType, args []string) {
 	htmlOut := fs.Bool("html", false, "Also save HTML file")
 	tmplPath := fs.String("t", "", "Custom HTML template path")
 	useFpdf := fs.Bool("fpdf", false, "Use built-in renderer (no Chrome)")
-	fs.Parse(args)
+	_ = fs.Parse(args) // flag.ExitOnError already terminates the process on a parse error
 
 	if fs.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "Error: specify a config file\nHelp: invoice help")

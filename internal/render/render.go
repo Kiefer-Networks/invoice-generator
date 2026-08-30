@@ -375,13 +375,15 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 		return fmt.Errorf("could not create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if _, err := tmpFile.WriteString(html); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return err
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("could not close temp file: %w", err)
+	}
 
 	// Chrome headless → PDF (bounded by chromeTimeout to avoid hangs)
 	ctx, cancel := context.WithTimeout(context.Background(), chromeTimeout)
@@ -398,7 +400,7 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 	if err != nil {
 		return fmt.Errorf("could not create Chrome profile dir: %w", err)
 	}
-	defer os.RemoveAll(profileDir)
+	defer func() { _ = os.RemoveAll(profileDir) }()
 
 	args := []string{
 		"--headless",
@@ -422,9 +424,9 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("Chrome PDF generation timed out after %s", chromeTimeout)
+			return fmt.Errorf("rendering PDF via Chrome timed out after %s", chromeTimeout)
 		}
-		return fmt.Errorf("Chrome PDF generation failed: %w", err)
+		return fmt.Errorf("rendering PDF via Chrome failed: %w", err)
 	}
 	return nil
 }

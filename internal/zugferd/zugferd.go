@@ -47,7 +47,7 @@ func convertDate(dateStr string) string {
 
 func xmlEsc(s string) string {
 	var buf bytes.Buffer
-	xml.EscapeText(&buf, []byte(s))
+	_ = xml.EscapeText(&buf, []byte(s)) // bytes.Buffer.Write never fails
 	return buf.String()
 }
 
