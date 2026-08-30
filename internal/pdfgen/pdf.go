@@ -1,4 +1,7 @@
-package main
+// Package pdfgen implements the built-in fpdf-based invoice renderer,
+// used as a fallback when Chrome/Chromium is unavailable and as the
+// mandatory renderer when embedding a ZUGFeRD/Factur-X XML attachment.
+package pdfgen
 
 import (
 	"fmt"
@@ -8,6 +11,9 @@ import (
 	"strings"
 
 	"github.com/go-pdf/fpdf"
+
+	"github.com/kiefer-networks/invoice-generator/internal/config"
+	"github.com/kiefer-networks/invoice-generator/internal/locale"
 )
 
 // splitLines breaks text into wrapped lines that fit within width w.
@@ -61,9 +67,12 @@ func statusColor(status string) (int, int, int) {
 	}
 }
 
-// generatePDF creates a modern invoice PDF.
-func generatePDF(cfg *Config, loc *Locale, outputPath string, zugferdXML []byte) error {
-	fontRegular, fontBold, err := findFonts(cfg)
+// Generate creates a modern invoice/quote PDF using the built-in fpdf
+// renderer. If zugferdXML is non-empty, it is embedded as a PDF file
+// attachment (Factur-X / ZUGFeRD BASIC profile) — callers must not pass
+// a non-empty zugferdXML for docType == config.DocQuote.
+func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, outputPath string, zugferdXML []byte) error {
+	fontRegular, fontBold, err := config.FindFonts(cfg)
 	if err != nil {
 		return err
 	}
@@ -81,7 +90,7 @@ func generatePDF(cfg *Config, loc *Locale, outputPath string, zugferdXML []byte)
 	cw := pageW - lm - rm // usable content width
 
 	// Accent color
-	aR, aG, aB := parseColor(cfg.Color)
+	aR, aG, aB := locale.ParseColor(cfg.Color)
 
 	// Darker shade of accent for header gradient effect
 	dR := int(float64(aR) * 0.85)
@@ -94,15 +103,31 @@ func generatePDF(cfg *Config, loc *Locale, outputPath string, zugferdXML []byte)
 		curr = "EUR"
 	}
 	if cfg.Formatting.CurrencySymbol != "" {
-		currencySymbols[curr] = cfg.Formatting.CurrencySymbol
+		locale.RegisterCurrencySymbol(curr, cfg.Formatting.CurrencySymbol)
 	}
 
 	// Tax calculations
-	netTotal := calcNet(cfg.Items)
-	taxAmt := calcTax(netTotal, cfg.VAT)
+	netTotal := config.CalcNet(cfg.Items)
+	taxAmt := config.CalcTax(netTotal, cfg.VAT)
 	grossTotal := math.Round((netTotal+taxAmt)*100) / 100
 
 	lb := loc.Labels
+
+	// Quote (Angebot): swap title/number/second-date-row labels for their
+	// quote equivalents, and use ValidUntil instead of DueDate.
+	docTitle := lb.InvoiceTitle
+	docNrLabel := lb.InvoiceNr
+	dueDateLabel := lb.DueDate
+	dueDateValue := cfg.Invoice.DueDate
+	if docType == config.DocQuote {
+		docTitle = lb.QuoteTitle
+		docNrLabel = lb.QuoteNr
+		dueDateLabel = lb.ValidUntil
+		dueDateValue = cfg.Invoice.ValidUntil
+		if dueDateValue == "" {
+			dueDateValue = cfg.Invoice.DueDate
+		}
+	}
 
 	// ========== FOOTER ==========
 	pdf.SetFooterFunc(func() {
@@ -138,7 +163,7 @@ func generatePDF(cfg *Config, loc *Locale, outputPath string, zugferdXML []byte)
 	pdf.SetFont("inv", "B", 30)
 	pdf.SetTextColor(255, 255, 255)
 	pdf.SetXY(lm, 6)
-	pdf.CellFormat(100, 12, lb.InvoiceTitle, "", 0, "L", false, 0, "")
+	pdf.CellFormat(100, 12, docTitle, "", 0, "L", false, 0, "")
 
 	// Company name (white)
 	pdf.SetFont("inv", "B", 11)
@@ -176,9 +201,9 @@ func generatePDF(cfg *Config, loc *Locale, outputPath string, zugferdXML []byte)
 		label, value string
 	}
 	details := []detRow{
-		{lb.InvoiceNr, fmt.Sprintf("%v", cfg.Invoice.Number)},
+		{docNrLabel, fmt.Sprintf("%v", cfg.Invoice.Number)},
 		{lb.InvoiceDate, loc.FormatDate(cfg.Invoice.Date)},
-		{lb.DueDate, loc.FormatDate(cfg.Invoice.DueDate)},
+		{dueDateLabel, loc.FormatDate(dueDateValue)},
 	}
 	for _, d := range details {
 		pdf.SetXY(rightX, detY)

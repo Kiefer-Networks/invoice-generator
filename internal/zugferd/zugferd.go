@@ -1,4 +1,6 @@
-package main
+// Package zugferd generates Factur-X / ZUGFeRD e-invoice XML (CII, BASIC
+// profile, EN 16931 compliant) from an invoice config.
+package zugferd
 
 import (
 	"bytes"
@@ -7,6 +9,8 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/config"
 )
 
 // Unit code mapping: German + English unit names → UN/ECE Recommendation 20 codes
@@ -58,8 +62,8 @@ func fmtQuantity(f float64) string {
 	return fmt.Sprintf("%.4f", f)
 }
 
-// generateCII produces a Factur-X / ZUGFeRD CII XML (BASIC profile, EN 16931).
-func generateCII(cfg *Config) ([]byte, error) {
+// GenerateCII produces a Factur-X / ZUGFeRD CII XML (BASIC profile, EN 16931).
+func GenerateCII(cfg *config.Config) ([]byte, error) {
 	var b bytes.Buffer
 	ind := 0
 
@@ -71,7 +75,7 @@ func generateCII(cfg *Config) ([]byte, error) {
 		b.WriteByte('\n')
 	}
 	open := func(tag string) { w("<%s>", tag); ind++ }
-	close := func(tag string) { ind--; w("</%s>", tag) }
+	closeTag := func(tag string) { ind--; w("</%s>", tag) }
 
 	// Defaults
 	currency := cfg.Currency
@@ -104,10 +108,10 @@ func generateCII(cfg *Config) ([]byte, error) {
 
 	lineTotal := 0.0
 	type lineData struct {
-		id, name            string
-		qty, price, total   float64
-		unit, vCode         string
-		vRate               float64
+		id, name          string
+		qty, price, total float64
+		unit, vCode       string
+		vRate             float64
 	}
 	var lines []lineData
 
@@ -150,8 +154,8 @@ func generateCII(cfg *Config) ([]byte, error) {
 	open("rsm:ExchangedDocumentContext")
 	open("ram:GuidelineSpecifiedDocumentContextParameter")
 	w("<ram:ID>urn:cen.eu:en16931:2017#compliant#urn:factur-x.eu:1p0:basic</ram:ID>")
-	close("ram:GuidelineSpecifiedDocumentContextParameter")
-	close("rsm:ExchangedDocumentContext")
+	closeTag("ram:GuidelineSpecifiedDocumentContextParameter")
+	closeTag("rsm:ExchangedDocumentContext")
 
 	// Document header
 	open("rsm:ExchangedDocument")
@@ -159,8 +163,8 @@ func generateCII(cfg *Config) ([]byte, error) {
 	w("<ram:TypeCode>380</ram:TypeCode>")
 	open("ram:IssueDateTime")
 	w(`<udt:DateTimeString format="102">%s</udt:DateTimeString>`, issueDate)
-	close("ram:IssueDateTime")
-	close("rsm:ExchangedDocument")
+	closeTag("ram:IssueDateTime")
+	closeTag("rsm:ExchangedDocument")
 
 	// Trade transaction
 	open("rsm:SupplyChainTradeTransaction")
@@ -171,34 +175,34 @@ func generateCII(cfg *Config) ([]byte, error) {
 
 		open("ram:AssociatedDocumentLineDocument")
 		w("<ram:LineID>%s</ram:LineID>", ln.id)
-		close("ram:AssociatedDocumentLineDocument")
+		closeTag("ram:AssociatedDocumentLineDocument")
 
 		open("ram:SpecifiedTradeProduct")
 		w("<ram:Name>%s</ram:Name>", xmlEsc(ln.name))
-		close("ram:SpecifiedTradeProduct")
+		closeTag("ram:SpecifiedTradeProduct")
 
 		open("ram:SpecifiedLineTradeAgreement")
 		open("ram:NetPriceProductTradePrice")
 		w("<ram:ChargeAmount>%s</ram:ChargeAmount>", fmtAmount(ln.price))
-		close("ram:NetPriceProductTradePrice")
-		close("ram:SpecifiedLineTradeAgreement")
+		closeTag("ram:NetPriceProductTradePrice")
+		closeTag("ram:SpecifiedLineTradeAgreement")
 
 		open("ram:SpecifiedLineTradeDelivery")
 		w(`<ram:BilledQuantity unitCode="%s">%s</ram:BilledQuantity>`, ln.unit, fmtQuantity(ln.qty))
-		close("ram:SpecifiedLineTradeDelivery")
+		closeTag("ram:SpecifiedLineTradeDelivery")
 
 		open("ram:SpecifiedLineTradeSettlement")
 		open("ram:ApplicableTradeTax")
 		w("<ram:TypeCode>VAT</ram:TypeCode>")
 		w("<ram:CategoryCode>%s</ram:CategoryCode>", ln.vCode)
 		w("<ram:RateApplicablePercent>%s</ram:RateApplicablePercent>", fmtAmount(ln.vRate))
-		close("ram:ApplicableTradeTax")
+		closeTag("ram:ApplicableTradeTax")
 		open("ram:SpecifiedTradeSettlementLineMonetarySummation")
 		w("<ram:LineTotalAmount>%s</ram:LineTotalAmount>", fmtAmount(ln.total))
-		close("ram:SpecifiedTradeSettlementLineMonetarySummation")
-		close("ram:SpecifiedLineTradeSettlement")
+		closeTag("ram:SpecifiedTradeSettlementLineMonetarySummation")
+		closeTag("ram:SpecifiedLineTradeSettlement")
 
-		close("ram:IncludedSupplyChainTradeLineItem")
+		closeTag("ram:IncludedSupplyChainTradeLineItem")
 	}
 
 	// Seller
@@ -210,23 +214,23 @@ func generateCII(cfg *Config) ([]byte, error) {
 	w("<ram:LineOne>%s</ram:LineOne>", xmlEsc(cfg.Company.Address))
 	w("<ram:CityName>%s</ram:CityName>", xmlEsc(cfg.Company.City))
 	w("<ram:CountryID>%s</ram:CountryID>", xmlEsc(sellerCountry))
-	close("ram:PostalTradeAddress")
+	closeTag("ram:PostalTradeAddress")
 	if cfg.Company.Email != "" {
 		open("ram:URIUniversalCommunication")
 		w(`<ram:URIID schemeID="EM">%s</ram:URIID>`, xmlEsc(cfg.Company.Email))
-		close("ram:URIUniversalCommunication")
+		closeTag("ram:URIUniversalCommunication")
 	}
 	if cfg.Company.VatID != "" {
 		open("ram:SpecifiedTaxRegistration")
 		w(`<ram:ID schemeID="VA">%s</ram:ID>`, xmlEsc(cfg.Company.VatID))
-		close("ram:SpecifiedTaxRegistration")
+		closeTag("ram:SpecifiedTaxRegistration")
 	}
 	if cfg.Company.TaxNumber != "" {
 		open("ram:SpecifiedTaxRegistration")
 		w(`<ram:ID schemeID="FC">%s</ram:ID>`, xmlEsc(cfg.Company.TaxNumber))
-		close("ram:SpecifiedTaxRegistration")
+		closeTag("ram:SpecifiedTaxRegistration")
 	}
-	close("ram:SellerTradeParty")
+	closeTag("ram:SellerTradeParty")
 
 	// Buyer
 	open("ram:BuyerTradeParty")
@@ -239,23 +243,23 @@ func generateCII(cfg *Config) ([]byte, error) {
 	w("<ram:LineOne>%s</ram:LineOne>", xmlEsc(cfg.Customer.Address))
 	w("<ram:CityName>%s</ram:CityName>", xmlEsc(cfg.Customer.City))
 	w("<ram:CountryID>%s</ram:CountryID>", xmlEsc(buyerCountry))
-	close("ram:PostalTradeAddress")
+	closeTag("ram:PostalTradeAddress")
 	if cfg.Customer.VatID != "" {
 		open("ram:SpecifiedTaxRegistration")
 		w(`<ram:ID schemeID="VA">%s</ram:ID>`, xmlEsc(cfg.Customer.VatID))
-		close("ram:SpecifiedTaxRegistration")
+		closeTag("ram:SpecifiedTaxRegistration")
 	}
-	close("ram:BuyerTradeParty")
-	close("ram:ApplicableHeaderTradeAgreement")
+	closeTag("ram:BuyerTradeParty")
+	closeTag("ram:ApplicableHeaderTradeAgreement")
 
 	// Delivery
 	open("ram:ApplicableHeaderTradeDelivery")
 	open("ram:ActualDeliverySupplyChainEvent")
 	open("ram:OccurrenceDateTime")
 	w(`<udt:DateTimeString format="102">%s</udt:DateTimeString>`, issueDate)
-	close("ram:OccurrenceDateTime")
-	close("ram:ActualDeliverySupplyChainEvent")
-	close("ram:ApplicableHeaderTradeDelivery")
+	closeTag("ram:OccurrenceDateTime")
+	closeTag("ram:ActualDeliverySupplyChainEvent")
+	closeTag("ram:ApplicableHeaderTradeDelivery")
 
 	// Settlement
 	open("ram:ApplicableHeaderTradeSettlement")
@@ -267,13 +271,13 @@ func generateCII(cfg *Config) ([]byte, error) {
 		w("<ram:TypeCode>58</ram:TypeCode>")
 		open("ram:PayeePartyCreditorFinancialAccount")
 		w("<ram:IBANID>%s</ram:IBANID>", xmlEsc(cfg.Company.Bank.IBAN))
-		close("ram:PayeePartyCreditorFinancialAccount")
+		closeTag("ram:PayeePartyCreditorFinancialAccount")
 		if cfg.Company.Bank.BIC != "" {
 			open("ram:PayeeSpecifiedCreditorFinancialInstitution")
 			w("<ram:BICID>%s</ram:BICID>", xmlEsc(cfg.Company.Bank.BIC))
-			close("ram:PayeeSpecifiedCreditorFinancialInstitution")
+			closeTag("ram:PayeeSpecifiedCreditorFinancialInstitution")
 		}
-		close("ram:SpecifiedTradeSettlementPaymentMeans")
+		closeTag("ram:SpecifiedTradeSettlementPaymentMeans")
 	}
 
 	// Tax breakdown
@@ -290,15 +294,15 @@ func generateCII(cfg *Config) ([]byte, error) {
 	w("<ram:BasisAmount>%s</ram:BasisAmount>", fmtAmount(taxBasis))
 	w("<ram:CategoryCode>%s</ram:CategoryCode>", catCode)
 	w("<ram:RateApplicablePercent>%s</ram:RateApplicablePercent>", fmtAmount(vatRate))
-	close("ram:ApplicableTradeTax")
+	closeTag("ram:ApplicableTradeTax")
 
 	// Payment terms
 	if dueDate != "" {
 		open("ram:SpecifiedTradePaymentTerms")
 		open("ram:DueDateDateTime")
 		w(`<udt:DateTimeString format="102">%s</udt:DateTimeString>`, dueDate)
-		close("ram:DueDateDateTime")
-		close("ram:SpecifiedTradePaymentTerms")
+		closeTag("ram:DueDateDateTime")
+		closeTag("ram:SpecifiedTradePaymentTerms")
 	}
 
 	// Monetary totals
@@ -308,10 +312,10 @@ func generateCII(cfg *Config) ([]byte, error) {
 	w(`<ram:TaxTotalAmount currencyID="%s">%s</ram:TaxTotalAmount>`, xmlEsc(currency), fmtAmount(taxAmount))
 	w("<ram:GrandTotalAmount>%s</ram:GrandTotalAmount>", fmtAmount(grandTotal))
 	w("<ram:DuePayableAmount>%s</ram:DuePayableAmount>", fmtAmount(grandTotal))
-	close("ram:SpecifiedTradeSettlementHeaderMonetarySummation")
+	closeTag("ram:SpecifiedTradeSettlementHeaderMonetarySummation")
 
-	close("ram:ApplicableHeaderTradeSettlement")
-	close("rsm:SupplyChainTradeTransaction")
+	closeTag("ram:ApplicableHeaderTradeSettlement")
+	closeTag("rsm:SupplyChainTradeTransaction")
 
 	ind = 0
 	w("</rsm:CrossIndustryInvoice>")

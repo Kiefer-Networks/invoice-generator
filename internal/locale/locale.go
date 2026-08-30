@@ -1,8 +1,11 @@
-package main
+// Package locale provides language-specific labels and locale-aware
+// number, currency, and date formatting for invoice rendering.
+package locale
 
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,6 +37,12 @@ type Labels struct {
 	Taxable        string
 	TaxAmount      string
 	Page           string
+
+	// Quote (Angebot) specific — used instead of the invoice-title/number/
+	// due-date labels above when rendering a quote rather than an invoice.
+	QuoteTitle string
+	QuoteNr    string
+	ValidUntil string
 }
 
 // Locale defines formatting rules and labels for a language.
@@ -46,6 +55,18 @@ type Locale struct {
 	CurrencySpace bool
 }
 
+// Formatting carries locale formatting overrides taken from a config file.
+// It mirrors the subset of config fields that resolveLocale-style code needs,
+// letting this package stay decoupled from the config package's YAML/TOML tags.
+type Formatting struct {
+	DateFmt        string
+	DecimalSep     string
+	ThousandSep    string
+	CurrencySymbol string
+	CurrencyBefore *bool
+	CurrencySpace  *bool
+}
+
 var locales = map[string]*Locale{
 	"de": {
 		Labels: Labels{
@@ -56,6 +77,7 @@ var locales = map[string]*Locale{
 			Notes: "NOTIZEN", PaymentTerms: "ZAHLUNGSBEDINGUNGEN", PaymentMethods: "ZAHLUNGSMETHODEN",
 			BankAccount: "BANKVERBINDUNG", TaxID: "USt-IdNr.", TaxOverview: "Steuerübersicht",
 			Taxable: "Steuerpflichtig", TaxAmount: "Steuerbetrag", Page: "Seite",
+			QuoteTitle: "Angebot", QuoteNr: "Angebot Nr.", ValidUntil: "Gültig bis",
 		},
 		DateFormat: "02.01.2006", DecimalSep: ",", ThousandSep: ".", CurrencyPos: "after", CurrencySpace: true,
 	},
@@ -68,6 +90,7 @@ var locales = map[string]*Locale{
 			Notes: "NOTES", PaymentTerms: "PAYMENT TERMS", PaymentMethods: "PAYMENT METHODS",
 			BankAccount: "BANK ACCOUNT", TaxID: "Tax ID", TaxOverview: "Tax Overview",
 			Taxable: "Taxable", TaxAmount: "Tax Amount", Page: "Page",
+			QuoteTitle: "Quote", QuoteNr: "Quote No.", ValidUntil: "Valid Until",
 		},
 		DateFormat: "01/02/2006", DecimalSep: ".", ThousandSep: ",", CurrencyPos: "before", CurrencySpace: false,
 	},
@@ -80,6 +103,7 @@ var locales = map[string]*Locale{
 			Notes: "REMARQUES", PaymentTerms: "CONDITIONS DE PAIEMENT", PaymentMethods: "MODES DE PAIEMENT",
 			BankAccount: "COORDONNÉES BANCAIRES", TaxID: "N° TVA", TaxOverview: "Détail TVA",
 			Taxable: "Base HT", TaxAmount: "Montant TVA", Page: "Page",
+			QuoteTitle: "Devis", QuoteNr: "Devis n°", ValidUntil: "Valable jusqu'au",
 		},
 		DateFormat: "02/01/2006", DecimalSep: ",", ThousandSep: " ", CurrencyPos: "after", CurrencySpace: true,
 	},
@@ -92,6 +116,7 @@ var locales = map[string]*Locale{
 			Notes: "NOTAS", PaymentTerms: "CONDICIONES DE PAGO", PaymentMethods: "MÉTODOS DE PAGO",
 			BankAccount: "CUENTA BANCARIA", TaxID: "NIF/CIF", TaxOverview: "Desglose de impuestos",
 			Taxable: "Base imponible", TaxAmount: "Cuota", Page: "Página",
+			QuoteTitle: "Presupuesto", QuoteNr: "Presupuesto #", ValidUntil: "Válido hasta",
 		},
 		DateFormat: "02/01/2006", DecimalSep: ",", ThousandSep: ".", CurrencyPos: "after", CurrencySpace: true,
 	},
@@ -104,6 +129,7 @@ var locales = map[string]*Locale{
 			Notes: "NOTE", PaymentTerms: "CONDIZIONI DI PAGAMENTO", PaymentMethods: "METODI DI PAGAMENTO",
 			BankAccount: "COORDINATE BANCARIE", TaxID: "P.IVA", TaxOverview: "Dettaglio IVA",
 			Taxable: "Imponibile", TaxAmount: "Imposta", Page: "Pagina",
+			QuoteTitle: "Preventivo", QuoteNr: "Preventivo n.", ValidUntil: "Valido fino al",
 		},
 		DateFormat: "02/01/2006", DecimalSep: ",", ThousandSep: ".", CurrencyPos: "after", CurrencySpace: true,
 	},
@@ -116,6 +142,7 @@ var locales = map[string]*Locale{
 			Notes: "OPMERKINGEN", PaymentTerms: "BETALINGSVOORWAARDEN", PaymentMethods: "BETAALMETHODEN",
 			BankAccount: "BANKREKENING", TaxID: "BTW-nr.", TaxOverview: "BTW-overzicht",
 			Taxable: "Belastbaar", TaxAmount: "BTW-bedrag", Page: "Pagina",
+			QuoteTitle: "Offerte", QuoteNr: "Offerte #", ValidUntil: "Geldig tot",
 		},
 		DateFormat: "02-01-2006", DecimalSep: ",", ThousandSep: ".", CurrencyPos: "before", CurrencySpace: true,
 	},
@@ -128,6 +155,7 @@ var locales = map[string]*Locale{
 			Notes: "NOTAS", PaymentTerms: "CONDIÇÕES DE PAGAMENTO", PaymentMethods: "MÉTODOS DE PAGAMENTO",
 			BankAccount: "DADOS BANCÁRIOS", TaxID: "NIF", TaxOverview: "Resumo IVA",
 			Taxable: "Base tributável", TaxAmount: "Valor IVA", Page: "Página",
+			QuoteTitle: "Orçamento", QuoteNr: "Orçamento #", ValidUntil: "Válido até",
 		},
 		DateFormat: "02/01/2006", DecimalSep: ",", ThousandSep: ".", CurrencyPos: "after", CurrencySpace: true,
 	},
@@ -140,46 +168,66 @@ var currencySymbols = map[string]string{
 	"CAD": "C$", "NZD": "NZ$", "MXN": "MX$", "ZAR": "R", "KRW": "₩", "THB": "฿",
 }
 
-func getLocale(code string) *Locale {
+// SupportedLanguages returns the list of supported ISO 639-1 language codes.
+func SupportedLanguages() []string {
+	return []string{"de", "en", "fr", "es", "it", "nl", "pt"}
+}
+
+// Get returns the locale for a language code, falling back to German
+// if the code is unknown.
+func Get(code string) *Locale {
 	if loc, ok := locales[code]; ok {
 		return loc
 	}
 	return locales["de"]
 }
 
-// resolveLocale picks the base locale and applies any formatting overrides.
-func resolveLocale(cfg *Config) *Locale {
-	code := cfg.Language
+// Resolve picks the base locale for cfg's language and applies any
+// formatting overrides on top of it. The returned Locale is an
+// independent copy — mutating it never affects the shared base locale.
+func Resolve(language string, overrides Formatting) *Locale {
+	code := language
 	if code == "" {
 		code = "de"
 	}
-	base := getLocale(code)
+	base := Get(code)
 	loc := *base // clone
 
-	if cfg.Formatting.DateFmt != "" {
-		loc.DateFormat = cfg.Formatting.DateFmt
+	if overrides.DateFmt != "" {
+		loc.DateFormat = overrides.DateFmt
 	}
-	if cfg.Formatting.DecimalSep != "" {
-		loc.DecimalSep = cfg.Formatting.DecimalSep
+	if overrides.DecimalSep != "" {
+		loc.DecimalSep = overrides.DecimalSep
 	}
-	if cfg.Formatting.ThousandSep != "" {
-		loc.ThousandSep = cfg.Formatting.ThousandSep
+	if overrides.ThousandSep != "" {
+		loc.ThousandSep = overrides.ThousandSep
 	}
-	if cfg.Formatting.CurrencyBefore != nil {
-		if *cfg.Formatting.CurrencyBefore {
+	if overrides.CurrencyBefore != nil {
+		if *overrides.CurrencyBefore {
 			loc.CurrencyPos = "before"
 		} else {
 			loc.CurrencyPos = "after"
 		}
 	}
-	if cfg.Formatting.CurrencySpace != nil {
-		loc.CurrencySpace = *cfg.Formatting.CurrencySpace
+	if overrides.CurrencySpace != nil {
+		loc.CurrencySpace = *overrides.CurrencySpace
 	}
 
 	return &loc
 }
 
-func getCurrencySymbol(code string) string {
+// RegisterCurrencySymbol overrides (or adds) the display symbol for a
+// currency code, e.g. to support a project-specific formatting override.
+func RegisterCurrencySymbol(code, symbol string) {
+	if code == "" || symbol == "" {
+		return
+	}
+	currencySymbols[strings.ToUpper(strings.TrimSpace(code))] = symbol
+}
+
+// CurrencySymbol returns the display symbol for a currency code, falling
+// back to the code itself (or "€" if empty) when the symbol is unknown.
+func CurrencySymbol(code string) string {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if sym, ok := currencySymbols[code]; ok {
 		return sym
@@ -226,7 +274,7 @@ func (l *Locale) FormatNumber(f float64, decimals int) string {
 
 // FormatCurrency formats a monetary amount with symbol in the correct position.
 func (l *Locale) FormatCurrency(f float64, currencyCode string) string {
-	sym := getCurrencySymbol(currencyCode)
+	sym := CurrencySymbol(currencyCode)
 	num := l.FormatNumber(f, 2)
 
 	if l.CurrencyPos == "before" {
@@ -255,8 +303,8 @@ func (l *Locale) FormatQuantity(f float64) string {
 	return l.FormatNumber(f, decimals)
 }
 
-// parseDate tries several common date formats.
-func parseDate(input string) (time.Time, error) {
+// ParseDate tries several common date formats.
+func ParseDate(input string) (time.Time, error) {
 	formats := []string{
 		"02.01.2006", "2.1.2006", "2006-01-02",
 		"01/02/2006", "1/2/2006", "02-01-2006",
@@ -270,22 +318,50 @@ func parseDate(input string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unknown date format: %s", input)
 }
 
-// FormatDate parses and reformats a date string.
+// FormatDate parses and reformats a date string. Unparseable input is
+// returned unchanged so that malformed dates don't crash rendering.
 func (l *Locale) FormatDate(input string) string {
-	t, err := parseDate(input)
+	t, err := ParseDate(input)
 	if err != nil {
 		return input
 	}
 	return t.Format(l.DateFormat)
 }
 
-// parseColor converts a hex color string to RGB components.
-func parseColor(hex string) (int, int, int) {
-	hex = strings.TrimPrefix(hex, "#")
-	if len(hex) != 6 {
-		return 91, 155, 213 // default: #5B9BD5
+// ParseColor converts a hex color string ("#RRGGBB" or "RRGGBB") to RGB
+// components. Falls back to the default accent color (#5B9BD5) for any
+// malformed input (wrong length or non-hex characters).
+func ParseColor(hex string) (int, int, int) {
+	const defR, defG, defB = 91, 155, 213 // default: #5B9BD5
+
+	hex = strings.TrimPrefix(strings.TrimSpace(hex), "#")
+	if len(hex) != 6 || !isHex(hex) {
+		return defR, defG, defB
 	}
-	var r, g, b int
-	fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
-	return r, g, b
+	r, err1 := strconv.ParseUint(hex[0:2], 16, 8)
+	g, err2 := strconv.ParseUint(hex[2:4], 16, 8)
+	b, err3 := strconv.ParseUint(hex[4:6], 16, 8)
+	if err1 != nil || err2 != nil || err3 != nil {
+		return defR, defG, defB
+	}
+	return int(r), int(g), int(b)
+}
+
+// isHex reports whether every byte in s is an ASCII hex digit.
+func isHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// DarkenColor produces a slightly darker shade of a hex color, used for
+// header gradient/accent effects.
+func DarkenColor(hex string) string {
+	r, g, b := ParseColor(hex)
+	const f = 0.82
+	return fmt.Sprintf("#%02x%02x%02x", int(float64(r)*f), int(float64(g)*f), int(float64(b)*f))
 }

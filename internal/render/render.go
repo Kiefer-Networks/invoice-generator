@@ -1,27 +1,45 @@
-package main
+// Package render turns a Config into invoice HTML (via Go's text/template)
+// and, optionally, into a PDF by driving headless Chrome/Chromium/Edge.
+package render
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"text/template"
+	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/config"
+	"github.com/kiefer-networks/invoice-generator/internal/locale"
 )
 
 //go:embed template_default.html
 var defaultTemplateHTML string
 
+// DefaultTemplate returns the embedded default HTML template source,
+// e.g. for `invoice init template` to extract it for customization.
+func DefaultTemplate() string {
+	return defaultTemplateHTML
+}
+
+// chromeTimeout bounds how long headless Chrome may run for a single
+// PDF render, so a stuck/hanging browser process cannot block indefinitely.
+const chromeTimeout = 60 * time.Second
+
 // TplData holds pre-formatted values for the HTML template.
 type TplData struct {
-	Lang       string
-	Color      string
-	ColorDark  string
-	Title      string
-	LB         Labels
-	LogoPath   string
+	Lang      string
+	Color     string
+	ColorDark string
+	Title     string
+	LB        locale.Labels
+	LogoPath  string
 
 	// Company
 	CompanyName    string
@@ -74,20 +92,35 @@ type TplRow struct {
 	Amt   string
 }
 
-// prepareTplData converts Config into pre-formatted template data.
-func prepareTplData(cfg *Config, loc *Locale) *TplData {
+// PrepareTplData converts Config into pre-formatted template data for the
+// given document type (invoice or quote).
+func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocType) *TplData {
 	curr := cfg.Currency
 	if curr == "" {
 		curr = "EUR"
 	}
 	if cfg.Formatting.CurrencySymbol != "" {
-		currencySymbols[curr] = cfg.Formatting.CurrencySymbol
+		locale.RegisterCurrencySymbol(curr, cfg.Formatting.CurrencySymbol)
 	}
 
-	net := calcNet(cfg.Items)
-	tax := calcTax(net, cfg.VAT)
+	net := config.CalcNet(cfg.Items)
+	tax := config.CalcTax(net, cfg.VAT)
 	gross := math.Round((net+tax)*100) / 100
 	lb := loc.Labels
+
+	// Quote (Angebot): swap title/second-date-row for their quote
+	// equivalents. The template only ever reads lb.DueDate/DueDate, so
+	// substituting these values is enough — no template changes needed.
+	title := lb.InvoiceTitle
+	dueDateValue := cfg.Invoice.DueDate
+	if docType == config.DocQuote {
+		title = lb.QuoteTitle
+		lb.DueDate = lb.ValidUntil
+		dueDateValue = cfg.Invoice.ValidUntil
+		if dueDateValue == "" {
+			dueDateValue = cfg.Invoice.DueDate
+		}
+	}
 
 	// Company address line
 	compAddr := cfg.Company.Address
@@ -168,7 +201,7 @@ func prepareTplData(cfg *Config, loc *Locale) *TplData {
 	if cfg.Logo != "" {
 		if abs, err := filepath.Abs(cfg.Logo); err == nil {
 			if _, err := os.Stat(abs); err == nil {
-				logoPath = "file://" + abs
+				logoPath = "file://" + filepath.ToSlash(abs)
 			}
 		}
 	}
@@ -187,8 +220,8 @@ func prepareTplData(cfg *Config, loc *Locale) *TplData {
 	d := &TplData{
 		Lang:      lang,
 		Color:     color,
-		ColorDark: darkenColor(color),
-		Title:     lb.InvoiceTitle,
+		ColorDark: locale.DarkenColor(color),
+		Title:     title,
 		LB:        lb,
 		LogoPath:  logoPath,
 
@@ -199,7 +232,7 @@ func prepareTplData(cfg *Config, loc *Locale) *TplData {
 
 		InvNumber:   fmt.Sprintf("%v", cfg.Invoice.Number),
 		InvDate:     loc.FormatDate(cfg.Invoice.Date),
-		DueDate:     loc.FormatDate(cfg.Invoice.DueDate),
+		DueDate:     loc.FormatDate(dueDateValue),
 		Status:      cfg.Invoice.Status,
 		StatusClass: statusClass,
 
@@ -228,15 +261,8 @@ func prepareTplData(cfg *Config, loc *Locale) *TplData {
 	return d
 }
 
-// darkenColor produces a slightly darker shade of a hex color.
-func darkenColor(hex string) string {
-	r, g, b := parseColor(hex)
-	f := 0.82
-	return fmt.Sprintf("#%02x%02x%02x", int(float64(r)*f), int(float64(g)*f), int(float64(b)*f))
-}
-
-// renderHTML renders the invoice as an HTML string.
-func renderHTML(cfg *Config, loc *Locale, tmplPath string, configDir string) (string, error) {
+// HTML renders the invoice (or quote) as an HTML string.
+func HTML(cfg *config.Config, loc *locale.Locale, docType config.DocType, tmplPath string, configDir string) (string, error) {
 	src, err := loadTemplateSrc(tmplPath, configDir)
 	if err != nil {
 		return "", err
@@ -247,7 +273,7 @@ func renderHTML(cfg *Config, loc *Locale, tmplPath string, configDir string) (st
 		return "", fmt.Errorf("template parse error: %w", err)
 	}
 
-	data := prepareTplData(cfg, loc)
+	data := PrepareTplData(cfg, loc, docType)
 	var buf strings.Builder
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("template execute error: %w", err)
@@ -272,22 +298,56 @@ func loadTemplateSrc(tmplPath, configDir string) (string, error) {
 	return defaultTemplateHTML, nil
 }
 
-// findChrome locates a Chrome/Chromium binary on the system.
-func findChrome() string {
+// FindChrome locates a Chrome/Chromium/Edge binary on the system.
+// Checks the INVOICE_CHROME env var first, then PATH, then common
+// per-OS installation locations (Linux, macOS, Windows).
+func FindChrome() string {
+	if p := os.Getenv("INVOICE_CHROME"); p != "" {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+
 	names := []string{
 		"chromium-browser", "chromium", "google-chrome-stable",
-		"google-chrome", "chrome",
+		"google-chrome", "chrome", "google-chrome.exe", "chrome.exe",
+		"msedge", "msedge.exe",
 	}
 	for _, n := range names {
 		if p, err := exec.LookPath(n); err == nil {
 			return p
 		}
 	}
-	paths := []string{
-		"/usr/bin/chromium-browser", "/usr/bin/chromium",
-		"/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-		"/snap/bin/chromium",
-		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+
+	var paths []string
+	switch runtime.GOOS {
+	case "windows":
+		programFiles := os.Getenv("ProgramFiles")
+		programFilesX86 := os.Getenv("ProgramFiles(x86)")
+		localAppData := os.Getenv("LocalAppData")
+		for _, base := range []string{programFiles, programFilesX86, localAppData} {
+			if base == "" {
+				continue
+			}
+			paths = append(paths,
+				filepath.Join(base, "Google", "Chrome", "Application", "chrome.exe"),
+				filepath.Join(base, "Chromium", "Application", "chrome.exe"),
+				filepath.Join(base, "Microsoft", "Edge", "Application", "msedge.exe"),
+			)
+		}
+	case "darwin":
+		paths = []string{
+			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"/Applications/Chromium.app/Contents/MacOS/Chromium",
+			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+		}
+	default: // linux and others
+		paths = []string{
+			"/usr/bin/chromium-browser", "/usr/bin/chromium",
+			"/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
+			"/snap/bin/chromium",
+			"/usr/bin/microsoft-edge-stable", "/usr/bin/microsoft-edge",
+		}
 	}
 	for _, p := range paths {
 		if _, err := os.Stat(p); err == nil {
@@ -297,14 +357,14 @@ func findChrome() string {
 	return ""
 }
 
-// generateFromTemplate renders the invoice via HTML template + Chrome headless PDF.
-func generateFromTemplate(cfg *Config, loc *Locale, outputPath, tmplPath, configDir string) error {
-	chrome := findChrome()
+// FromTemplate renders the invoice/quote via HTML template + Chrome headless PDF.
+func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType, outputPath, tmplPath, configDir string) error {
+	chrome := FindChrome()
 	if chrome == "" {
-		return fmt.Errorf("Chrome/Chromium not found – install chromium or use -fpdf flag")
+		return fmt.Errorf("Chrome/Chromium/Edge not found – install one, set INVOICE_CHROME, or use -fpdf flag")
 	}
 
-	html, err := renderHTML(cfg, loc, tmplPath, configDir)
+	html, err := HTML(cfg, loc, docType, tmplPath, configDir)
 	if err != nil {
 		return err
 	}
@@ -323,20 +383,47 @@ func generateFromTemplate(cfg *Config, loc *Locale, outputPath, tmplPath, config
 	}
 	tmpFile.Close()
 
-	// Chrome headless → PDF
-	abs, _ := filepath.Abs(outputPath)
-	cmd := exec.Command(chrome,
+	// Chrome headless → PDF (bounded by chromeTimeout to avoid hangs)
+	ctx, cancel := context.WithTimeout(context.Background(), chromeTimeout)
+	defer cancel()
+
+	abs, err := filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("could not resolve output path: %w", err)
+	}
+
+	// Use a dedicated, isolated user-data-dir so concurrent/parallel runs
+	// never share browser profile state (avoids cross-process interference).
+	profileDir, err := os.MkdirTemp("", "invoice-chrome-profile-*")
+	if err != nil {
+		return fmt.Errorf("could not create Chrome profile dir: %w", err)
+	}
+	defer os.RemoveAll(profileDir)
+
+	args := []string{
 		"--headless",
 		"--disable-gpu",
-		"--no-sandbox",
 		"--disable-software-rasterizer",
+		"--disable-extensions",
+		"--disable-sync",
+		"--no-first-run",
+		"--user-data-dir=" + profileDir,
 		"--run-all-compositor-stages-before-draw",
 		"--no-pdf-header-footer",
-		"--print-to-pdf="+abs,
-		"file://"+tmpPath,
-	)
+	}
+	// Chrome refuses to start its sandbox as root (common in containers).
+	// Only relax the sandbox in that specific, already-unprivileged-boundary case.
+	if runtime.GOOS != "windows" && os.Geteuid() == 0 {
+		args = append(args, "--no-sandbox")
+	}
+	args = append(args, "--print-to-pdf="+abs, "file://"+tmpPath)
+
+	cmd := exec.CommandContext(ctx, chrome, args...)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("Chrome PDF generation timed out after %s", chromeTimeout)
+		}
 		return fmt.Errorf("Chrome PDF generation failed: %w", err)
 	}
 	return nil

@@ -1,0 +1,64 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: invoice
+    main: ./cmd/invoice
+    binary: invoice
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: invoice
+    ids: [invoice]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      invoice_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - id: invoice-sbom
+    artifacts: archive
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: kiefer-networks
+    name: invoice-generator
+  footer: |
+    ## Verifying this release
+
+    Checksums are listed in `checksums.txt`. Build provenance attestations
+    are published via GitHub's attestation API — verify with:
+
+    ```
+    gh attestation verify <downloaded-file> -o kiefer-networks
+    ```

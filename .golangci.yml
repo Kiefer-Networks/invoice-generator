@@ -1,0 +1,35 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - gosec       # security-focused static analysis
+    - errcheck    # unchecked errors
+    - staticcheck # bugs, deprecated API usage, simplifications
+    - unused      # dead code
+    - ineffassign # ineffectual assignments
+    - misspell
+    - unconvert
+    - bodyclose
+  settings:
+    gosec:
+      excludes:
+        # G304 (file inclusion via variable): this is a local CLI tool —
+        # every "variable path" it opens is a path the same user passed
+        # explicitly via a CLI flag or a config file field. That is the
+        # tool's entire purpose, not an attacker-controlled input.
+        - G304
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+run:
+  timeout: 5m

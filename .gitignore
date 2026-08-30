@@ -1,10 +1,38 @@
-# Build
-invoice
+# Build artifacts (anchored to repo root — must NOT match cmd/invoice/,
+# which is a source directory, not a build output).
+/invoice
+/invoice.exe
+/invoice-generator
+/invoice-generator.exe
+*.exe
+*.dll
+*.dylib
+*.test
+/dist/
+/bin/
+/build/
+
+# Coverage / profiling
+*.out
+coverage.txt
+coverage.html
 
 # Generated output
 *.pdf
 *.xml
 template.html
+
+# Local config overrides — never commit real company/bank data.
+# See README: "Local Config Overrides". Matches company.local.yaml,
+# invoice.local.toml, etc.
+*.local.yaml
+*.local.yml
+*.local.toml
+
+# Personal logo files — keep only the bundled sample logo.svg tracked.
+logo.png
+logo.jpg
+logo.jpeg
 
 # AI
 .claude/
