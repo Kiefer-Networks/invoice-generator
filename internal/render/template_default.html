@@ -14,11 +14,8 @@
 /* Reserves real print-safe top/bottom margins on every page (including
    continuation pages of a multi-page invoice) instead of letting content
    render flush to the physical page edge. Left/right stay at 0 here —
-   each section already carries its own 48px (~12.7mm) horizontal padding.
-   The fixed footer's "bottom: 0" below is relative to this page box, so
-   raising this bottom margin is also what keeps the footer off the
-   physical edge. */
-@page { size: A4; margin: 10mm 0 30mm 0; }
+   each section already carries its own 48px (~12.7mm) horizontal padding. */
+@page { size: A4; margin: 10mm 0 15mm 0; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
@@ -297,19 +294,22 @@ td.r { text-align: right; font-variant-numeric: tabular-nums; }
 }
 
 /* ===================== FOOTER ===================== */
-/* "bottom: 0" is relative to the @page content box above (margin: ...
-   30mm 0), so this sits a real 30mm above the physical page edge on
-   every page — never flush against it. */
+/* Deliberately NOT position:fixed: a fixed element is painted outside
+   normal document flow, so Chrome's print pagination doesn't reserve
+   room for it — on a multi-page invoice, flowing content (e.g. the
+   last table row before a page break) can end up rendered underneath
+   it regardless of how generous the @page bottom margin is. As a
+   normal flowing block it participates in the same page-break-inside
+   rules as every other section here, so it can never collide with
+   what came before it — it just appears once, after everything else,
+   on whichever page that ends up being. */
 .foot {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
     display: flex;
     gap: 32px;
     padding: 10px 48px 0;
+    margin-top: 16px;
     border-top: 1px solid var(--line);
-    background: var(--white);
+    page-break-inside: avoid;
 }
 
 .foot .fc {
