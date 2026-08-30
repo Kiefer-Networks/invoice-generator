@@ -50,7 +50,7 @@ jobs:
           cache: true
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v2.13.2 # v2 line — matches the v2 config schema in .golangci.yml
           args: --timeout=5m
 
   test:
@@ -142,4 +142,4 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
       - name: Fail if a direct dependency is outdated
-        run: ./scripts/check-deps-fresh.sh
+        run: bash scripts/check-deps-fresh.sh
