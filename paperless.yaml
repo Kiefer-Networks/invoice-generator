@@ -1,0 +1,15 @@
+# Paperless-ngx upload config (paperless.yaml)
+# Usage: invoice -paperless -company company.yaml invoice.yaml
+#
+# TIP: the API key is a real secret. Keep it out of version control by
+# creating a "paperless.local.yaml" next to this file with the same
+# keys — it is loaded automatically and overrides these values. It is
+# gitignored by default (see .gitignore: *.local.yaml).
+
+url: "https://paperless.example.com"
+api_key: "your-paperless-api-key"
+
+# Tags to apply to the uploaded document (created automatically in
+# Paperless if they don't exist yet).
+tags:
+  - "Invoices"
