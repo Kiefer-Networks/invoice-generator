@@ -363,7 +363,7 @@ func FindChrome() string {
 // classes are filled in by Chrome itself on every page — see
 // https://chromedevtools.github.io/devtools-protocol/tot/Page#method-printToPDF
 const footerTemplateSrc = `
-<div style="width:100%; font-size:7.5px; font-family:Helvetica,Arial,sans-serif; color:#9aacbd; padding:0 48px; display:flex; justify-content:space-between; gap:16px; box-sizing:border-box;">
+<div style="width:100%; font-size:7.5px; font-family:Helvetica,Arial,sans-serif; color:#9aacbd; padding:8px 48px 0; margin:0 0 4px; border-top:1px solid #dde5ed; display:flex; justify-content:space-between; gap:16px; box-sizing:border-box;">
   <div style="flex:1;">
     <span style="color:#6b7f94; font-weight:700;">{{.CompanyName}}</span><br>
     {{.CompanyAddr}}
@@ -474,9 +474,27 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 	defer cancel()
 
 	const (
-		mmPerInch     = 25.4
-		marginTopMM   = 10.0
-		marginBotMM   = 20.0              // room for the native footer template above
+		mmPerInch = 25.4
+		// Print-safe margins — top is real breathing room above the
+		// logo/title; bottom fits the native footer template's own
+		// content plus buffer; left/right are a real (if modest) margin
+		// so full-width borders/backgrounds (e.g. the header underline,
+		// table header band, grand-total bar) never bleed into a
+		// physical printer's non-printable edge — the page's own
+		// sections already carry their own generous 48px horizontal
+		// padding on top of this. MUST match the @page margin in
+		// template_default.html: that CSS rule is what actually
+		// decides where Chrome breaks pages and lays out content
+		// (verified empirically — these API parameters alone do not
+		// affect that decision at all, only the outer framing/
+		// header-footer placement). If the two disagree, content gets
+		// laid out assuming more room than the final crop leaves, and
+		// the last row on a page can end up rendered underneath the
+		// footer, or a full-bleed element can end up cropped.
+		marginTopMM   = 15.0
+		marginBotMM   = 28.0
+		marginLeftMM  = 8.0
+		marginRightMM = 8.0
 		paperWidthIn  = 210.0 / mmPerInch // A4
 		paperHeightIn = 297.0 / mmPerInch
 	)
@@ -494,8 +512,8 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 				WithPaperHeight(paperHeightIn).
 				WithMarginTop(marginTopMM / mmPerInch).
 				WithMarginBottom(marginBotMM / mmPerInch).
-				WithMarginLeft(0).
-				WithMarginRight(0).
+				WithMarginLeft(marginLeftMM / mmPerInch).
+				WithMarginRight(marginRightMM / mmPerInch).
 				Do(ctx)
 			if err != nil {
 				return err
