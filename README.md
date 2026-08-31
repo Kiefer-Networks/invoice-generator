@@ -21,8 +21,10 @@ natively on Linux, macOS, and Windows.
 - **20+ currencies** supported out of the box
 - **Logo support** — SVG, PNG, JPG
 - **Local config overrides** — keep real bank/tax data out of version control
+- **Paperless-ngx upload** — optionally send the generated PDF straight into your document archive
 - **Cross-platform** — Linux, macOS, and Windows, with automatic font/browser discovery on each
 - **Single binary**, no runtime dependencies (Chrome/Chromium/Edge optional for the HTML renderer)
+- **English config schema** — all YAML/TOML field names are English, regardless of invoice language
 
 ## Quick Start
 
@@ -69,6 +71,7 @@ invoice quote <quote.yaml|.toml> [flags] Generate quote (Angebot) PDF
 invoice init company [--lang <code>]     Create company config template
 invoice init invoice [--lang <code>]     Create invoice template
 invoice init quote [--lang <code>]       Create quote template
+invoice init paperless                   Create paperless.yaml upload config template
 invoice init template                    Extract HTML template for customization
 invoice version                          Show version
 invoice help                             Show this help
@@ -79,12 +82,14 @@ invoice help                             Show this help
 | Flag | Description |
 |------|-------------|
 | `-company <path>` | Load separate company config file |
-| `-o <path>` | Output PDF path (default: `Rechnung_<nr>.pdf` / `Angebot_<nr>.pdf`) |
+| `-o <path>` | Output PDF path (default: `<YYYYMMDD>; <company>; Rechnung <nr>.pdf` / `... Angebot <nr>.pdf`, generation date) |
 | `-zugferd` | Embed ZUGFeRD/Factur-X XML (BASIC profile) — invoices only |
 | `-lang <code>` | Override language (`de`, `en`, `fr`, `es`, `it`, `nl`, `pt`) |
 | `-html` | Also save the rendered HTML file |
 | `-t <path>` | Use custom HTML template |
 | `-fpdf` | Force built-in renderer (no Chrome needed) |
+| `-paperless` | Upload the generated PDF to Paperless-ngx |
+| `-paperless-config <path>` | Paperless config file (default: `paperless.yaml` next to `-company`, or the document) |
 
 ### Environment variables
 
@@ -115,6 +120,9 @@ invoice -html -company company.yaml invoice.yaml
 # Use a custom template
 invoice -t custom.html -company company.yaml invoice.yaml
 
+# Upload to Paperless-ngx after generating
+invoice -paperless -company company.yaml invoice.yaml
+
 # Generate English templates
 invoice init company --lang en
 invoice init invoice --lang en
@@ -124,83 +132,85 @@ invoice init quote --lang en
 ## Configuration
 
 Split your data into two files: a **company config** (reused across all
-invoices/quotes) and a **document file** (per invoice or quote).
+invoices/quotes) and a **document file** (per invoice or quote). All
+field names are English, independent of the `language` used to render
+the document (`de`, `en`, `fr`, `es`, `it`, `nl`, `pt`).
 
 ### Company config (`company.yaml`)
 
 ```yaml
 logo: "./logo.png"
-sprache: "en"
-farbe: "#5B9BD5"
-waehrung: "EUR"
+language: "en"
+color: "#5B9BD5"
+currency: "EUR"
 
-firma:
+company:
   name: "My Company GmbH"
-  adresse: "Sample Street 1"
-  plz: "12345"
-  ort: "Berlin"
-  land: "DE"
+  address: "Sample Street 1"
+  zip: "12345"
+  city: "Berlin"
+  country: "DE"
   email: "info@mycompany.de"
-  telefon: "+49 30 12345678"
-  ust_id: "DE123456789"
+  phone: "+49 30 12345678"
+  vat_id: "DE123456789"
   bank:
     name: "Sample Bank"
     iban: "DE89 3704 0044 0532 0130 00"
     bic: "COBADEFFXXX"
 
-mwst:
-  pflichtig: true
-  satz: 19.0
+vat:
+  liable: true
+  rate: 19.0
 
-zahlungsbedingungen: "Payable within 14 days of invoice date."
-zahlungsmethode: "Bank transfer"
+payment_terms: "Payable within 14 days of invoice date."
+payment_method: "Bank transfer"
 ```
 
 ### Invoice file (`invoice.yaml`)
 
 ```yaml
-kunde:
+customer:
   name: "Client GmbH"
-  ansprechpartner: "Jane Doe"
+  contact: "Jane Doe"
   email: "jane@client.de"
-  adresse: "Client Road 42"
-  plz: "54321"
-  ort: "Munich"
-  land: "DE"
-  ust_id: "DE987654321"
+  address: "Client Road 42"
+  zip: "54321"
+  city: "Munich"
+  country: "DE"
+  vat_id: "DE987654321"
 
-rechnung:
-  nummer: 2026-001
-  datum: "01.03.2026"
-  faelligkeit: "15.03.2026"
+invoice:
+  number: 2026-001
+  date: "01.03.2026"
+  due_date: "15.03.2026"
   status: "SENT"
 
-positionen:
-  - beschreibung: "Web Development"
+items:
+  - description: "Web Development"
     details: "Landing page development"
-    menge: 10
-    einheit: "hours"
-    preis: 85.00
+    quantity: 10
+    unit: "hours"
+    price: 85.00
 
-  - beschreibung: "Server Maintenance"
-    menge: 1
-    einheit: "flat"
-    preis: 150.00
+  - description: "Server Maintenance"
+    quantity: 1
+    unit: "flat"
+    price: 150.00
 
-notizen: "Thank you for your business."
+notes: "Thank you for your business."
 ```
 
 ### Quote file (`quote.yaml`)
 
-A quote uses the same schema, but `gueltig_bis` (valid until) replaces
-`faelligkeit` (due date), and `-zugferd` is not available (e-invoicing
-applies to actual invoices only):
+A quote uses the same schema, but `valid_until` replaces `due_date`,
+and `-zugferd` is not available (e-invoicing applies to actual
+invoices only):
 
 ```yaml
-rechnung:
-  nummer: A-2026-001
-  datum: "01.03.2026"
-  gueltig_bis: "31.03.2026"
+invoice:
+  number: A-2026-001
+  date: "01.03.2026"
+  valid_until: "31.03.2026"
 ```
 
 ```bash
@@ -223,7 +233,8 @@ company.local.yaml    # gitignored, your real data — created by you
 `.gitignore` by default (and `invoice init company` adds the pattern to
 an existing `.gitignore` automatically if it isn't there yet). This
 applies to any config file, not just `company.yaml` — `invoice.local.yaml`
-next to `invoice.yaml` works the same way.
+next to `invoice.yaml`, or `paperless.local.yaml` next to `paperless.yaml`,
+work the same way.
 
 ## Custom Templates
 
@@ -238,6 +249,38 @@ invoice -t template.html -company company.yaml invoice.yaml
 The template uses Go's `text/template` syntax with CSS custom properties for easy theming. All data is pre-formatted — the template only needs to place values, no logic required.
 
 Note: the repeating per-page footer (company/bank details, page numbers) is rendered by Chrome's native print header/footer mechanism, not baked into this template's HTML — it only appears in the generated PDF, not in a `-html` export or when previewing `template.html` directly in a browser.
+
+## Paperless-ngx Upload
+
+Automatically archive every generated PDF in [Paperless-ngx](https://docs.paperless-ngx.com/):
+
+```bash
+invoice init paperless
+# edit paperless.yaml — url, api_key, tags
+invoice -paperless -company company.yaml invoice.yaml
+```
+
+`paperless.yaml`:
+
+```yaml
+url: "https://paperless.example.com"
+api_key: "your-paperless-api-key"
+tags:
+  - "Invoices"
+```
+
+- Tags are matched by name and created automatically in Paperless if
+  they don't exist yet.
+- The document title is the generated PDF's filename (without
+  extension).
+- Like `company.yaml`, the API key can be kept out of version control
+  in a gitignored `paperless.local.yaml` sitting next to it — see
+  [Local Config Overrides](#local-config-overrides).
+- By default `paperless.yaml` is looked up next to the `-company` file
+  (or next to the document, if `-company` isn't used); override the
+  location with `-paperless-config <path>`.
+- A failed upload only prints a warning — the PDF is generated and
+  saved locally regardless of whether the upload succeeds.
 
 ## E-Invoicing (ZUGFeRD / Factur-X)
 
@@ -273,11 +316,11 @@ Override locale defaults per config file:
 
 ```yaml
 format:
-  dezimal: ","
-  tausender: "."
-  waehrung_vor: false
-  waehrung_abstand: true
-  datum: "02.01.2006"
+  decimal_separator: ","
+  thousand_separator: "."
+  currency_before: false
+  currency_space: true
+  date: "02.01.2006"
 ```
 
 ## Project Structure
@@ -289,6 +332,7 @@ internal/locale/      Language labels, number/currency/date formatting
 internal/render/      HTML template rendering + headless Chrome → PDF
 internal/pdfgen/      Built-in fpdf renderer (Chrome-free fallback)
 internal/zugferd/     Factur-X / ZUGFeRD CII XML generation
+internal/paperless/   Paperless-ngx REST API upload
 ```
 
 Each package has its own test suite (`go test ./...`); `cmd/invoice`
@@ -296,9 +340,10 @@ carries end-to-end tests that build and exercise the real binary.
 
 ## Security & Privacy
 
-This is an entirely local, offline tool — it never makes network
-requests and never phones home. See [SECURITY.md](SECURITY.md) for the
-full policy and hardening details. In short:
+This is a local-first, offline-by-default tool — it never phones home,
+and the only network request it ever makes is the explicit, opt-in
+`-paperless` upload. See [SECURITY.md](SECURITY.md) for the full
+policy and hardening details. In short:
 
 - Generated PDFs/HTML/XML (which contain customer and bank data) are
   written with owner-only file permissions where the OS supports it.
@@ -307,6 +352,8 @@ full policy and hardening details. In short:
 - Headless Chrome runs with a timeout, an isolated temp profile, and a
   sandbox that is only relaxed when unavoidable (running as root in a
   container).
+- `-paperless` only talks to the Paperless-ngx URL you configure, warns
+  if that URL is plain HTTP, and never runs unless the flag is passed.
 - Dependencies are continuously scanned via Dependabot, `govulncheck`,
   and CodeQL.
 
