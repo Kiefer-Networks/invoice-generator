@@ -5,32 +5,42 @@
 <title>{{ .Title }} {{ .InvNumber }}</title>
 <style>
 /* ================================================================
-   Invoice Template — Kiefer Networks Brand
-   Matches kiefer-networks.de: blue/gray palette, Inter font,
-   clean tech aesthetic. Edit CSS vars to customize.
+   Invoice Template — plain, boxy, classic-clean.
+   Big flat title + logo, one-line sender, Bill-To and meta side by
+   side, gray table header, bordered summary box with a solid-accent
+   "total due" row. No letterhead flourish, no hairline minimalism —
+   just a straightforward, readable business document.
    Extract: invoice init template
    ================================================================ */
 
-/* Actual page margins for the generated PDF are set via Chrome's
-   Page.printToPDF margin parameters (see render.go), not here — those
-   also carve out room for the native footer template. This @page rule
-   only matters if someone prints the raw HTML (e.g. the -html export)
-   straight from a browser's own print dialog. Left/right stay at 0
-   since each section already carries its own 48px (~12.7mm) padding. */
-@page { size: A4; margin: 10mm 0; }
+/* IMPORTANT: this @page margin is what Chrome's layout engine actually
+   uses to decide WHERE automatic page breaks fall, and how much room
+   full-width borders/backgrounds have before they'd bleed past the
+   physically printable area — verified empirically: changing
+   Page.printToPDF's margin API parameters (see render.go) alone, from
+   20mm all the way up to 100mm, never shifted a single row to a
+   different page, and left/right of 0 let full-bleed elements reach
+   the literal page edge. Those API parameters only control the outer
+   white-space framing and where the header/footer template gets
+   positioned in the final output; the pagination and layout decisions
+   are driven by this CSS rule. If the two don't match, content gets
+   laid out assuming more room than the final crop actually leaves.
+   These values MUST stay equal to marginTopMM/marginBotMM/
+   marginLeftMM/marginRightMM in render.go's FromTemplate. */
+@page { size: A4; margin: 15mm 8mm 28mm 8mm; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
     --ac: {{ .Color }};
     --ac2: {{ .ColorDark }};
-    --ink: #1a2332;
-    --body: #3d4f63;
-    --soft: #6b7f94;
-    --faint: #9aacbd;
-    --line: #dde5ed;
-    --wash: #f4f7fa;
+    --ink: #1c2126;
+    --body: #3f4650;
+    --soft: #767f8c;
+    --faint: #a4acb8;
+    --line: #dde2e8;
+    --head-bg: #f2f4f6;
     --white: #ffffff;
-    --gray: #bdbdbd;
+    --gray: #c2c8d0;
 }
 
 body {
@@ -43,146 +53,84 @@ body {
     print-color-adjust: exact;
 }
 
+.page { padding: 44px 48px 0; }
+
 /* ===================== HEADER ===================== */
 .header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    padding: 36px 48px 24px;
-    border-bottom: 2px solid var(--ac);
+    align-items: flex-start;
+    margin-bottom: 18px;
 }
 
-.header .logo img {
-    height: 38px;
-    display: block;
-}
-
-.header .inv-badge {
-    text-align: right;
-}
-
-.header .inv-badge h1 {
-    font-size: 28px;
-    font-weight: 300;
-    color: var(--ac);
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    line-height: 1;
-}
-
-.header .inv-badge .inv-nr {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--ink);
-    margin-top: 4px;
-    font-variant-numeric: tabular-nums;
-}
-
-/* ===================== INFO BAR ===================== */
-.info-bar {
-    display: flex;
-    gap: 0;
-    padding: 0 48px;
-    margin-top: 20px;
-    margin-bottom: 24px;
-}
-
-.info-bar .ib-block {
-    flex: 1;
-    padding: 12px 16px;
-    background: var(--wash);
-    border-left: 3px solid var(--ac);
-}
-
-.info-bar .ib-block + .ib-block {
-    margin-left: 12px;
-}
-
-.info-bar .ib-label {
-    font-size: 7.5px;
+.header h1 {
+    font-size: 26px;
     font-weight: 700;
-    letter-spacing: 1.2px;
-    text-transform: uppercase;
-    color: var(--faint);
-    margin-bottom: 3px;
-}
-
-.info-bar .ib-value {
-    font-size: 11px;
-    font-weight: 600;
     color: var(--ink);
-    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.5px;
 }
 
-.pill {
-    display: inline-block;
-    padding: 2px 12px;
-    border-radius: 3px;
-    font-size: 8px;
-    font-weight: 700;
-    letter-spacing: 0.8px;
-    text-transform: uppercase;
-    background: var(--ac);
-    color: var(--white);
-}
-.pill.paid    { background: #10b981; }
-.pill.overdue { background: #ef4444; }
-.pill.draft   { background: var(--gray); }
+.header .logo img { max-height: 50px; max-width: 220px; display: block; }
 
-/* ===================== ADDRESSES ===================== */
-.addresses {
+.letterline {
+    font-size: 9px;
+    color: var(--soft);
+    margin-bottom: 30px;
+}
+.letterline .company-name { font-weight: 700; color: var(--ink); }
+
+/* ===================== BILL TO + META ===================== */
+.top-info {
     display: flex;
-    padding: 0 48px;
-    gap: 48px;
-    margin-bottom: 28px;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 30px;
     page-break-inside: avoid;
 }
 
-.addr-from, .addr-to { flex: 1; page-break-inside: avoid; }
-
-.addr-label {
-    font-size: 7.5px;
+.bill-to .addr-label {
+    font-size: 9px;
     font-weight: 700;
-    letter-spacing: 1.5px;
+    letter-spacing: 0.4px;
+    color: var(--ink);
+    margin-bottom: 6px;
+}
+
+.bill-to .cust-name { font-size: 10.5px; color: var(--ink); margin-bottom: 2px; }
+.bill-to .cust-details { font-size: 10px; color: var(--body); line-height: 1.6; }
+
+.meta { width: 220px; }
+
+.meta .m-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 3px 0;
+    font-size: 10px;
+}
+.meta .m-row .l { color: var(--soft); }
+.meta .m-row .v { font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+.pill {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 3px;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
     text-transform: uppercase;
-    color: var(--ac);
-    margin-bottom: 8px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--line);
-}
-
-.addr-from .company-name {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--ink);
-    margin-bottom: 2px;
-}
-
-.addr-from .company-details {
-    font-size: 9.5px;
+    background: var(--head-bg);
     color: var(--soft);
-    line-height: 1.7;
 }
-
-.addr-to .cust-name {
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--ink);
-    margin-bottom: 2px;
-}
-
-.addr-to .cust-details {
-    font-size: 9.5px;
-    color: var(--soft);
-    line-height: 1.7;
-}
+.pill.paid    { background: #e3f4ea; color: #1a8f52; }
+.pill.overdue { background: #fbe7e7; color: #c8352f; }
+.pill.draft   { background: var(--head-bg); color: var(--soft); }
 
 /* ===================== TABLE ===================== */
-.tbl-wrap { padding: 0 48px; margin-bottom: 20px; }
-
 table {
     width: 100%;
     border-collapse: collapse;
+    margin-bottom: 20px;
 }
 
 /* Repeat the column header on every printed page the table spans
@@ -190,108 +138,95 @@ table {
 thead { display: table-header-group; }
 
 thead th {
-    padding: 10px 14px;
-    font-size: 7.5px;
+    padding: 10px 12px;
+    font-size: 8px;
     font-weight: 700;
-    letter-spacing: 1px;
+    letter-spacing: 0.6px;
     text-transform: uppercase;
-    color: var(--white);
-    background: var(--ac);
+    color: var(--ink);
     text-align: left;
+    background: var(--head-bg);
+    border-bottom: 1px solid var(--line);
 }
-thead th:first-child { border-radius: 4px 0 0 0; }
-thead th:last-child  { border-radius: 0 4px 0 0; }
 thead th.r { text-align: right; }
 
 tbody tr { page-break-inside: avoid; }
 
-tbody tr:nth-child(even) td {
-    background: var(--wash);
-}
-
 tbody td {
-    padding: 9px 14px;
+    padding: 10px 12px;
     vertical-align: top;
     border-bottom: 1px solid var(--line);
     font-size: 10px;
 }
 
-tbody tr:last-child td { border-bottom: 2px solid var(--ac); }
-
 td.r { text-align: right; font-variant-numeric: tabular-nums; }
 
-.d-title { font-weight: 600; color: var(--ink); }
-.d-sub { font-size: 9px; color: var(--soft); margin-top: 1px; }
-.amt { font-weight: 700; color: var(--ink); }
+.d-title { color: var(--ink); }
+.d-sub { font-size: 9px; color: var(--soft); margin-top: 2px; }
+.amt { font-weight: 600; color: var(--ink); }
 
 /* ===================== SUMMARY ===================== */
 .sum-area {
     display: flex;
     justify-content: flex-end;
-    padding: 0 48px;
-    margin-bottom: 20px;
+    margin-bottom: 22px;
     page-break-inside: avoid;
 }
 
-.sum { width: 260px; }
+.sum {
+    width: 260px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+}
 
 .sr {
     display: flex;
     justify-content: space-between;
-    padding: 4px 0;
+    padding: 9px 14px;
     font-size: 10px;
+    border-bottom: 1px solid var(--line);
 }
-.sr .l { color: var(--soft); }
+.sr .l { color: var(--soft); font-weight: 700; }
 .sr .v { font-variant-numeric: tabular-nums; color: var(--ink); }
 
-.sum-line { border: none; border-top: 1px solid var(--line); margin: 4px 0; }
-
 .grand {
-    background: var(--ac);
-    border-radius: 4px;
-    padding: 12px 16px;
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    margin-top: 6px;
+    padding: 11px 14px;
+    background: var(--ac);
 }
 
 .grand .gl {
     font-size: 10px;
     font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: rgba(255,255,255,0.85);
+    letter-spacing: 0.3px;
+    color: var(--white);
 }
 
 .grand .gv {
-    font-size: 22px;
-    font-weight: 800;
+    font-size: 13px;
+    font-weight: 700;
     color: var(--white);
-    letter-spacing: -0.3px;
     font-variant-numeric: tabular-nums;
 }
 
 /* ===================== NOTES ===================== */
-.notes-area { padding: 0 48px; margin-bottom: 14px; page-break-inside: avoid; }
+.notes-area { margin-bottom: 16px; page-break-inside: avoid; }
 
-.note-text {
-    font-size: 10px;
-    color: var(--soft);
-    padding-left: 12px;
-    border-left: 2px solid var(--ac);
-    margin-top: 4px;
-}
+.note-text { font-size: 10px; color: var(--soft); margin-top: 6px; }
 
-.notice { font-size: 8.5px; color: var(--faint); padding: 0 48px; margin-bottom: 12px; }
+.notice { font-size: 8.5px; color: var(--faint); margin-bottom: 14px; }
 
 /* ===================== PAYMENT NOTE ===================== */
 /* Plain-sentence payment terms — no heading, no border, no box. */
 .pay-note {
-    padding: 0 48px;
+    padding-top: 20px;
     margin-bottom: 14px;
-    font-size: 10px;
-    color: var(--soft);
+    font-size: 9.5px;
+    color: var(--faint);
+    border-top: 1px solid var(--line);
     page-break-inside: avoid;
 }
 
@@ -306,55 +241,39 @@ td.r { text-align: right; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
+<div class="page">
 
-<!-- Header: Logo + Invoice title -->
+<!-- Header: big title left, logo right -->
 <div class="header">
+    <h1>{{ .Title }}</h1>
     <div class="logo">
         {{ if .LogoPath }}<img src="{{ .LogoPath }}" alt="{{ .CompanyName }}">{{ end }}
     </div>
-    <div class="inv-badge">
-        <h1>{{ .Title }}</h1>
-        <div class="inv-nr"># {{ .InvNumber }}</div>
-    </div>
 </div>
 
-<!-- Info bar: Date, Due, Status -->
-<div class="info-bar">
-    <div class="ib-block">
-        <div class="ib-label">{{ .LB.InvoiceDate }}</div>
-        <div class="ib-value">{{ .InvDate }}</div>
-    </div>
-    <div class="ib-block">
-        <div class="ib-label">{{ .LB.DueDate }}</div>
-        <div class="ib-value">{{ .DueDate }}</div>
-    </div>
-    {{ if .Status }}
-    <div class="ib-block">
-        <div class="ib-label">Status</div>
-        <div class="ib-value"><span class="pill {{ .StatusClass }}">{{ .Status }}</span></div>
-    </div>
-    {{ end }}
+<!-- One-line sender identity -->
+<div class="letterline">
+    <span class="company-name">{{ .CompanyName }}</span>{{ range .CompanyAddrLines }}, {{ . }}{{ end }}{{ if .TaxID }} &middot; {{ .LB.TaxID }}: {{ .TaxID }}{{ end }}
 </div>
 
-<!-- Addresses: From / To -->
-<div class="addresses">
-    <div class="addr-from">
-        <div class="addr-label">{{ .LB.InvoiceFrom }}</div>
-        <div class="company-name">{{ .CompanyName }}</div>
-        <div class="company-details">
-            {{ range .CompanyAddrLines }}{{ . }}<br>{{ end }}
-            {{ if .TaxID }}{{ .LB.TaxID }}: {{ .TaxID }}{{ end }}
-        </div>
-    </div>
-    <div class="addr-to">
+<!-- Bill to (left) + Invoice meta (right) -->
+<div class="top-info">
+    <div class="bill-to">
         <div class="addr-label">{{ .LB.InvoiceTo }}</div>
         <div class="cust-name">{{ .CustName }}</div>
         <div class="cust-details">{{ range .CustLines }}{{ . }}<br>{{ end }}</div>
     </div>
+    <div class="meta">
+        <div class="m-row"><span class="l">{{ .LB.InvoiceNr }}</span><span class="v">{{ .InvNumber }}</span></div>
+        <div class="m-row"><span class="l">{{ .LB.InvoiceDate }}</span><span class="v">{{ .InvDate }}</span></div>
+        <div class="m-row"><span class="l">{{ .LB.DueDate }}</span><span class="v">{{ .DueDate }}</span></div>
+        {{ if .Status }}
+        <div class="m-row"><span class="l">Status</span><span class="v"><span class="pill {{ .StatusClass }}">{{ .Status }}</span></span></div>
+        {{ end }}
+    </div>
 </div>
 
 <!-- Items table -->
-<div class="tbl-wrap">
 <table>
     <thead>
         <tr>
@@ -375,14 +294,12 @@ td.r { text-align: right; font-variant-numeric: tabular-nums; }
     {{ end }}
     </tbody>
 </table>
-</div>
 
 <!-- Summary -->
 <div class="sum-area"><div class="sum">
     {{ if .HasVAT }}
     <div class="sr"><span class="l">{{ .LB.Subtotal }}</span><span class="v">{{ .Subtotal }}</span></div>
     <div class="sr"><span class="l">{{ .TaxLabel }}</span><span class="v">{{ .TaxAmt }}</span></div>
-    <hr class="sum-line">
     {{ end }}
     <div class="grand">
         <span class="gl">{{ .LB.Total }}</span>
@@ -403,5 +320,6 @@ td.r { text-align: right; font-variant-numeric: tabular-nums; }
 <div class="pay-note">{{ .PayTerms }}{{ if .PayMethod }} {{ .PayMethod }}.{{ end }}</div>
 {{ end }}
 
+</div>
 </body>
 </html>
