@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/kiefer-networks/invoice-generator/internal/config"
 	"github.com/kiefer-networks/invoice-generator/internal/locale"
+	"github.com/kiefer-networks/invoice-generator/internal/paperless"
 	"github.com/kiefer-networks/invoice-generator/internal/pdfgen"
 	"github.com/kiefer-networks/invoice-generator/internal/render"
 	"github.com/kiefer-networks/invoice-generator/internal/zugferd"
@@ -33,18 +35,21 @@ USAGE
   invoice init company [--lang <code>]     Create company config template
   invoice init invoice [--lang <code>]     Create invoice template
   invoice init quote [--lang <code>]       Create quote template
+  invoice init paperless                   Create paperless.yaml upload config template
   invoice init template                    Extract HTML template for customization
   invoice version                          Show version
   invoice help                             Show this help
 
 FLAGS
-  -company <path>  Load separate company config file
-  -o <path>        Output PDF path (default: Rechnung_<nr>.pdf / Angebot_<nr>.pdf)
-  -zugferd         Embed ZUGFeRD/Factur-X XML (BASIC profile, EN 16931) — invoices only
-  -lang <code>     Override language
-  -html            Also save the rendered HTML file
-  -t <path>        Use custom HTML template (default: embedded)
-  -fpdf            Use built-in renderer (no Chrome needed)
+  -company <path>          Load separate company config file
+  -o <path>                Output PDF path (default: "<date>; <company>; Rechnung <nr>.pdf")
+  -zugferd                 Embed ZUGFeRD/Factur-X XML (BASIC profile, EN 16931) — invoices only
+  -lang <code>             Override language
+  -html                    Also save the rendered HTML file
+  -t <path>                Use custom HTML template (default: embedded)
+  -fpdf                    Use built-in renderer (no Chrome needed)
+  -paperless               Upload the generated PDF to Paperless-ngx
+  -paperless-config <path> Paperless config file (default: paperless.yaml next to -company, or the document)
 
 RENDERERS
   Default: HTML template → Chrome/Chromium/Edge → PDF (best quality)
@@ -86,15 +91,29 @@ CURRENCIES
   INR, BRL, AUD, CAD, NZD, MXN, ZAR, KRW, THB, and more.
 
 NUMBER FORMATS
-  The 'sprache:' field auto-sets decimal/thousand separators and
+  The 'language:' field auto-sets decimal/thousand separators and
   currency position. Override individual values under 'format:':
 
     format:
-      dezimal: ","
-      tausender: "."
-      waehrung_vor: false
-      waehrung_abstand: true
-      datum: "02.01.2006"
+      decimal_separator: ","
+      thousand_separator: "."
+      currency_before: false
+      currency_space: true
+      date: "02.01.2006"
+
+PAPERLESS UPLOAD
+  With -paperless the generated PDF is automatically uploaded to a
+  Paperless-ngx instance. Configure it once in paperless.yaml (url,
+  api_key, tags):
+
+    invoice init paperless
+    (edit paperless.yaml, or keep the key in paperless.local.yaml)
+    invoice -paperless -company company.yaml invoice.yaml
+
+  By default paperless.yaml is looked up next to -company (or next to
+  the document if -company isn't used); override with -paperless-config.
+  A failed upload is a warning, not an error — the PDF is always kept
+  locally either way.
 
 E-INVOICE
   With -zugferd an EN 16931 compliant e-invoice is generated (invoices
@@ -114,6 +133,7 @@ EXAMPLES
   invoice -zugferd -company company.yaml invoice.yaml
   invoice -html -company company.yaml invoice.yaml
   invoice -t custom.html -company company.yaml invoice.yaml
+  invoice -paperless -company company.yaml invoice.yaml
   invoice init template
 `)
 }
@@ -128,22 +148,25 @@ func handleInit(args []string) {
 	_ = fs.Parse(args) // flag.ExitOnError already terminates the process on a parse error
 
 	if fs.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: invoice init company|invoice|quote|template [--lang de]")
+		fmt.Fprintln(os.Stderr, "Usage: invoice init company|invoice|quote|paperless|template [--lang de]")
 		os.Exit(1)
 	}
 
 	switch fs.Arg(0) {
-	case "company", "firma":
+	case "company":
 		writeTemplate("company.yaml", companyTemplate(*lang))
 		ensureGitignoreHasLocalOverridePattern()
-	case "invoice", "rechnung":
+	case "invoice":
 		writeTemplate("invoice.yaml", invoiceTemplate(*lang))
-	case "quote", "angebot":
+	case "quote":
 		writeTemplate("quote.yaml", quoteTemplate(*lang))
+	case "paperless":
+		writeTemplate("paperless.yaml", paperlessTemplate())
+		ensureGitignoreHasLocalOverridePattern()
 	case "template":
 		writeTemplate("template.html", render.DefaultTemplate())
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown template: %s (expected: company, invoice, quote, or template)\n", fs.Arg(0))
+		fmt.Fprintf(os.Stderr, "Unknown template: %s (expected: company, invoice, quote, paperless, or template)\n", fs.Arg(0))
 		os.Exit(1)
 	}
 }
@@ -203,6 +226,8 @@ func handleGenerate(docType config.DocType, args []string) {
 	htmlOut := fs.Bool("html", false, "Also save HTML file")
 	tmplPath := fs.String("t", "", "Custom HTML template path")
 	useFpdf := fs.Bool("fpdf", false, "Use built-in renderer (no Chrome)")
+	paperlessFlag := fs.Bool("paperless", false, "Upload the generated PDF to Paperless-ngx")
+	paperlessConfigPath := fs.String("paperless-config", "", "Paperless config file (default: paperless.yaml next to -company, or the document)")
 	_ = fs.Parse(args) // flag.ExitOnError already terminates the process on a parse error
 
 	if fs.NArg() == 0 {
@@ -231,6 +256,7 @@ func handleGenerate(docType config.DocType, args []string) {
 	}
 
 	configDir := filepath.Dir(configPath)
+	paperlessSearchDir := configDir
 
 	// Merge company config
 	if *companyPath != "" {
@@ -248,6 +274,7 @@ func handleGenerate(docType config.DocType, args []string) {
 			fmt.Printf("Using local override:  %s\n", overridePath)
 		}
 		config.Merge(cfg, companyCfg)
+		paperlessSearchDir = filepath.Dir(absP)
 	}
 
 	// Override language
@@ -267,11 +294,11 @@ func handleGenerate(docType config.DocType, args []string) {
 
 	// Validate
 	if cfg.Company.Name == "" {
-		fmt.Fprintln(os.Stderr, "Error: firma.name is required")
+		fmt.Fprintln(os.Stderr, "Error: company.name is required")
 		os.Exit(1)
 	}
 	if cfg.Customer.Name == "" {
-		fmt.Fprintln(os.Stderr, "Error: kunde.name is required")
+		fmt.Fprintln(os.Stderr, "Error: customer.name is required")
 		os.Exit(1)
 	}
 	if len(cfg.Items) == 0 {
@@ -288,15 +315,22 @@ func handleGenerate(docType config.DocType, args []string) {
 		CurrencySpace:  cfg.Formatting.CurrencySpace,
 	})
 
-	// Output path
+	// Output path: "YYYYMMDD; <sender company>; Rechnung <nr>.pdf" (or
+	// "Angebot <nr>" for a quote) — YYYYMMDD is the generation date, not
+	// the invoice's own "datum" field, so re-running the tool later for
+	// the same invoice number produces a distinctly named file rather
+	// than silently overwriting an earlier draft.
 	out := *outputPath
 	if out == "" {
 		prefix := "Rechnung"
 		if docType == config.DocQuote {
 			prefix = "Angebot"
 		}
+		created := time.Now().Format("20060102")
+		company := config.SanitizeFilenamePart(cfg.Company.Name)
 		nr := config.SanitizeFilenamePart(fmt.Sprintf("%v", cfg.Invoice.Number))
-		out = filepath.Join(configDir, fmt.Sprintf("%s_%s.pdf", prefix, nr))
+		filename := fmt.Sprintf("%s; %s; %s %s.pdf", created, company, prefix, nr)
+		out = filepath.Join(configDir, filename)
 	}
 
 	// ZUGFeRD XML (invoices only — enforced above)
@@ -364,6 +398,33 @@ func handleGenerate(docType config.DocType, args []string) {
 	// PII and financial data. Best-effort — permission bits are largely a
 	// no-op on Windows/NTFS, but this is a real hardening on Unix systems.
 	_ = os.Chmod(out, 0600)
+
+	// Optionally upload to Paperless-ngx. Non-fatal: the PDF has already
+	// been generated and saved locally, so an unreachable/misconfigured
+	// Paperless instance should not turn a successful generation into a
+	// failed CLI run.
+	if *paperlessFlag {
+		plPath := *paperlessConfigPath
+		if plPath == "" {
+			plPath = filepath.Join(paperlessSearchDir, "paperless.yaml")
+		} else if absP, absErr := filepath.Abs(plPath); absErr == nil {
+			plPath = absP
+		}
+		plCfg, overridePath, plErr := paperless.LoadWithLocalOverride(plPath)
+		if plErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not load paperless config (%s): %v\n", plPath, plErr)
+		} else {
+			if overridePath != "" {
+				fmt.Printf("Using local override:  %s\n", overridePath)
+			}
+			title := strings.TrimSuffix(filepath.Base(out), filepath.Ext(out))
+			if err := paperless.Upload(plCfg, out, title); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: paperless upload failed: %v\n", err)
+			} else {
+				fmt.Println("Uploaded to Paperless.")
+			}
+		}
+	}
 
 	docLabel := "Invoice"
 	if docType == config.DocQuote {

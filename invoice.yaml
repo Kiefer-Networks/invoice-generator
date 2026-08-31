@@ -1,43 +1,43 @@
-kunde:
+customer:
   name: "Acme Corp"
-  ansprechpartner: "Jane Smith"
+  contact: "Jane Smith"
   email: "jane.smith@acme.example"
-  adresse: "Innovation Drive 7"
-  plz: "80331"
-  ort: "Munich"
-  land: "DE"
-  land_name: "Germany"
-  ust_id: "DE987654321"
+  address: "Innovation Drive 7"
+  zip: "80331"
+  city: "Munich"
+  country: "DE"
+  country_name: "Germany"
+  vat_id: "DE987654321"
 
-rechnung:
-  nummer: 2026-001
-  datum: "01.03.2026"
-  faelligkeit: "15.03.2026"
+invoice:
+  number: 2026-001
+  date: "01.03.2026"
+  due_date: "15.03.2026"
   status: "SENT"
 
-positionen:
-  - beschreibung: "Server security audit and hardening"
+items:
+  - description: "Server security audit and hardening"
     details: "Analysis of attack vectors, patching vulnerabilities, configuring firewall rules"
-    menge: 3.5
-    einheit: "hours"
-    preis: 95.00
+    quantity: 3.5
+    unit: "hours"
+    price: 95.00
 
-  - beschreibung: "System updates and maintenance"
+  - description: "System updates and maintenance"
     details: "OS updates, Docker environment maintenance, service restarts"
-    menge: 1.5
-    einheit: "hours"
-    preis: 95.00
+    quantity: 1.5
+    unit: "hours"
+    price: 95.00
 
-  - beschreibung: "Intrusion detection setup"
+  - description: "Intrusion detection setup"
     details: "Installation and configuration of CrowdSec and Fail2Ban"
-    menge: 2.0
-    einheit: "hours"
-    preis: 95.00
+    quantity: 2.0
+    unit: "hours"
+    price: 95.00
 
-  - beschreibung: "Cloud platform migration"
+  - description: "Cloud platform migration"
     details: "Nextcloud upgrade and data migration to new infrastructure"
-    menge: 4.0
-    einheit: "hours"
-    preis: 95.00
+    quantity: 4.0
+    unit: "hours"
+    price: 95.00
 
-notizen: "Thank you for your business."
+notes: "Thank you for your business."

@@ -3,29 +3,29 @@
 
 logo: "./logo.svg"
 
-sprache: "en"
-farbe: "#5B9BD5"
-waehrung: "EUR"
+language: "en"
+color: "#5B9BD5"
+currency: "EUR"
 
-firma:
+company:
   name: "Doe Digital Solutions"
-  adresse: "Musterstraße 42"
-  plz: "10115"
-  ort: "Berlin"
-  land: "DE"
-  telefon: "+49 30 12345678"
+  address: "Musterstraße 42"
+  zip: "10115"
+  city: "Berlin"
+  country: "DE"
+  phone: "+49 30 12345678"
   email: "info@doe-digital.example"
   website: "www.doe-digital.example"
-  ust_id: "DE123456789"
+  vat_id: "DE123456789"
   bank:
     name: "Example Bank"
     iban: "DE89 3704 0044 0532 0130 00"
     bic: "COBADEFFXXX"
-    kontoinhaber: "John Doe"
+    account_holder: "John Doe"
 
-mwst:
-  pflichtig: true
-  satz: 19.0
+vat:
+  liable: true
+  rate: 19.0
 
-zahlungsbedingungen: "Payable within 14 days of invoice date."
-zahlungsmethode: "Bank transfer"
+payment_terms: "Payable within 14 days of invoice date."
+payment_method: "Bank transfer"

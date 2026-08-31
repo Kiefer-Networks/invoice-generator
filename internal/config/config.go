@@ -14,72 +14,72 @@ import (
 )
 
 // ============================================================
-// Types – English names, German YAML/TOML tags for config compat
+// Types – English field names and English YAML/TOML tags
 // ============================================================
 
 type Config struct {
 	Logo       string    `yaml:"logo" toml:"logo"`
-	Language   string    `yaml:"sprache" toml:"sprache"`
-	Color      string    `yaml:"farbe" toml:"farbe"`
-	Currency   string    `yaml:"waehrung" toml:"waehrung"`
-	Company    Company   `yaml:"firma" toml:"firma"`
-	Customer   Customer  `yaml:"kunde" toml:"kunde"`
-	Invoice    InvInfo   `yaml:"rechnung" toml:"rechnung"`
-	Items      []Item    `yaml:"positionen" toml:"positionen"`
-	VAT        VATConfig `yaml:"mwst" toml:"mwst"`
-	Notice     string    `yaml:"hinweis" toml:"hinweis"`
-	Notes      string    `yaml:"notizen" toml:"notizen"`
-	PayTerms   string    `yaml:"zahlungsbedingungen" toml:"zahlungsbedingungen"`
-	PayMethod  string    `yaml:"zahlungsmethode" toml:"zahlungsmethode"`
-	Font       FontCfg   `yaml:"schrift" toml:"schrift"`
+	Language   string    `yaml:"language" toml:"language"`
+	Color      string    `yaml:"color" toml:"color"`
+	Currency   string    `yaml:"currency" toml:"currency"`
+	Company    Company   `yaml:"company" toml:"company"`
+	Customer   Customer  `yaml:"customer" toml:"customer"`
+	Invoice    InvInfo   `yaml:"invoice" toml:"invoice"`
+	Items      []Item    `yaml:"items" toml:"items"`
+	VAT        VATConfig `yaml:"vat" toml:"vat"`
+	Notice     string    `yaml:"notice" toml:"notice"`
+	Notes      string    `yaml:"notes" toml:"notes"`
+	PayTerms   string    `yaml:"payment_terms" toml:"payment_terms"`
+	PayMethod  string    `yaml:"payment_method" toml:"payment_method"`
+	Font       FontCfg   `yaml:"font" toml:"font"`
 	Formatting FmtCfg    `yaml:"format" toml:"format"`
 }
 
 type Company struct {
 	Name      string   `yaml:"name" toml:"name"`
-	Address   string   `yaml:"adresse" toml:"adresse"`
-	ZIP       string   `yaml:"plz" toml:"plz"`
-	City      string   `yaml:"ort" toml:"ort"`
-	Country   string   `yaml:"land" toml:"land"`
-	Phone     string   `yaml:"telefon" toml:"telefon"`
+	Address   string   `yaml:"address" toml:"address"`
+	ZIP       string   `yaml:"zip" toml:"zip"`
+	City      string   `yaml:"city" toml:"city"`
+	Country   string   `yaml:"country" toml:"country"`
+	Phone     string   `yaml:"phone" toml:"phone"`
 	Email     string   `yaml:"email" toml:"email"`
 	Website   string   `yaml:"website" toml:"website"`
-	TaxNumber string   `yaml:"steuernummer" toml:"steuernummer"`
-	VatID     string   `yaml:"ust_id" toml:"ust_id"`
-	CEO       string   `yaml:"geschaeftsfuehrer" toml:"geschaeftsfuehrer"`
-	Court     string   `yaml:"amtsgericht" toml:"amtsgericht"`
+	TaxNumber string   `yaml:"tax_number" toml:"tax_number"`
+	VatID     string   `yaml:"vat_id" toml:"vat_id"`
+	CEO       string   `yaml:"ceo" toml:"ceo"`
+	Court     string   `yaml:"court" toml:"court"`
 	Bank      BankInfo `yaml:"bank" toml:"bank"`
 }
 
 type BankInfo struct {
 	Name   string `yaml:"name" toml:"name"`
-	BLZ    string `yaml:"blz" toml:"blz"`
-	AcctNr string `yaml:"kontonr" toml:"kontonr"`
-	Holder string `yaml:"kontoinhaber" toml:"kontoinhaber"`
+	BLZ    string `yaml:"bank_code" toml:"bank_code"`
+	AcctNr string `yaml:"account_number" toml:"account_number"`
+	Holder string `yaml:"account_holder" toml:"account_holder"`
 	BIC    string `yaml:"bic" toml:"bic"`
 	IBAN   string `yaml:"iban" toml:"iban"`
 }
 
 type Customer struct {
 	Name        string `yaml:"name" toml:"name"`
-	Contact     string `yaml:"ansprechpartner" toml:"ansprechpartner"`
+	Contact     string `yaml:"contact" toml:"contact"`
 	Email       string `yaml:"email" toml:"email"`
-	Address     string `yaml:"adresse" toml:"adresse"`
-	ZIP         string `yaml:"plz" toml:"plz"`
-	City        string `yaml:"ort" toml:"ort"`
-	Country     string `yaml:"land" toml:"land"`
-	CountryName string `yaml:"land_name" toml:"land_name"`
-	VatID       string `yaml:"ust_id" toml:"ust_id"`
+	Address     string `yaml:"address" toml:"address"`
+	ZIP         string `yaml:"zip" toml:"zip"`
+	City        string `yaml:"city" toml:"city"`
+	Country     string `yaml:"country" toml:"country"`
+	CountryName string `yaml:"country_name" toml:"country_name"`
+	VatID       string `yaml:"vat_id" toml:"vat_id"`
 }
 
 type InvInfo struct {
-	Number  any    `yaml:"nummer" toml:"nummer"`
-	Date    string `yaml:"datum" toml:"datum"`
-	DueDate string `yaml:"faelligkeit" toml:"faelligkeit"`
+	Number  any    `yaml:"number" toml:"number"`
+	Date    string `yaml:"date" toml:"date"`
+	DueDate string `yaml:"due_date" toml:"due_date"`
 	Status  string `yaml:"status" toml:"status"`
 	// ValidUntil is used for quotes ("Angebot") instead of DueDate — the
 	// offer's expiry date rather than a payment due date.
-	ValidUntil string `yaml:"gueltig_bis" toml:"gueltig_bis"`
+	ValidUntil string `yaml:"valid_until" toml:"valid_until"`
 }
 
 // DocType distinguishes an invoice ("Rechnung") from a quote ("Angebot").
@@ -94,30 +94,30 @@ const (
 )
 
 type Item struct {
-	Description string  `yaml:"beschreibung" toml:"beschreibung"`
+	Description string  `yaml:"description" toml:"description"`
 	Details     string  `yaml:"details" toml:"details"`
-	Quantity    float64 `yaml:"menge" toml:"menge"`
-	Unit        string  `yaml:"einheit" toml:"einheit"`
-	Price       float64 `yaml:"preis" toml:"preis"`
+	Quantity    float64 `yaml:"quantity" toml:"quantity"`
+	Unit        string  `yaml:"unit" toml:"unit"`
+	Price       float64 `yaml:"price" toml:"price"`
 }
 
 type FontCfg struct {
-	Regular string `yaml:"normal" toml:"normal"`
-	Bold    string `yaml:"fett" toml:"fett"`
+	Regular string `yaml:"regular" toml:"regular"`
+	Bold    string `yaml:"bold" toml:"bold"`
 }
 
 type VATConfig struct {
-	Liable bool    `yaml:"pflichtig" toml:"pflichtig"`
-	Rate   float64 `yaml:"satz" toml:"satz"`
+	Liable bool    `yaml:"liable" toml:"liable"`
+	Rate   float64 `yaml:"rate" toml:"rate"`
 }
 
 type FmtCfg struct {
-	DateFmt        string `yaml:"datum" toml:"datum"`
-	DecimalSep     string `yaml:"dezimal" toml:"dezimal"`
-	ThousandSep    string `yaml:"tausender" toml:"tausender"`
-	CurrencySymbol string `yaml:"waehrung_symbol" toml:"waehrung_symbol"`
-	CurrencyBefore *bool  `yaml:"waehrung_vor" toml:"waehrung_vor"`
-	CurrencySpace  *bool  `yaml:"waehrung_abstand" toml:"waehrung_abstand"`
+	DateFmt        string `yaml:"date" toml:"date"`
+	DecimalSep     string `yaml:"decimal_separator" toml:"decimal_separator"`
+	ThousandSep    string `yaml:"thousand_separator" toml:"thousand_separator"`
+	CurrencySymbol string `yaml:"currency_symbol" toml:"currency_symbol"`
+	CurrencyBefore *bool  `yaml:"currency_before" toml:"currency_before"`
+	CurrencySpace  *bool  `yaml:"currency_space" toml:"currency_space"`
 }
 
 // ============================================================
@@ -279,7 +279,7 @@ func FindFonts(cfg *Config) (string, string, error) {
 			}
 		}
 	}
-	return "", "", fmt.Errorf("no TTF fonts found – install e.g.: sudo dnf install liberation-sans-fonts (Linux), or set schrift.normal/schrift.fett in the config, or INVOICE_FONT_REGULAR/INVOICE_FONT_BOLD env vars")
+	return "", "", fmt.Errorf("no TTF fonts found – install e.g.: sudo dnf install liberation-sans-fonts (Linux), or set font.regular/font.bold in the config, or INVOICE_FONT_REGULAR/INVOICE_FONT_BOLD env vars")
 }
 
 // ============================================================
@@ -338,6 +338,11 @@ func SanitizeFilenamePart(s string) string {
 	s = strings.ReplaceAll(s, "/", "-")
 	s = strings.ReplaceAll(s, "\\", "-")
 	s = strings.ReplaceAll(s, "..", "-")
+	// Characters invalid in Windows filenames (harmless to also strip
+	// them on Unix, where they're legal but awkward in filenames).
+	for _, c := range []string{":", "*", "?", "\"", "<", ">", "|"} {
+		s = strings.ReplaceAll(s, c, "")
+	}
 	s = strings.TrimSpace(s)
 	if s == "" {
 		s = "unnamed"

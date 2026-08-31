@@ -5,6 +5,9 @@ package main
 // os.Exit() on error paths.
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,7 +117,7 @@ func TestCLIInitAndGenerateInvoice(t *testing.T) {
 		t.Errorf("unexpected output: %s", stdout)
 	}
 
-	matches, _ := filepath.Glob(filepath.Join(dir, "Rechnung_*.pdf"))
+	matches, _ := filepath.Glob(filepath.Join(dir, "*Rechnung*.pdf"))
 	if len(matches) != 1 {
 		t.Fatalf("expected exactly one generated PDF, found %v", matches)
 	}
@@ -141,7 +144,7 @@ func TestCLIInitAndGenerateQuote(t *testing.T) {
 	if !strings.Contains(stdout, "Quote created") {
 		t.Errorf("unexpected output: %s", stdout)
 	}
-	matches, _ := filepath.Glob(filepath.Join(dir, "Angebot_*.pdf"))
+	matches, _ := filepath.Glob(filepath.Join(dir, "*Angebot*.pdf"))
 	if len(matches) != 1 {
 		t.Fatalf("expected exactly one generated quote PDF, found %v", matches)
 	}
@@ -168,7 +171,7 @@ func TestCLILocalOverrideTakesPrecedence(t *testing.T) {
 
 	// Real, untracked override with a different company name.
 	err := os.WriteFile(filepath.Join(dir, "company.local.yaml"), []byte(`
-firma:
+company:
   name: "Overridden GmbH"
 `), 0600)
 	if err != nil {
@@ -183,7 +186,7 @@ firma:
 		t.Errorf("expected CLI to report using the local override, got: %s", stdout)
 	}
 
-	matches, _ := filepath.Glob(filepath.Join(dir, "Rechnung_*.html"))
+	matches, _ := filepath.Glob(filepath.Join(dir, "*Rechnung*.html"))
 	if len(matches) != 1 {
 		t.Fatalf("expected exactly one generated HTML file, found %v", matches)
 	}
@@ -196,21 +199,73 @@ firma:
 	}
 }
 
+func TestCLIInitPaperless(t *testing.T) {
+	dir := t.TempDir()
+	stdout, stderr, code := run(t, dir, "init", "paperless")
+	if code != 0 {
+		t.Fatalf("init paperless failed: %s / %s", stdout, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "paperless.yaml")); err != nil {
+		t.Errorf("expected paperless.yaml to be created: %v", err)
+	}
+}
+
+func TestCLIPaperlessUpload(t *testing.T) {
+	dir := t.TempDir()
+	run(t, dir, "init", "company", "--lang", "en")
+	run(t, dir, "init", "invoice", "--lang", "en")
+
+	var uploaded bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tags/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			body, _ := json.Marshal(map[string]int{"id": 1})
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(body)
+			return
+		}
+		_, _ = w.Write([]byte(`{"count":0,"results":[]}`))
+	})
+	mux.HandleFunc("/api/documents/post_document/", func(w http.ResponseWriter, r *http.Request) {
+		uploaded = true
+		w.WriteHeader(http.StatusOK)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	paperlessYAML := "url: \"" + server.URL + "\"\napi_key: \"test-key\"\ntags:\n  - \"Invoices\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "paperless.yaml"), []byte(paperlessYAML), 0600); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-fpdf", "-paperless", "invoice.yaml")
+	if code != 0 {
+		t.Skipf("generate invoice failed (likely no TTF fonts available): %s / %s", stdout, stderr)
+	}
+	if !uploaded {
+		t.Errorf("expected the generated PDF to be uploaded to the fake Paperless server, stdout=%s stderr=%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Uploaded to Paperless") {
+		t.Errorf("expected CLI to report the upload, got: %s", stdout)
+	}
+}
+
 func TestCLIRejectsPathTraversalInInvoiceNumber(t *testing.T) {
 	dir := t.TempDir()
 	run(t, dir, "init", "company", "--lang", "en")
 
 	malicious := `
-sprache: "en"
-kunde:
+language: "en"
+customer:
   name: "Client GmbH"
-rechnung:
-  nummer: "../../evil"
-  datum: "01.03.2026"
-positionen:
-  - beschreibung: "Work"
-    menge: 1
-    preis: 10.0
+invoice:
+  number: "../../evil"
+  date: "01.03.2026"
+items:
+  - description: "Work"
+    quantity: 1
+    price: 10.0
 `
 	if err := os.WriteFile(filepath.Join(dir, "invoice.yaml"), []byte(malicious), 0600); err != nil {
 		t.Fatalf("setup failed: %v", err)

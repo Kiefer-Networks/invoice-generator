@@ -18,57 +18,57 @@ func companyTemplate(lang string) string {
 # logo: "./logo.png"
 
 # Language: de, en, fr, es, it, nl, pt
-sprache: "%s"
+language: "%s"
 
 # Accent color (hex)
-farbe: "#5B9BD5"
+color: "#5B9BD5"
 
 # Currency
-waehrung: "EUR"
+currency: "EUR"
 
-firma:
+company:
   name: "My Company GmbH"
-  adresse: "Sample Street 1"
-  plz: "12345"
-  ort: "Sample City"
-  land: "DE"
-  telefon: "+49 123 4567890"
+  address: "Sample Street 1"
+  zip: "12345"
+  city: "Sample City"
+  country: "DE"
+  phone: "+49 123 4567890"
   email: "info@mycompany.de"
   website: "www.mycompany.de"
-  steuernummer: "12/345/67890"
-  ust_id: "DE123456789"
-  geschaeftsfuehrer: "John Doe"
-  amtsgericht: "Sample City"
+  tax_number: "12/345/67890"
+  vat_id: "DE123456789"
+  ceo: "John Doe"
+  court: "Sample City"
   bank:
     name: "Sample Bank"
     iban: "DE89 3704 0044 0532 0130 00"
     bic: "COBADEFFXXX"
-    kontoinhaber: "John Doe"
+    account_holder: "John Doe"
 
 # VAT settings
-mwst:
-  pflichtig: true         # false = small business (no VAT shown)
-  satz: 19.0              # VAT rate in percent
+vat:
+  liable: true            # false = small business (no VAT shown)
+  rate: 19.0               # VAT rate in percent
 
 # Tax notice (small business exemption)
-# hinweis: "According to §19 UStG no VAT is charged."
+# notice: "According to §19 UStG no VAT is charged."
 
 # Payment information
-zahlungsbedingungen: "Payable within 14 days of invoice date."
-zahlungsmethode: "Bank transfer"
+payment_terms: "Payable within 14 days of invoice date."
+payment_method: "Bank transfer"
 
 # Formatting overrides (optional, overrides language defaults)
 # format:
-#   datum: "02.01.2006"         # Go date format
-#   dezimal: ","
-#   tausender: "."
-#   waehrung_vor: false
-#   waehrung_abstand: true
+#   date: "02.01.2006"          # Go date format
+#   decimal_separator: ","
+#   thousand_separator: "."
+#   currency_before: false
+#   currency_space: true
 
 # Custom fonts (optional)
-# schrift:
-#   normal: "/path/to/font.ttf"
-#   fett: "/path/to/font-bold.ttf"
+# font:
+#   regular: "/path/to/font.ttf"
+#   bold: "/path/to/font-bold.ttf"
 `, lang)
 }
 
@@ -81,40 +81,40 @@ func invoiceTemplate(lang string) string {
 # ============================================================
 
 # Language (or set in company.yaml)
-sprache: "%s"
+language: "%s"
 
-kunde:
+customer:
   name: "Sample GmbH"
-  ansprechpartner: "Jane Doe"
+  contact: "Jane Doe"
   email: "jane@sample.de"
-  adresse: "Client Road 42"
-  plz: "54321"
-  ort: "Client City"
-  land: "DE"
-  land_name: "Germany"
-  ust_id: "DE987654321"
+  address: "Client Road 42"
+  zip: "54321"
+  city: "Client City"
+  country: "DE"
+  country_name: "Germany"
+  vat_id: "DE987654321"
 
-rechnung:
-  nummer: 2026-001
-  datum: "01.03.2026"
-  faelligkeit: "15.03.2026"
+invoice:
+  number: 2026-001
+  date: "01.03.2026"
+  due_date: "15.03.2026"
   # status: "SENT"
 
-positionen:
-  - beschreibung: "Web Development"
+items:
+  - description: "Web Development"
     details: "New landing page development"
-    menge: 10
-    einheit: "Stunde(n)"
-    preis: 85.00
+    quantity: 10
+    unit: "hour(s)"
+    price: 85.00
 
-  - beschreibung: "Server Maintenance"
+  - description: "Server Maintenance"
     details: "Monthly maintenance and updates"
-    menge: 1
-    einheit: "Pauschal"
-    preis: 150.00
+    quantity: 1
+    unit: "flat"
+    price: 150.00
 
 # Notes (shown at the bottom of the invoice)
-notizen: "Thank you for your business."
+notes: "Thank you for your business."
 `, lang)
 }
 
@@ -128,39 +128,60 @@ func quoteTemplate(lang string) string {
 # ============================================================
 
 # Language (or set in company.yaml)
-sprache: "%s"
+language: "%s"
 
-kunde:
+customer:
   name: "Sample GmbH"
-  ansprechpartner: "Jane Doe"
+  contact: "Jane Doe"
   email: "jane@sample.de"
-  adresse: "Client Road 42"
-  plz: "54321"
-  ort: "Client City"
-  land: "DE"
-  land_name: "Germany"
-  ust_id: "DE987654321"
+  address: "Client Road 42"
+  zip: "54321"
+  city: "Client City"
+  country: "DE"
+  country_name: "Germany"
+  vat_id: "DE987654321"
 
-rechnung:
-  nummer: A-2026-001
-  datum: "01.03.2026"
-  gueltig_bis: "31.03.2026"
+invoice:
+  number: A-2026-001
+  date: "01.03.2026"
+  valid_until: "31.03.2026"
   # status: "DRAFT"
 
-positionen:
-  - beschreibung: "Web Development"
+items:
+  - description: "Web Development"
     details: "New landing page development"
-    menge: 10
-    einheit: "Stunde(n)"
-    preis: 85.00
+    quantity: 10
+    unit: "hour(s)"
+    price: 85.00
 
-  - beschreibung: "Server Maintenance"
+  - description: "Server Maintenance"
     details: "Monthly maintenance and updates"
-    menge: 1
-    einheit: "Pauschal"
-    preis: 150.00
+    quantity: 1
+    unit: "flat"
+    price: 150.00
 
 # Notes (shown at the bottom of the quote)
-notizen: "This quote is non-binding and valid until the date above."
+notes: "This quote is non-binding and valid until the date above."
 `, lang)
+}
+
+func paperlessTemplate() string {
+	return `# ============================================================
+# Paperless-ngx upload config (paperless.yaml)
+# Usage: invoice -paperless -company company.yaml invoice.yaml
+#
+# TIP: the API key is a real secret. Keep it out of version control by
+# creating a "paperless.local.yaml" next to this file with the same
+# keys — it is loaded automatically and overrides these values. It is
+# gitignored by default (see .gitignore: *.local.yaml).
+# ============================================================
+
+url: "https://paperless.example.com"
+api_key: "your-paperless-api-key"
+
+# Tags to apply to the uploaded document (created automatically in
+# Paperless if they don't exist yet).
+tags:
+  - "Invoices"
+`
 }

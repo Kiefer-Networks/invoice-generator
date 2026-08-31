@@ -56,37 +56,37 @@ func writeTempConfig(t *testing.T, name, content string) string {
 }
 
 const sampleYAML = `
-sprache: "en"
-firma:
+language: "en"
+company:
   name: "Test GmbH"
-kunde:
+customer:
   name: "Client GmbH"
-rechnung:
-  nummer: 2026-001
-  datum: "01.03.2026"
-positionen:
-  - beschreibung: "Work"
-    menge: 2
-    preis: 50.0
+invoice:
+  number: 2026-001
+  date: "01.03.2026"
+items:
+  - description: "Work"
+    quantity: 2
+    price: 50.0
 `
 
 const sampleTOML = `
-sprache = "en"
+language = "en"
 
-[firma]
+[company]
 name = "Test GmbH"
 
-[kunde]
+[customer]
 name = "Client GmbH"
 
-[rechnung]
-nummer = "2026-001"
-datum = "01.03.2026"
+[invoice]
+number = "2026-001"
+date = "01.03.2026"
 
-[[positionen]]
-beschreibung = "Work"
-menge = 2
-preis = 50.0
+[[items]]
+description = "Work"
+quantity = 2
+price = 50.0
 `
 
 func TestLoadYAML(t *testing.T) {
@@ -177,14 +177,14 @@ func TestLoadWithLocalOverrideAppliesWhenPresent(t *testing.T) {
 	local := filepath.Join(dir, "company.local.yaml")
 
 	os.WriteFile(base, []byte(`
-firma:
+company:
   name: "Template GmbH"
-waehrung: "EUR"
+currency: "EUR"
 `), 0600)
 	os.WriteFile(local, []byte(`
-firma:
+company:
   name: "Real Company GmbH"
-  ust_id: "DE999999999"
+  vat_id: "DE999999999"
 `), 0600)
 
 	cfg, overridePath, err := LoadWithLocalOverride(base)
@@ -208,7 +208,7 @@ firma:
 func TestLoadWithLocalOverrideAbsentIsNoop(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "company.yaml")
-	os.WriteFile(base, []byte(`firma:
+	os.WriteFile(base, []byte(`company:
   name: "Only Base GmbH"
 `), 0600)
 
@@ -253,11 +253,12 @@ func TestMergeFillsOnlyEmptyFields(t *testing.T) {
 
 func TestSanitizeFilenamePart(t *testing.T) {
 	cases := map[string]string{
-		"2026-001":   "2026-001",
-		"a/b\\c":     "a-b-c",
-		"":           "unnamed",
-		"  ":         "unnamed",
-		"foo\x00bar": "foobar",
+		"2026-001":             "2026-001",
+		"a/b\\c":               "a-b-c",
+		"":                     "unnamed",
+		"  ":                   "unnamed",
+		"foo\x00bar":           "foobar",
+		`Acme: "Best" <Co>?*|`: "Acme Best Co",
 	}
 	for in, want := range cases {
 		if got := SanitizeFilenamePart(in); got != want {
