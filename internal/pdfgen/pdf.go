@@ -51,19 +51,17 @@ func wrapText(pdf *fpdf.Fpdf, text string, maxW float64) []string {
 	return append(lines, current)
 }
 
-// statusColor returns an RGB color for known invoice statuses.
-func statusColor(status string) (int, int, int) {
+// statusColor returns the (background, text) RGB pair for a status pill,
+// matching the light/dezent pill styling of the HTML template's .pill
+// classes (no status falls back to a plain gray pill).
+func statusColor(status string) (bg, text [3]int) {
 	switch strings.ToUpper(status) {
 	case "PAID":
-		return 34, 153, 84 // green
-	case "SENT":
-		return 255, 255, 255 // white text on header
+		return [3]int{227, 244, 234}, [3]int{26, 143, 82} // light green / green
 	case "OVERDUE":
-		return 220, 53, 69 // red
-	case "DRAFT":
-		return 200, 200, 210 // gray
+		return [3]int{251, 231, 231}, [3]int{200, 53, 47} // light red / red
 	default:
-		return 255, 193, 7 // amber
+		return [3]int{242, 244, 246}, [3]int{118, 127, 140} // light gray / soft gray
 	}
 }
 
@@ -89,13 +87,17 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 	pageW, pageH := pdf.GetPageSize()
 	cw := pageW - lm - rm // usable content width
 
-	// Accent color
+	// Accent color — used sparingly: the total-due bar and nothing else.
 	aR, aG, aB := locale.ParseColor(cfg.Color)
 
-	// Darker shade of accent for header gradient effect
-	dR := int(float64(aR) * 0.85)
-	dG := int(float64(aG) * 0.85)
-	dB := int(float64(aB) * 0.85)
+	// Ink/soft/faint/line grays, matching the HTML template's palette.
+	const (
+		inkR, inkG, inkB          = 28, 33, 38
+		softR, softG, softB       = 118, 127, 140
+		faiR, faiG, faiB          = 164, 172, 184
+		lineR, lineG, lineB       = 221, 226, 232
+		headBgR, headBgG, headBgB = 242, 244, 246
+	)
 
 	// Currency
 	curr := cfg.Currency
@@ -151,131 +153,50 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 
 	pdf.AddPage()
 
-	// ========== COLORED HEADER BAND ==========
-	// Height grows with the number of sender address lines (Street / ZIP
-	// City / Country) so a 3-line ISO-style address never overflows into
-	// the white area below the header.
-	companyAddrLines := config.AddressLines(cfg.Company.Address, cfg.Company.ZIP, cfg.Company.City, cfg.Company.Country, "", cfg.Language)
-	headerH := 42.0
-	if extra := len(companyAddrLines) - 2; extra > 0 {
-		headerH += float64(extra) * 3.8
-	}
-	pdf.SetFillColor(aR, aG, aB)
-	pdf.Rect(0, 0, pageW, headerH, "F")
-	// Subtle darker strip at bottom of header
-	pdf.SetFillColor(dR, dG, dB)
-	pdf.Rect(0, headerH-2, pageW, 2, "F")
+	// ========== HEADER: plain title + logo ==========
+	pdf.SetFont("inv", "B", 22)
+	pdf.SetTextColor(inkR, inkG, inkB)
+	pdf.SetXY(lm, 14)
+	pdf.CellFormat(100, 10, docTitle, "", 0, "L", false, 0, "")
 
-	// Invoice title (white, large)
-	pdf.SetFont("inv", "B", 30)
-	pdf.SetTextColor(255, 255, 255)
-	pdf.SetXY(lm, 6)
-	pdf.CellFormat(100, 12, docTitle, "", 0, "L", false, 0, "")
-
-	// Company name (white)
-	pdf.SetFont("inv", "B", 11)
-	pdf.SetXY(lm, 19)
-	pdf.CellFormat(100, 5, cfg.Company.Name, "", 2, "L", false, 0, "")
-
-	// Company address details (white, smaller): Street / ZIP City / Country
-	pdf.SetFont("inv", "", 8)
-	pdf.SetTextColor(230, 240, 255)
-	for _, l := range companyAddrLines {
-		pdf.SetX(lm)
-		pdf.CellFormat(100, 3.8, l, "", 2, "L", false, 0, "")
-	}
-
-	// Right side: invoice details (white text on header)
-	rightX := pageW - rm - 68.0
-	detY := 8.0
-	pdf.SetFont("inv", "", 8.5)
-	pdf.SetTextColor(220, 230, 245)
-
-	type detRow struct {
-		label, value string
-	}
-	details := []detRow{
-		{docNrLabel, fmt.Sprintf("%v", cfg.Invoice.Number)},
-		{lb.InvoiceDate, loc.FormatDate(cfg.Invoice.Date)},
-		{dueDateLabel, loc.FormatDate(dueDateValue)},
-	}
-	for _, d := range details {
-		pdf.SetXY(rightX, detY)
-		pdf.SetFont("inv", "", 8)
-		pdf.CellFormat(30, 5, d.label+":", "", 0, "L", false, 0, "")
-		pdf.SetFont("inv", "B", 8.5)
-		pdf.SetTextColor(255, 255, 255)
-		pdf.CellFormat(38, 5, d.value, "", 0, "R", false, 0, "")
-		pdf.SetTextColor(220, 230, 245)
-		detY += 6
-	}
-
-	// Status badge
-	if cfg.Invoice.Status != "" {
-		detY += 1
-		badgeText := "  " + cfg.Invoice.Status + "  "
-		pdf.SetFont("inv", "B", 8)
-		badgeW := pdf.GetStringWidth(badgeText) + 4
-		badgeX := pageW - rm - badgeW
-		// White pill-shaped badge
-		pdf.SetFillColor(255, 255, 255)
-		pdf.RoundedRect(badgeX, detY, badgeW, 6.5, 1.5, "1234", "F")
-		sR, sG, sB := statusColor(cfg.Invoice.Status)
-		if sR == 255 && sG == 255 && sB == 255 {
-			// White status → use accent color text instead
-			pdf.SetTextColor(aR, aG, aB)
-		} else {
-			pdf.SetTextColor(sR, sG, sB)
-		}
-		pdf.SetXY(badgeX, detY+0.5)
-		pdf.CellFormat(badgeW, 5.5, badgeText, "", 0, "C", false, 0, "")
-	}
-
-	// Logo overlay (if present, positioned in header area)
 	if cfg.Logo != "" {
 		if _, statErr := os.Stat(cfg.Logo); statErr == nil {
 			opts := fpdf.ImageOptions{ReadDpi: true}
 			info := pdf.RegisterImageOptions(cfg.Logo, opts)
 			if info != nil {
-				imgH := 16.0
+				imgH := 14.0
 				imgW := info.Width() / info.Height() * imgH
-				if imgW > 24 {
-					imgW = 24
+				if imgW > 60 {
+					imgW = 60
 					imgH = info.Height() / info.Width() * imgW
 				}
-				// Place at right side before the details
-				logoX := rightX - imgW - 6
-				logoY := 8.0
-				// White background circle/rect behind logo
-				pdf.SetFillColor(255, 255, 255)
-				pdf.RoundedRect(logoX-2, logoY-1, imgW+4, imgH+2, 2, "1234", "F")
-				pdf.ImageOptions(cfg.Logo, logoX, logoY, imgW, imgH, false, opts, 0, "")
+				pdf.ImageOptions(cfg.Logo, pageW-rm-imgW, 14, imgW, imgH, false, opts, 0, "")
 			}
 		}
 	}
 
-	// ========== TAX ID LINE (below header) ==========
-	taxIDy := headerH + 2
+	// ========== ONE-LINE SENDER IDENTITY ==========
+	companyAddrLines := config.AddressLines(cfg.Company.Address, cfg.Company.ZIP, cfg.Company.City, cfg.Company.Country, "", cfg.Language)
 	taxID := cfg.Company.VatID
 	if taxID == "" {
 		taxID = cfg.Company.TaxNumber
 	}
-	if taxID != "" {
-		pdf.SetFont("inv", "", 7.5)
-		pdf.SetTextColor(140, 140, 140)
-		pdf.SetXY(lm, taxIDy)
-		pdf.CellFormat(cw, 4, lb.TaxID+": "+taxID, "", 0, "L", false, 0, "")
-		taxIDy += 5
+	letterline := cfg.Company.Name
+	for _, l := range companyAddrLines {
+		letterline += ", " + l
 	}
+	if taxID != "" {
+		letterline += "  ·  " + lb.TaxID + ": " + taxID
+	}
+	pdf.SetFont("inv", "", 8)
+	pdf.SetTextColor(softR, softG, softB)
+	pdf.SetXY(lm, 30)
+	pdf.MultiCell(cw, 3.8, letterline, "", "L", false)
 
-	// ========== CUSTOMER SECTION ==========
-	custStartY := taxIDy + 1
-	pdf.SetFont("inv", "B", 8.5)
-	pdf.SetTextColor(aR, aG, aB)
-	pdf.SetXY(lm, custStartY)
-	pdf.CellFormat(60, 4.5, lb.InvoiceTo, "", 0, "L", false, 0, "")
+	// ========== BILL TO (left) + META (right) ==========
+	topY := pdf.GetY() + 6
 
-	// Build customer lines: contact person, then Street / ZIP City / Country,
+	// Customer lines: contact person, then Street / ZIP City / Country,
 	// then VAT ID. No email/phone here — this is the postal address block.
 	var custLines []string
 	if cfg.Customer.Contact != "" {
@@ -289,61 +210,87 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 		custLines = append(custLines, lb.TaxID+": "+cfg.Customer.VatID)
 	}
 
-	// Customer card with light background and left accent border
-	cardY := custStartY + 5.5
-	cardH := 6 + float64(len(custLines))*4.0 + 2
-	cardW := cw*0.55 + 10
+	pdf.SetFont("inv", "B", 9)
+	pdf.SetTextColor(inkR, inkG, inkB)
+	pdf.SetXY(lm, topY)
+	pdf.CellFormat(cw*0.5, 4.5, lb.InvoiceTo, "", 2, "L", false, 0, "")
 
-	// Light gray background
-	pdf.SetFillColor(247, 248, 250)
-	pdf.Rect(lm, cardY, cardW, cardH, "F")
-	// Left accent border
-	pdf.SetFillColor(aR, aG, aB)
-	pdf.Rect(lm, cardY, 1.2, cardH, "F")
+	pdf.SetFont("inv", "", 10.5)
+	pdf.SetX(lm)
+	pdf.CellFormat(cw*0.5, 5, cfg.Customer.Name, "", 2, "L", false, 0, "")
 
-	// Customer name
-	pdf.SetFont("inv", "B", 11)
-	pdf.SetTextColor(40, 40, 40)
-	pdf.SetXY(lm+5, cardY+2)
-	pdf.CellFormat(cardW-8, 5.5, cfg.Customer.Name, "", 2, "L", false, 0, "")
-
-	// Customer details
-	pdf.SetFont("inv", "", 8)
-	pdf.SetTextColor(80, 80, 80)
+	pdf.SetFont("inv", "", 9)
+	pdf.SetTextColor(softR, softG, softB)
 	for _, line := range custLines {
-		pdf.SetX(lm + 5)
-		pdf.CellFormat(cardW-8, 4.0, line, "", 2, "L", false, 0, "")
+		pdf.SetX(lm)
+		pdf.CellFormat(cw*0.5, 4.3, line, "", 2, "L", false, 0, "")
+	}
+	billToBottomY := pdf.GetY()
+
+	// Meta block: right-aligned mini table of label/value rows.
+	metaW := 62.0
+	metaX := pageW - rm - metaW
+	metaY := topY
+	type detRow struct{ label, value string }
+	details := []detRow{
+		{docNrLabel, fmt.Sprintf("%v", cfg.Invoice.Number)},
+		{lb.InvoiceDate, loc.FormatDate(cfg.Invoice.Date)},
+		{dueDateLabel, loc.FormatDate(dueDateValue)},
+	}
+	for _, d := range details {
+		pdf.SetXY(metaX, metaY)
+		pdf.SetFont("inv", "", 8.5)
+		pdf.SetTextColor(softR, softG, softB)
+		pdf.CellFormat(metaW*0.5, 5, d.label, "", 0, "L", false, 0, "")
+		pdf.SetFont("inv", "B", 8.5)
+		pdf.SetTextColor(inkR, inkG, inkB)
+		pdf.CellFormat(metaW*0.5, 5, d.value, "", 0, "R", false, 0, "")
+		metaY += 5.5
+	}
+	if cfg.Invoice.Status != "" {
+		bg, txt := statusColor(cfg.Invoice.Status)
+		badgeText := "  " + cfg.Invoice.Status + "  "
+		pdf.SetFont("inv", "B", 7.5)
+		badgeW := pdf.GetStringWidth(badgeText) + 2
+		badgeX := metaX + metaW - badgeW
+		pdf.SetFillColor(bg[0], bg[1], bg[2])
+		pdf.RoundedRect(badgeX, metaY, badgeW, 5.5, 2.5, "1234", "F")
+		pdf.SetTextColor(txt[0], txt[1], txt[2])
+		pdf.SetXY(badgeX, metaY+0.4)
+		pdf.CellFormat(badgeW, 5, badgeText, "", 0, "C", false, 0, "")
+		metaY += 7
 	}
 
 	// ========== ITEMS TABLE ==========
-	tableStartY := cardY + cardH + 5
-	pdf.SetXY(lm, tableStartY)
-	pdf.SetFont("inv", "B", 8.5)
-	pdf.SetTextColor(aR, aG, aB)
-	pdf.CellFormat(cw, 4.5, lb.Details, "", 0, "L", false, 0, "")
-
-	tableY := tableStartY + 6
+	tableY := billToBottomY
+	if metaY > tableY {
+		tableY = metaY
+	}
+	tableY += 10
 	pdf.SetY(tableY)
 
 	// Column widths: description, qty, unit price, amount
 	colW := []float64{90, 18, 33, 33} // = 174
 
-	// Table header
+	// Table header: light gray background, bold black uppercase labels —
+	// matching the HTML template's thead styling.
 	drawTableHdr := func() {
 		y := pdf.GetY()
-		pdf.SetFillColor(aR, aG, aB)
-		pdf.SetTextColor(255, 255, 255)
+		pdf.SetFillColor(headBgR, headBgG, headBgB)
+		pdf.Rect(lm, y, cw, 7, "F")
+		pdf.SetTextColor(inkR, inkG, inkB)
 		pdf.SetFont("inv", "B", 7.5)
-		// Rounded-ish header (top corners)
-		pdf.RoundedRect(lm, y, cw, 7, 1.5, "12", "F")
 		hdrs := []string{lb.Description, lb.Quantity, lb.UnitPrice, lb.Amount}
 		aligns := []string{"L", "R", "R", "R"}
 		x := lm
 		for i, h := range hdrs {
 			pdf.SetXY(x+2, y+0.5)
-			pdf.CellFormat(colW[i]-4, 6, h, "", 0, aligns[i], false, 0, "")
+			pdf.CellFormat(colW[i]-4, 6, strings.ToUpper(h), "", 0, aligns[i], false, 0, "")
 			x += colW[i]
 		}
+		pdf.SetDrawColor(lineR, lineG, lineB)
+		pdf.SetLineWidth(0.2)
+		pdf.Line(lm, y+7, lm+cw, y+7)
 		pdf.SetXY(lm, y+7)
 	}
 	drawTableHdr()
@@ -351,7 +298,7 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 	lineH := 4.0
 
 	// Data rows with alternating backgrounds
-	for idx, item := range cfg.Items {
+	for _, item := range cfg.Items {
 		amount := math.Round(item.Quantity*item.Price*100) / 100
 
 		descW := colW[0] - 6
@@ -369,40 +316,32 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 		// Page break check
 		if pdf.GetY()+rowH > pageH-25 {
 			pdf.AddPage()
-			// Re-draw header band on continuation pages (thin accent bar)
-			pdf.SetFillColor(aR, aG, aB)
-			pdf.Rect(0, 0, pageW, 3, "F")
-			pdf.SetY(8)
+			pdf.SetY(14)
 			drawTableHdr()
 		}
 
 		x0, y0 := lm, pdf.GetY()
 
-		// Alternating row background
-		if idx%2 == 1 {
-			pdf.SetFillColor(247, 248, 252)
-			pdf.Rect(x0, y0, cw, rowH, "F")
-		}
-
-		// Subtle bottom border
-		pdf.SetDrawColor(230, 230, 235)
+		// Hairline row separator (no zebra striping) — matching the
+		// HTML template's plain, quiet table rows.
+		pdf.SetDrawColor(lineR, lineG, lineB)
 		pdf.SetLineWidth(0.15)
 		pdf.Line(x0, y0+rowH, x0+cw, y0+rowH)
 
 		// Description text
 		yy := y0 + 2
-		pdf.SetFont("inv", "B", 7.5)
-		pdf.SetTextColor(40, 40, 40)
+		pdf.SetFont("inv", "", 7.5)
+		pdf.SetTextColor(inkR, inkG, inkB)
 		for _, l := range titleLines {
-			pdf.SetXY(x0+3, yy)
+			pdf.SetXY(x0+2, yy)
 			pdf.CellFormat(descW, lineH, l, "", 0, "L", false, 0, "")
 			yy += lineH
 		}
 		if len(detLines) > 0 {
 			pdf.SetFont("inv", "", 7.5)
-			pdf.SetTextColor(100, 100, 100)
+			pdf.SetTextColor(softR, softG, softB)
 			for _, l := range detLines {
-				pdf.SetXY(x0+3, yy)
+				pdf.SetXY(x0+2, yy)
 				pdf.CellFormat(descW, lineH, l, "", 0, "L", false, 0, "")
 				yy += lineH
 			}
@@ -411,7 +350,7 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 		// Numeric columns (vertically centered)
 		midY := y0 + (rowH-lineH)/2
 		pdf.SetFont("inv", "", 7.5)
-		pdf.SetTextColor(60, 60, 60)
+		pdf.SetTextColor(inkR, inkG, inkB)
 
 		x := x0 + colW[0]
 		pdf.SetXY(x, midY)
@@ -424,71 +363,76 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 		x += colW[2]
 		pdf.SetXY(x, midY)
 		pdf.SetFont("inv", "B", 7.5)
-		pdf.SetTextColor(40, 40, 40)
 		pdf.CellFormat(colW[3]-4, lineH, loc.FormatCurrency(amount, curr), "", 0, "R", false, 0, "")
 
 		pdf.SetXY(x0, y0+rowH)
 	}
 
 	// ========== SUMMARY SECTION ==========
+	// A bordered box (matching the HTML template's .sum) with plain
+	// subtotal/tax rows and a solid-accent "total due" row at the bottom.
 	sumW := 78.0
 	sumX := pageW - rm - sumW
 	sumY := pdf.GetY() + 4
 
-	// Page break check
-	if sumY+55 > pageH-25 {
-		pdf.AddPage()
-		pdf.SetFillColor(aR, aG, aB)
-		pdf.Rect(0, 0, pageW, 3, "F")
-		sumY = 10
+	sumRowH := 7.0
+	totalBarH := 8.0
+	boxH := totalBarH
+	if cfg.VAT.Liable && cfg.VAT.Rate > 0 {
+		boxH += sumRowH * 2
 	}
 
+	// Page break check
+	if sumY+boxH > pageH-25 {
+		pdf.AddPage()
+		sumY = 14
+	}
+
+	boxY := sumY
 	sumLabelW := sumW * 0.55
 	sumValueW := sumW * 0.45
-	sumRowH := 6.0
 
 	if cfg.VAT.Liable && cfg.VAT.Rate > 0 {
+		pdf.SetDrawColor(lineR, lineG, lineB)
+		pdf.SetLineWidth(0.2)
+
 		// Subtotal row
-		pdf.SetXY(sumX, sumY)
-		pdf.SetFont("inv", "", 8.5)
-		pdf.SetTextColor(100, 100, 100)
-		pdf.CellFormat(sumLabelW, sumRowH, lb.Subtotal, "", 0, "L", false, 0, "")
-		pdf.SetFont("inv", "", 8.5)
-		pdf.SetTextColor(60, 60, 60)
-		pdf.CellFormat(sumValueW, sumRowH, loc.FormatCurrency(netTotal, curr), "", 0, "R", false, 0, "")
+		pdf.SetXY(sumX+4, sumY+1.5)
+		pdf.SetFont("inv", "B", 8)
+		pdf.SetTextColor(softR, softG, softB)
+		pdf.CellFormat(sumLabelW-4, sumRowH-3, lb.Subtotal, "", 0, "L", false, 0, "")
+		pdf.SetTextColor(inkR, inkG, inkB)
+		pdf.CellFormat(sumValueW-4, sumRowH-3, loc.FormatCurrency(netTotal, curr), "", 0, "R", false, 0, "")
+		pdf.Line(sumX, sumY+sumRowH, sumX+sumW, sumY+sumRowH)
 		sumY += sumRowH
 
 		// Tax row
 		taxLabel := fmt.Sprintf("%s (%s%%)", lb.Tax, loc.FormatQuantity(cfg.VAT.Rate))
-		pdf.SetXY(sumX, sumY)
-		pdf.SetFont("inv", "", 8.5)
-		pdf.SetTextColor(100, 100, 100)
-		pdf.CellFormat(sumLabelW, sumRowH, taxLabel, "", 0, "L", false, 0, "")
-		pdf.SetFont("inv", "", 8.5)
-		pdf.SetTextColor(60, 60, 60)
-		pdf.CellFormat(sumValueW, sumRowH, loc.FormatCurrency(taxAmt, curr), "", 0, "R", false, 0, "")
-		sumY += sumRowH + 2
-
-		// Thin separator
-		pdf.SetDrawColor(200, 200, 200)
-		pdf.SetLineWidth(0.3)
-		pdf.Line(sumX, sumY, sumX+sumW, sumY)
-		sumY += 3
+		pdf.SetXY(sumX+4, sumY+1.5)
+		pdf.SetTextColor(softR, softG, softB)
+		pdf.CellFormat(sumLabelW-4, sumRowH-3, taxLabel, "", 0, "L", false, 0, "")
+		pdf.SetTextColor(inkR, inkG, inkB)
+		pdf.CellFormat(sumValueW-4, sumRowH-3, loc.FormatCurrency(taxAmt, curr), "", 0, "R", false, 0, "")
+		pdf.Line(sumX, sumY+sumRowH, sumX+sumW, sumY+sumRowH)
+		sumY += sumRowH
 	}
 
-	// Grand total bar (accent color background, white text)
-	totalBarH := 10.0
+	// Grand total row (solid accent background, white text)
 	pdf.SetFillColor(aR, aG, aB)
-	pdf.RoundedRect(sumX, sumY, sumW, totalBarH, 1.5, "1234", "F")
-	pdf.SetFont("inv", "B", 11)
+	pdf.Rect(sumX, sumY, sumW, totalBarH, "F")
+	pdf.SetFont("inv", "B", 9.5)
 	pdf.SetTextColor(255, 255, 255)
-	pdf.SetXY(sumX+4, sumY+1)
-	pdf.CellFormat(sumLabelW-4, totalBarH-2, lb.Total, "", 0, "L", false, 0, "")
-	pdf.SetFont("inv", "B", 12)
-	pdf.CellFormat(sumValueW-4, totalBarH-2, loc.FormatCurrency(grossTotal, curr), "", 0, "R", false, 0, "")
+	pdf.SetXY(sumX+4, sumY+0.5)
+	pdf.CellFormat(sumLabelW-4, totalBarH-1, lb.Total, "", 0, "L", false, 0, "")
+	pdf.CellFormat(sumValueW-4, totalBarH-1, loc.FormatCurrency(grossTotal, curr), "", 0, "R", false, 0, "")
 	sumY += totalBarH
 
-	pdf.SetY(sumY + 2)
+	// Outer box border
+	pdf.SetDrawColor(lineR, lineG, lineB)
+	pdf.SetLineWidth(0.2)
+	pdf.Rect(sumX, boxY, sumW, sumY-boxY, "D")
+
+	pdf.SetY(sumY + 3)
 
 	// ========== TAX NOTICE (small business exemption etc.) ==========
 	if cfg.Notice != "" {
@@ -508,26 +452,19 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 		notesY := pdf.GetY() + 4
 		if notesY > pageH-35 {
 			pdf.AddPage()
-			pdf.SetFillColor(aR, aG, aB)
-			pdf.Rect(0, 0, pageW, 3, "F")
-			notesY = 10
+			notesY = 14
 		}
 
-		pdf.SetFont("inv", "B", 8.5)
-		pdf.SetTextColor(aR, aG, aB)
+		pdf.SetFont("inv", "B", 7.5)
+		pdf.SetTextColor(faiR, faiG, faiB)
 		pdf.SetXY(lm, notesY)
-		pdf.CellFormat(cw, 4.5, lb.Notes, "", 0, "L", false, 0, "")
-		notesY += 6
+		pdf.CellFormat(cw, 4, strings.ToUpper(lb.Notes), "", 0, "L", false, 0, "")
+		notesY += 5
 
-		// Left accent line + text
 		pdf.SetFont("inv", "", 8.5)
-		pdf.SetTextColor(80, 80, 80)
-		pdf.SetXY(lm+5, notesY)
-		pdf.MultiCell(cw-5, 4.5, cfg.Notes, "", "L", false)
-		endY := pdf.GetY()
-
-		pdf.SetFillColor(aR, aG, aB)
-		pdf.Rect(lm+0.5, notesY-1, 1.2, endY-notesY+2, "F")
+		pdf.SetTextColor(softR, softG, softB)
+		pdf.SetXY(lm, notesY)
+		pdf.MultiCell(cw, 4.5, cfg.Notes, "", "L", false)
 	}
 
 	// ========== PAYMENT NOTE ==========
