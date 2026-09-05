@@ -14,6 +14,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/pdfcpu/pdfcpu/pkg/api"
+
+	"github.com/kiefer-networks/invoice-generator/internal/render"
 )
 
 var binPath string
@@ -284,5 +288,38 @@ items:
 		if strings.Contains(e.Name(), "evil") {
 			t.Errorf("path traversal via invoice number escaped the output directory: %s", e.Name())
 		}
+	}
+}
+
+func TestCLIZugferdKeepsHTMLTemplateRenderer(t *testing.T) {
+	if render.FindChrome() == "" {
+		t.Skip("Chrome is not available")
+	}
+	dir := t.TempDir()
+	run(t, dir, "init", "company", "--lang", "en")
+	run(t, dir, "init", "invoice", "--lang", "en")
+	custom := filepath.Join(dir, "custom.html")
+	if err := os.WriteFile(custom, []byte(`<html><body>HTML TEMPLATE {{.CompanyName}}</body></html>`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "zugferd.pdf")
+	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-zugferd", "-t", custom, "-o", out, "invoice.yaml")
+	if code != 0 {
+		t.Fatalf("ZUGFeRD generation failed: %s / %s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "rendered via HTML template + Chrome") {
+		t.Fatalf("expected HTML renderer with ZUGFeRD, got: %s", stdout)
+	}
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	attachments, err := api.Attachments(f, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments) != 1 || attachments[0].FileName != "factur-x.xml" {
+		t.Fatalf("missing Factur-X attachment: %+v", attachments)
 	}
 }

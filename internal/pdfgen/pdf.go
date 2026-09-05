@@ -1,6 +1,6 @@
 // Package pdfgen implements the built-in fpdf-based invoice renderer,
-// used as a fallback when Chrome/Chromium is unavailable and as the
-// mandatory renderer when embedding a ZUGFeRD/Factur-X XML attachment.
+// used as a fallback when Chrome/Chromium is unavailable or when explicitly
+// requested. It can embed a ZUGFeRD/Factur-X XML attachment directly.
 package pdfgen
 
 import (

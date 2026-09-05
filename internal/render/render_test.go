@@ -350,3 +350,47 @@ func TestFindChromeEnvOverrideIgnoredWhenMissing(t *testing.T) {
 		t.Error("FindChrome should not return a nonexistent INVOICE_CHROME path")
 	}
 }
+
+func TestCustomPrintFooter(t *testing.T) {
+	cfg := sampleConfig()
+	dir := t.TempDir()
+	src := `<html>{{.CompanyName}}</html>{{define "footer"}}<div>{{.BankIBAN}} / {{.CompanyPhone}}</div>{{end}}`
+	path := filepath.Join(dir, "template.html")
+	if err := os.WriteFile(path, []byte(src), 0600); err != nil {
+		t.Fatal(err)
+	}
+	data := PrepareTplData(cfg, resolveLoc(cfg), config.DocInvoice)
+	footer, err := customFooterHTML(data, "", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if footer != "<div>DE89370400440532013000 / +49 30 123456</div>" {
+		t.Fatalf("unexpected custom footer: %s", footer)
+	}
+	body, err := HTML(cfg, resolveLoc(cfg), config.DocInvoice, "", dir)
+	if err != nil || strings.Contains(body, cfg.Company.Bank.IBAN) {
+		t.Fatalf("print footer must not appear in HTML body: %s / %v", body, err)
+	}
+}
+
+func TestCustomPrintFooterFallsBackAndReportsErrors(t *testing.T) {
+	data := PrepareTplData(sampleConfig(), locale.Get("en"), config.DocInvoice)
+	dir := t.TempDir()
+	want, err := footerTemplateHTML(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := customFooterHTML(data, "", dir)
+	if err != nil || got != want {
+		t.Fatalf("default footer changed: %v", err)
+	}
+	path := filepath.Join(dir, "custom.html")
+	for _, src := range []string{`{{define "footer"`, `{{define "footer"}}{{.Unknown}}{{end}}`} {
+		if err := os.WriteFile(path, []byte(src), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := customFooterHTML(data, path, dir); err == nil {
+			t.Fatalf("expected an error for %q", src)
+		}
+	}
+}

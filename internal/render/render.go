@@ -403,6 +403,28 @@ func footerTemplateHTML(data *TplData) (string, error) {
 	return buf.String(), nil
 }
 
+// customFooterHTML uses an optional named "footer" definition from the
+// selected HTML template for Chrome's repeating print footer. Definitions
+// are not emitted in the document body. Existing templates keep the default.
+func customFooterHTML(data *TplData, tmplPath, configDir string) (string, error) {
+	src, err := loadTemplateSrc(tmplPath, configDir)
+	if err != nil {
+		return "", err
+	}
+	tmpl, err := template.New("invoice").Parse(src)
+	if err != nil {
+		return "", fmt.Errorf("footer template parse error: %w", err)
+	}
+	if tmpl.Lookup("footer") == nil {
+		return footerTemplateHTML(data)
+	}
+	var buf strings.Builder
+	if err := tmpl.ExecuteTemplate(&buf, "footer", data); err != nil {
+		return "", fmt.Errorf("footer template execute error: %w", err)
+	}
+	return buf.String(), nil
+}
+
 // FromTemplate renders the invoice/quote via HTML template + Chrome headless PDF.
 //
 // The repeating per-page footer is produced by Chrome's own print
@@ -424,7 +446,7 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 	if err != nil {
 		return err
 	}
-	footerHTML, err := footerTemplateHTML(PrepareTplData(cfg, loc, docType))
+	footerHTML, err := customFooterHTML(PrepareTplData(cfg, loc, docType), tmplPath, configDir)
 	if err != nil {
 		return err
 	}

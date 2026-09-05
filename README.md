@@ -250,6 +250,14 @@ The template uses Go's `text/template` syntax with CSS custom properties for eas
 
 Note: the repeating per-page footer (company/bank details, page numbers) is rendered by Chrome's native print header/footer mechanism, not baked into this template's HTML — it only appears in the generated PDF, not in a `-html` export or when previewing `template.html` directly in a browser.
 
+To customize that footer, add `{{define "footer"}}...{{end}}` to your
+HTML template. It receives the same formatted data as the body (for example,
+`{{.CompanyName}}` and `{{.BankIBAN}}`). Use inline styles because Chrome
+prints the footer in a separate context. Templates without this definition
+keep the default footer. This applies to the HTML renderer; `-fpdf` uses
+the built-in PDF layout. `-zugferd` preserves whichever renderer was selected
+and embeds the electronic invoice after HTML/Chrome rendering when needed.
+
 ## Paperless-ngx Upload
 
 Automatically archive every generated PDF in [Paperless-ngx](https://docs.paperless-ngx.com/):
@@ -293,6 +301,10 @@ invoice -zugferd -company company.yaml invoice.yaml
 This creates:
 - A PDF with the Factur-X XML embedded as an attachment
 - A standalone `_factur-x.xml` file (CII XML, BASIC profile)
+
+ZUGFeRD does not change the visual renderer: custom HTML templates continue
+to be used. If Chrome is unavailable, or `-fpdf` is specified, the built-in
+renderer creates the PDF and embeds the same XML directly.
 
 Mandatory in Germany: reception since 2025, sending B2B from 2027–2028.
 

@@ -14,6 +14,7 @@ import (
 	"github.com/kiefer-networks/invoice-generator/internal/config"
 	"github.com/kiefer-networks/invoice-generator/internal/locale"
 	"github.com/kiefer-networks/invoice-generator/internal/paperless"
+	"github.com/kiefer-networks/invoice-generator/internal/pdfattach"
 	"github.com/kiefer-networks/invoice-generator/internal/pdfgen"
 	"github.com/kiefer-networks/invoice-generator/internal/render"
 	"github.com/kiefer-networks/invoice-generator/internal/zugferd"
@@ -55,7 +56,7 @@ RENDERERS
   Default: HTML template → Chrome/Chromium/Edge → PDF (best quality)
   If no browser is found, falls back to the built-in renderer.
   Use -fpdf to force the built-in renderer.
-  Use -zugferd to embed e-invoice XML (always uses built-in).
+  Use -zugferd to embed e-invoice XML into the selected PDF layout.
 
   Customize the design:
     invoice init template        Extract template.html
@@ -352,8 +353,8 @@ func handleGenerate(docType config.DocType, args []string) {
 
 	// Choose renderer
 	usedFpdf := false
-	if *useFpdf || *zugferdFlag {
-		// Built-in fpdf renderer (required for ZUGFeRD attachment)
+	if *useFpdf {
+		// Built-in fpdf renderer can embed the attachment while rendering.
 		if err := pdfgen.Generate(cfg, loc, docType, out, zugferdXML); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -375,6 +376,15 @@ func handleGenerate(docType config.DocType, args []string) {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
+		}
+	}
+
+	// Chrome has already produced the selected HTML/template layout. Add the
+	// electronic invoice afterwards without changing any rendered pages.
+	if *zugferdFlag && !usedFpdf {
+		if err := pdfattach.EmbedFacturX(out, zugferdXML); err != nil {
+			fmt.Fprintf(os.Stderr, "Error embedding ZUGFeRD XML: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
