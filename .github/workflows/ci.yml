@@ -72,11 +72,12 @@ jobs:
       # renderer and headless-Chrome tests to exercise real rendering
       # instead of skipping. macOS/Windows runner images ship Chrome and
       # a system Arial-equivalent font already.
-      - name: Install fonts + Chromium (Linux)
+      - name: Install fonts + Chrome (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y fonts-liberation chromium-browser || sudo apt-get install -y fonts-liberation chromium
+          sudo apt-get install -y fonts-liberation google-chrome-stable
+          echo "INVOICE_CHROME=$(command -v google-chrome-stable)" >> "$GITHUB_ENV"
 
       - name: Build
         run: go build -v ./...
