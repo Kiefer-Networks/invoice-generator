@@ -70,6 +70,32 @@ type backupManifest struct {
 // committed WAL pages). Ready documents are immutable and published before their
 // database references, so concurrent publication cannot create a torn backup.
 func Backup(ctx context.Context, o BackupOptions) (result BackupResult, err error) {
+	return backupWithHooks(ctx, o, recoveryHooks{})
+}
+
+type recoveryHooks struct {
+	afterSourceValidated func()
+	beforeActivation     func(string)
+	publish              func(*os.Root, string, string) error
+	syncDirectory        func(string) error
+	audit                func(context.Context, string, string) error
+}
+
+func (h recoveryHooks) defaults() recoveryHooks {
+	if h.publish == nil {
+		h.publish = publishRecoveryFile
+	}
+	if h.syncDirectory == nil {
+		h.syncDirectory = syncRecoveryDirectory
+	}
+	if h.audit == nil {
+		h.audit = recordRecoveryAudit
+	}
+	return h
+}
+
+func backupWithHooks(ctx context.Context, o BackupOptions, hooks recoveryHooks) (result BackupResult, err error) {
+	hooks = hooks.defaults()
 	defer func() {
 		if err != nil {
 			err = ErrBackup
@@ -94,23 +120,42 @@ func Backup(ctx context.Context, o BackupOptions) (result BackupResult, err erro
 	}
 	reservation.Close()
 	defer parent.Remove(output + ".lock")
-	work, e := privateTemp(filepath.Dir(o.Output), ".backup-")
+	staging, e := newRecoveryStage(parent, filepath.Dir(o.Output), ".backup-")
 	if e != nil {
 		return result, e
 	}
-	defer os.RemoveAll(work)
-	source, e := safeRegular(o.Database, backupMaxDatabase)
+	defer staging.cleanup()
+	work := staging.path
+	source, e := bindRecoveryDatabase(o.Database, false)
 	if e != nil {
 		return result, e
 	}
-	source.Close()
+	defer source.close()
+	if info, e := source.file.Stat(); e != nil || info.Size() > backupMaxDatabase {
+		return result, ErrBackup
+	}
+	if hooks.afterSourceValidated != nil {
+		hooks.afterSourceValidated()
+	}
+	if e = source.check(); e != nil {
+		return result, e
+	}
 	db, e := openRecoveryDB(ctx, o.Database)
 	if e != nil {
 		return result, e
 	}
 	defer db.Close()
+	if e = source.check(); e != nil {
+		return result, e
+	}
 	snapshot := filepath.Join(work, "database.sqlite")
 	if _, e = db.ExecContext(ctx, `VACUUM INTO ?`, snapshot); e != nil {
+		return result, e
+	}
+	if e = source.check(); e != nil {
+		return result, e
+	}
+	if e = staging.check(); e != nil {
 		return result, e
 	}
 	if e = protectRecoveryPath(snapshot, false); e != nil {
@@ -204,13 +249,22 @@ func Backup(ctx context.Context, o BackupOptions) (result BackupResult, err erro
 	if _, e = parent.Lstat(output); !os.IsNotExist(e) {
 		return result, ErrBackup
 	}
-	if e = publishRecoveryFile(parent, filepath.Join(filepath.Base(work), "archive.enc"), output); e != nil {
+	if e = source.check(); e != nil {
 		return result, e
 	}
-	if e = syncRecoveryDirectory(filepath.Dir(o.Output)); e != nil {
+	if e = staging.check(); e != nil {
 		return result, e
 	}
-	if e = recordRecoveryAudit(ctx, o.Database, "backup.created"); e != nil {
+	if e = hooks.publish(parent, filepath.Join(filepath.Base(work), "archive.enc"), output); e != nil {
+		return result, e
+	}
+	if e = hooks.syncDirectory(filepath.Dir(o.Output)); e != nil {
+		return result, e
+	}
+	if e = source.check(); e != nil {
+		return result, e
+	}
+	if e = hooks.audit(ctx, o.Database, "backup.created"); e != nil {
 		return result, e
 	}
 	result.SchemaVersion = manifest.SchemaVersion
@@ -219,6 +273,11 @@ func Backup(ctx context.Context, o BackupOptions) (result BackupResult, err erro
 }
 
 func recordRecoveryAudit(ctx context.Context, database, action string) error {
+	binding, e := bindRecoveryDatabase(database, false)
+	if e != nil {
+		return e
+	}
+	defer binding.close()
 	id, e := newBusinessID()
 	if e != nil {
 		return e
@@ -228,11 +287,17 @@ func recordRecoveryAudit(ctx context.Context, database, action string) error {
 		return e
 	}
 	defer db.Close()
+	if e = binding.check(); e != nil {
+		return e
+	}
 	if _, e = db.db.ExecContext(ctx, `INSERT INTO audit_events(id,action,target_type,result,change_summary) VALUES(?,?,'backup','success','{}')`, id, action); e != nil {
 		return e
 	}
 	if action == "backup.restored" {
 		_, e = db.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	}
+	if e == nil {
+		e = binding.check()
 	}
 	return e
 }
@@ -484,6 +549,17 @@ func safeRoot(path string) (*os.Root, error) {
 		if part == "" {
 			continue
 		}
+		ancestor, e := root.Open(".")
+		if e != nil {
+			root.Close()
+			return nil, e
+		}
+		trusted := trustedRecoveryAncestor(ancestor)
+		ancestor.Close()
+		if !trusted {
+			root.Close()
+			return nil, ErrBackup
+		}
 		info, e := root.Lstat(part)
 		if e != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			root.Close()
@@ -500,6 +576,17 @@ func safeRoot(path string) (*os.Root, error) {
 			return nil, ErrBackup
 		}
 		root = next
+	}
+	directory, e := root.Open(".")
+	if e != nil {
+		root.Close()
+		return nil, e
+	}
+	trusted := trustedRecoveryDirectory(directory)
+	directory.Close()
+	if !trusted {
+		root.Close()
+		return nil, ErrBackup
 	}
 	return root, nil
 }

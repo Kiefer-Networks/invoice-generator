@@ -48,7 +48,10 @@ type Config struct {
 
 func main() {
 	if len(os.Args) > 1 && (os.Args[1] == "backup" || os.Args[1] == "restore" || os.Args[1] == "integrity-check") {
-		if err := runRecoveryCommand(context.Background(), os.Args[1:], os.Stdout); err != nil {
+		ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
+		err := runRecoveryCommand(ctx, os.Args[1:], os.Stdout)
+		stop()
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "recovery: failure")
 			os.Exit(1)
 		}
@@ -80,6 +83,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "server:", err)
 		os.Exit(1)
 	}
+}
+
+func terminationSignals() []os.Signal {
+	// Go maps Windows console-close/logoff/shutdown notifications to SIGTERM.
+	return []os.Signal{os.Interrupt, syscall.SIGTERM}
 }
 
 // Recovery accepts explicit absolute paths only. Keys are raw 32-byte protected
@@ -383,17 +391,13 @@ func parsePrefixes(raw string) ([]netip.Prefix, error) {
 }
 
 func serve(cfg Config) error {
-	release, err := store.AcquireServiceLock(cfg.Database)
+	ctx, cancel := signal.NotifyContext(context.Background(), terminationSignals()...)
+	defer cancel()
+	database, release, err := store.OpenService(ctx, cfg.Database)
 	if err != nil {
 		return err
 	}
 	defer release()
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	database, err := store.Open(ctx, cfg.Database)
-	if err != nil {
-		return err
-	}
 	defer database.Close()
 	if err := database.Migrate(ctx); err != nil {
 		return err

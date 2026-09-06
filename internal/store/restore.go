@@ -26,6 +26,11 @@ type RestoreOptions struct {
 }
 
 func Restore(ctx context.Context, o RestoreOptions) (err error) {
+	return restoreWithHooks(ctx, o, recoveryHooks{})
+}
+
+func restoreWithHooks(ctx context.Context, o RestoreOptions, hooks recoveryHooks) (err error) {
+	hooks = hooks.defaults()
 	defer func() {
 		if err != nil {
 			err = ErrBackup
@@ -49,55 +54,49 @@ func Restore(ctx context.Context, o RestoreOptions) (err error) {
 	}
 	lock.Close()
 	defer parent.Remove(name + ".restore-lock")
-	stage, e := privateTemp(filepath.Dir(o.TargetRoot), ".restore-")
+	staging, e := newRecoveryStage(parent, filepath.Dir(o.TargetRoot), ".restore-")
 	if e != nil {
 		return e
 	}
-	defer os.RemoveAll(stage)
+	defer staging.cleanup()
+	stage := staging.path
 	if e = unpackRecovery(ctx, VerifyOptions{Archive: o.Archive, KeyFile: o.KeyFile, Passphrase: o.Passphrase}, stage); e != nil {
 		return e
 	}
-	if e = recordRecoveryAudit(ctx, filepath.Join(stage, "database.sqlite"), "backup.restored"); e != nil {
+	if e = hooks.audit(ctx, filepath.Join(stage, "database.sqlite"), "backup.restored"); e != nil {
 		return e
 	}
 	if _, e = inspectRecovery(ctx, filepath.Join(stage, "database.sqlite"), filepath.Join(stage, "documents"), stage); e != nil {
 		return e
 	}
-	if e = syncRecoveryDirectory(filepath.Join(stage, "documents")); e != nil {
+	if e = hooks.syncDirectory(filepath.Join(stage, "documents")); e != nil {
 		return e
 	}
-	if e = syncRecoveryDirectory(stage); e != nil {
+	if e = hooks.syncDirectory(stage); e != nil {
 		return e
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if hooks.beforeActivation != nil {
+		hooks.beforeActivation(stage)
+	}
+	if e = staging.check(); e != nil {
+		return e
+	}
 	if e = activateRecoveryRoot(parent, filepath.Base(stage), name); e != nil {
 		return e
 	}
-	return syncRecoveryDirectory(filepath.Dir(o.TargetRoot))
+	staging.published = true
+	return hooks.syncDirectory(filepath.Dir(o.TargetRoot))
 }
 
 // AcquireServiceLock excludes another normal writer for the same database.
 // An unclean exit deliberately leaves the lock: an operator must stop all
 // processes and remove that exact lock before reopening. No PID guessing.
 func AcquireServiceLock(database string) (func(), error) {
-	path, e := filepath.Abs(database)
-	if e != nil {
-		return nil, ErrBackup
-	}
-	root, e := safeRoot(filepath.Dir(path))
-	if e != nil {
-		return nil, ErrBackup
-	}
-	name := filepath.Base(path) + ".service-lock"
-	f, e := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if e != nil {
-		root.Close()
-		return nil, ErrBackup
-	}
-	f.Close()
-	return func() { root.Remove(name); root.Close() }, nil
+	_, release, e := acquireRecoveryService(database)
+	return release, e
 }
 
 // IntegrityCheck verifies a consistent private snapshot without modifying the
@@ -108,23 +107,36 @@ func IntegrityCheck(ctx context.Context, database, documentRoot string) (err err
 			err = ErrBackup
 		}
 	}()
-	source, e := safeRegular(database, backupMaxDatabase)
+	source, e := bindRecoveryDatabase(database, false)
 	if e != nil {
 		return e
 	}
-	source.Close()
-	stage, e := privateTemp(filepath.Dir(database), ".integrity-")
+	defer source.close()
+	if info, e := source.file.Stat(); e != nil || info.Size() > backupMaxDatabase {
+		return ErrBackup
+	}
+	staging, e := newRecoveryStage(source.root, filepath.Dir(database), ".integrity-")
 	if e != nil {
 		return e
 	}
-	defer os.RemoveAll(stage)
+	defer staging.cleanup()
+	stage := staging.path
 	db, e := openRecoveryDB(ctx, database)
 	if e != nil {
 		return e
 	}
 	defer db.Close()
+	if e = source.check(); e != nil {
+		return e
+	}
 	path := filepath.Join(stage, "database.sqlite")
 	if _, e = db.ExecContext(ctx, `VACUUM INTO ?`, path); e != nil {
+		return e
+	}
+	if e = source.check(); e != nil {
+		return e
+	}
+	if e = staging.check(); e != nil {
 		return e
 	}
 	_, e = inspectRecovery(ctx, path, documentRoot, stage)
@@ -144,13 +156,16 @@ func VerifyBackup(ctx context.Context, o VerifyOptions) (err error) {
 	if e != nil {
 		return e
 	}
-	parent.Close()
-	stage, e := privateTemp(filepath.Dir(o.Archive), ".verify-")
+	defer parent.Close()
+	staging, e := newRecoveryStage(parent, filepath.Dir(o.Archive), ".verify-")
 	if e != nil {
 		return e
 	}
-	defer os.RemoveAll(stage)
-	return unpackRecovery(ctx, o, stage)
+	defer staging.cleanup()
+	if e = unpackRecovery(ctx, o, staging.path); e != nil {
+		return e
+	}
+	return staging.check()
 }
 
 func unpackRecovery(ctx context.Context, o VerifyOptions, stage string) error {

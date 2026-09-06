@@ -6,6 +6,51 @@ import (
 	"unsafe"
 )
 
+func trustedRecoveryDirectory(f *os.File) bool {
+	i, e := f.Stat()
+	return e == nil && i.IsDir() && protectedRecoveryKey(f)
+}
+
+func trustedRecoveryAncestor(f *os.File) bool {
+	user, e := windows.GetCurrentProcessToken().GetTokenUser()
+	if e != nil {
+		return false
+	}
+	trusted := func(sid *windows.SID) bool {
+		return sid != nil && (sid.Equals(user.User.Sid) || sid.IsWellKnown(windows.WinLocalSystemSid) || sid.IsWellKnown(windows.WinBuiltinAdministratorsSid) || sid.String() == "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464")
+	}
+	sd, e := windows.GetSecurityInfo(windows.Handle(f.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.OWNER_SECURITY_INFORMATION)
+	if e != nil {
+		return false
+	}
+	owner, _, e := sd.Owner()
+	if e != nil || !trusted(owner) {
+		return false
+	}
+	acl, _, e := sd.DACL()
+	if e != nil || acl == nil {
+		return false
+	}
+	const fileDeleteChild = 0x0040
+	const unsafeRights = windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER | fileDeleteChild | windows.FILE_WRITE_DATA | windows.FILE_WRITE_ATTRIBUTES | windows.FILE_WRITE_EA | windows.GENERIC_ALL | windows.GENERIC_WRITE
+	for n := uint32(0); n < uint32(acl.AceCount); n++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if e = windows.GetAce(acl, n, &ace); e != nil {
+			return false
+		}
+		if ace.Header.AceFlags&0x08 != 0 || ace.Header.AceType == windows.ACCESS_DENIED_ACE_TYPE {
+			continue
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			return false
+		}
+		if ace.Mask&unsafeRights != 0 && !trusted((*windows.SID)(unsafe.Pointer(&ace.SidStart))) {
+			return false
+		}
+	}
+	return true
+}
+
 func protectedRecoveryKey(f *os.File) bool {
 	user, e := windows.GetCurrentProcessToken().GetTokenUser()
 	if e != nil {

@@ -85,6 +85,32 @@ func TestServeRefusesExistingServiceLockBeforeDatabaseWrite(t *testing.T) {
 	}
 }
 
+func TestServeRejectsHardlinkAliasBeforeSQLite(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "source.sqlite")
+	db, release, e := store.OpenService(context.Background(), path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer release()
+	defer db.Close()
+	if e = db.Migrate(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	alias := filepath.Join(root, "alias.sqlite")
+	if e = os.Link(path, alias); e != nil {
+		t.Fatal(e)
+	}
+	if e = serve(Config{Database: alias}); e == nil {
+		t.Fatal("alias serve accepted")
+	}
+	for _, suffix := range []string{"-wal", "-shm", ".service-lock"} {
+		if _, e = os.Lstat(alias + suffix); !os.IsNotExist(e) {
+			t.Fatal("alias SQLite sidecar created", suffix)
+		}
+	}
+}
+
 func TestProductionManagerUsesProtectedFileConfiguration(t *testing.T) {
 	var issuer string
 	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
