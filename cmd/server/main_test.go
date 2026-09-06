@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -15,6 +16,74 @@ import (
 
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
+
+func TestRecoveryCommandsRoundtripAndIntegrity(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	database := filepath.Join(root, "live.sqlite")
+	docs := filepath.Join(root, "documents")
+	os.Mkdir(docs, 0700)
+	s, e := store.Open(ctx, database)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = s.Migrate(ctx); e != nil {
+		t.Fatal(e)
+	}
+	s.Close()
+	key := filepath.Join(root, "key")
+	os.WriteFile(key, bytes.Repeat([]byte{9}, 32), 0600)
+	archive := filepath.Join(root, "backup.enc")
+	target := filepath.Join(root, "recovered")
+	commands := [][]string{
+		{"integrity-check", "-database", database, "-document-root", docs},
+		{"backup", "-database", database, "-document-root", docs, "-output", archive, "-key-file", key},
+		{"backup", "verify", "-archive", archive, "-key-file", key},
+		{"restore", "-archive", archive, "-key-file", key, "-target-root", target, "-confirm"},
+		{"integrity-check", "-database", filepath.Join(target, "database.sqlite"), "-document-root", filepath.Join(target, "documents")},
+	}
+	for _, args := range commands {
+		var out bytes.Buffer
+		if e = runRecoveryCommand(ctx, args, &out); e != nil {
+			t.Fatalf("%s: %v", args[0], e)
+		}
+		if !strings.Contains(out.String(), "success") || strings.Contains(out.String(), root) {
+			t.Fatal("unsafe or missing audit outcome", out.String())
+		}
+	}
+}
+
+func TestRecoveryCommandsRequireExplicitPathsAndConfirmation(t *testing.T) {
+	for _, args := range [][]string{
+		{"backup"}, {"backup", "-database", "relative"}, {"backup", "-passphrase", "never-print-this"},
+		{"restore", "-archive", "relative", "-target-root", "relative"}, {"integrity-check", "positional-secret"},
+		{"restore", "-archive", filepath.Join(t.TempDir(), "archive"), "-target-root", filepath.Join(t.TempDir(), "target"), "-key-file", filepath.Join(t.TempDir(), "key")},
+	} {
+		var out bytes.Buffer
+		if e := runRecoveryCommand(context.Background(), args, &out); e == nil {
+			t.Fatal("unsafe options accepted")
+		}
+		if strings.Contains(out.String(), "never-print-this") || strings.Contains(out.String(), "positional-secret") {
+			t.Fatal("secret in output")
+		}
+	}
+}
+
+func TestServeRefusesExistingServiceLockBeforeDatabaseWrite(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "db.sqlite")
+	release, e := store.AcquireServiceLock(path)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer release()
+	if e = serve(Config{Database: path}); e == nil {
+		t.Fatal("second writer allowed")
+	}
+	if _, e = os.Stat(path); !os.IsNotExist(e) {
+		t.Fatal("database opened before service lock")
+	}
+}
 
 func TestProductionManagerUsesProtectedFileConfiguration(t *testing.T) {
 	var issuer string

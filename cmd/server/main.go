@@ -9,12 +9,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -45,6 +47,13 @@ type Config struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "backup" || os.Args[1] == "restore" || os.Args[1] == "integrity-check") {
+		if err := runRecoveryCommand(context.Background(), os.Args[1:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "recovery: failure")
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) >= 3 && os.Args[1] == "sessions" && os.Args[2] == "revoke-all" {
 		fs := flag.NewFlagSet("sessions revoke-all", flag.ContinueOnError)
 		database := fs.String("database", strings.TrimSpace(os.Getenv("INVOICE_DATABASE")), "SQLite database")
@@ -59,7 +68,7 @@ func main() {
 		return
 	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
-		fmt.Fprintln(os.Stderr, "usage: server serve [flags]")
+		fmt.Fprintln(os.Stderr, "usage: server {serve|backup|restore|integrity-check|sessions revoke-all} [flags]")
 		os.Exit(2)
 	}
 	cfg, err := ParseConfig(os.Args[2:], os.Getenv)
@@ -71,6 +80,87 @@ func main() {
 		fmt.Fprintln(os.Stderr, "server:", err)
 		os.Exit(1)
 	}
+}
+
+// Recovery accepts explicit absolute paths only. Keys are raw 32-byte protected
+// files; key contents/passphrases are never accepted in flags or environment.
+// Restore requires -confirm and a new target root; operators stop normal service
+// before pointing its configuration at that root. Existing data is never moved.
+func runRecoveryCommand(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return store.ErrBackup
+	}
+	action := args[0]
+	args = args[1:]
+	if action == "backup" && len(args) > 0 && args[0] == "verify" {
+		action = "verify"
+		args = args[1:]
+	}
+	fs := flag.NewFlagSet("recovery", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var database, docs, archive, output, key, target string
+	var confirm bool
+	switch action {
+	case "backup":
+		fs.StringVar(&database, "database", "", "absolute SQLite path")
+		fs.StringVar(&docs, "document-root", "", "absolute document root")
+		fs.StringVar(&output, "output", "", "new absolute archive path")
+	case "verify":
+		fs.StringVar(&archive, "archive", "", "absolute archive path")
+	case "restore":
+		fs.StringVar(&archive, "archive", "", "absolute archive path")
+		fs.StringVar(&target, "target-root", "", "new absolute recovery root")
+		fs.BoolVar(&confirm, "confirm", false, "confirm activation into the new root")
+	case "integrity-check":
+		fs.StringVar(&database, "database", "", "absolute SQLite path")
+		fs.StringVar(&docs, "document-root", "", "absolute document root")
+	default:
+		return store.ErrBackup
+	}
+	if action != "integrity-check" {
+		fs.StringVar(&key, "key-file", "", "absolute protected raw 32-byte key file")
+	}
+	if e := fs.Parse(args); e != nil || fs.NArg() != 0 {
+		return store.ErrBackup
+	}
+	paths := []string{key}
+	if action == "integrity-check" {
+		paths = nil
+	}
+	switch action {
+	case "backup":
+		paths = append(paths, database, docs, output)
+	case "integrity-check":
+		paths = append(paths, database, docs)
+	case "verify":
+		paths = append(paths, archive)
+	case "restore":
+		if !confirm {
+			return store.ErrBackup
+		}
+		paths = append(paths, archive, target)
+	}
+	for _, path := range paths {
+		if !filepath.IsAbs(path) {
+			return store.ErrBackup
+		}
+	}
+	var e error
+	switch action {
+	case "backup":
+		_, e = store.Backup(ctx, store.BackupOptions{Database: database, DocumentRoot: docs, Output: output, KeyFile: key})
+	case "verify":
+		e = store.VerifyBackup(ctx, store.VerifyOptions{Archive: archive, KeyFile: key})
+	case "restore":
+		e = store.Restore(ctx, store.RestoreOptions{Archive: archive, KeyFile: key, TargetRoot: target, Confirm: confirm})
+	case "integrity-check":
+		e = store.IntegrityCheck(ctx, database, docs)
+	}
+	if e != nil {
+		return store.ErrBackup
+	}
+	_, e = fmt.Fprintln(out, action+": success")
+	return e
 }
 
 // ParseConfig reads non-secret configuration from flags and environment.
@@ -293,6 +383,11 @@ func parsePrefixes(raw string) ([]netip.Prefix, error) {
 }
 
 func serve(cfg Config) error {
+	release, err := store.AcquireServiceLock(cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer release()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	database, err := store.Open(ctx, cfg.Database)
