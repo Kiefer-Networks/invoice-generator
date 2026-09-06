@@ -82,7 +82,7 @@ func TestInvoiceEditorRequiresCSRFAndAuthentication(t *testing.T) {
 	}
 }
 
-func TestInvoiceEditorPreviewIsReadOnlyTotalsFragment(t *testing.T) {
+func TestInvoiceEditorPreviewIsReadOnlyDocumentFragment(t *testing.T) {
 	t.Parallel()
 	h, s := customerApp(t, &fakeAuth{})
 	customer, err := s.CustomerRepository().Create(context.Background(), store.CustomerInput{Number: "C-001", DisplayName: "Acme", Country: "DE", PreferredLanguage: "de", Currency: "EUR", PaymentTermsDays: 14})
@@ -91,7 +91,7 @@ func TestInvoiceEditorPreviewIsReadOnlyTotalsFragment(t *testing.T) {
 	}
 	created := customerRequest(t, h, http.MethodPost, "/invoices/new", invoiceForm(customer.ID), false)
 	preview := customerRequest(t, h, http.MethodGet, created.Header().Get("Location")+"/preview", nil, true)
-	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), `id="invoice-totals"`) {
+	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), `id="invoice-document-preview"`) || strings.Contains(preview.Body.String(), `id="invoice-totals"`) {
 		t.Fatalf("preview=%d %q", preview.Code, preview.Body.String())
 	}
 }

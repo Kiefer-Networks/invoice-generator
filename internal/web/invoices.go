@@ -21,24 +21,6 @@ func formatInvoiceQuantity(value int64) string {
 	return strconv.FormatInt(whole, 10) + "." + strings.TrimRight(fmt.Sprintf("%04d", fraction), "0")
 }
 
-type invoicePreview struct {
-	Customer, Currency, DueDate    string
-	Lines                          []invoicePreviewLine
-	NetMinor, TaxMinor, GrossMinor int64
-}
-type invoicePreviewLine struct {
-	Title, Description, Unit, Quantity string
-	GrossMinor                         int64
-}
-
-func previewForDraft(d invoicing.Draft) invoicePreview {
-	p := invoicePreview{Customer: d.Customer.DisplayName, Currency: d.Currency, DueDate: d.DueDate.Format("2006-01-02"), NetMinor: d.NetMinor, TaxMinor: d.TaxMinor, GrossMinor: d.GrossMinor}
-	for _, l := range d.Lines {
-		p.Lines = append(p.Lines, invoicePreviewLine{Title: l.Title, Description: l.Description, Unit: l.Unit, Quantity: formatInvoiceQuantity(l.QuantityScaled), GrossMinor: l.GrossMinor})
-	}
-	return p
-}
-
 func (a *app) invoiceService() *invoicing.DraftService { return invoicing.NewDraftService(a.store) }
 func (a *app) invoices(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -68,13 +50,17 @@ func (a *app) invoiceNew(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		data, err := a.invoicePickerData(r, pageData{InvoiceAction: "/invoices/new"})
+		data, err := a.invoiceEditorData(r, pageData{InvoiceAction: "/invoices/new"})
 		if err != nil {
-			http.Error(w, "unable to load customers", http.StatusInternalServerError)
+			http.Error(w, "invalid invoice query", http.StatusBadRequest)
 			return
 		}
 		data = a.withPageData(r, data)
-		a.renderTemplate(w, "invoiceNew", data)
+		if isHTMX(r) {
+			a.renderTemplate(w, "invoiceNewForm", data)
+		} else {
+			a.renderTemplate(w, "invoiceNew", data)
+		}
 	case http.MethodPost:
 		if err := a.validateInvoiceNavigation(r); err != nil {
 			http.Error(w, "invalid invoice query", http.StatusBadRequest)
@@ -149,6 +135,10 @@ func (a *app) invoiceMoveLine(w http.ResponseWriter, r *http.Request, id, lineID
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
+	if err := a.validateInvoiceNavigation(r); err != nil {
+		http.Error(w, "invalid invoice query", 400)
+		return
+	}
 	version, err := formInt(r, "version")
 	draft, getErr := a.invoiceService().Get(r.Context(), id)
 	if err == nil {
@@ -193,7 +183,7 @@ func (a *app) invoiceDetail(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	data, err := a.invoiceEditorData(r, pageData{Invoice: &draft})
 	if err != nil {
-		http.Error(w, "unable to load invoice", 500)
+		http.Error(w, "invalid invoice query", http.StatusBadRequest)
 		return
 	}
 	if isHTMX(r) {
@@ -212,8 +202,13 @@ func (a *app) invoicePreview(w http.ResponseWriter, r *http.Request, id string) 
 		http.Error(w, "unable to load invoice", http.StatusInternalServerError)
 		return
 	}
-	preview := previewForDraft(draft)
-	a.renderTemplate(w, "invoiceDocumentPreview", a.withPageData(r, pageData{Invoice: &draft, InvoicePreview: &preview}))
+	company, err := a.store.CompanyRepository().Get(r.Context())
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "unable to load company", 500)
+		return
+	}
+	preview := invoicing.PreviewData(draft, company.CompanyInput)
+	a.renderTemplate(w, "invoiceDocumentPreview", a.withPageData(r, pageData{Invoice: &draft, InvoicePreview: preview}))
 }
 func (a *app) invoiceCustomer(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
@@ -378,11 +373,12 @@ func (a *app) invoiceSaved(w http.ResponseWriter, r *http.Request, draft invoici
 	}
 	if isHTMX(r) {
 		w.Header().Set("HX-Retarget", "#invoice-editor")
-		w.Header().Set("HX-Push-Url", "/invoices/"+draft.ID)
+		w.Header().Set("HX-Reswap", "innerHTML")
+		w.Header().Set("HX-Push-Url", "/invoices/"+draft.ID+data.InvoiceQuery)
 		a.renderTemplate(w, "invoiceSaved", data)
 		return
 	}
-	http.Redirect(w, r, "/invoices/"+draft.ID, http.StatusSeeOther)
+	http.Redirect(w, r, "/invoices/"+draft.ID+data.InvoiceQuery, http.StatusSeeOther)
 }
 func (a *app) renderInvoiceError(w http.ResponseWriter, r *http.Request, id string, err error) {
 	status := http.StatusBadRequest
@@ -395,10 +391,11 @@ func (a *app) renderInvoiceError(w http.ResponseWriter, r *http.Request, id stri
 	}
 	if isHTMX(r) {
 		w.Header().Set("HX-Retarget", "#invoice-editor")
+		w.Header().Set("HX-Reswap", "innerHTML")
 	}
 	w.WriteHeader(status)
 	if id == "" {
-		data, e := a.invoicePickerData(r, pageData{Errors: errorFields(err), Raw: rawForm(r), InvoiceAction: "/invoices/new"})
+		data, e := a.invoiceEditorData(r, pageData{Errors: errorFields(err), Raw: rawForm(r), InvoiceAction: "/invoices/new"})
 		if e != nil {
 			http.Error(w, "unable to load customers", 500)
 			return
@@ -439,27 +436,98 @@ func (a *app) invoiceListData(r *http.Request, data pageData) (pageData, error) 
 	data.Invoices = page.Drafts
 	data.Search = r.URL.Query().Get("q")
 	if page.NextCursor != "" {
-		values := url.Values{}
-		if q := r.URL.Query().Get("q"); q != "" {
-			values.Set("q", q)
-		}
+		values := r.URL.Query()
 		values.Set("cursor", page.NextCursor)
-		data.InvoiceNextURL = "/invoices?" + values.Encode()
+		data.InvoiceNextURL = "/invoices" + invoiceQuerySuffix(values)
 	}
 	data.InvoiceQuery = invoiceQuerySuffix(r.URL.Query())
 	return data, nil
 }
 func (a *app) invoicePickerData(r *http.Request, data pageData) (pageData, error) {
-	customers, err := a.store.CustomerRepository().List(r.Context(), store.CustomerListOptions{Limit: 100})
+	q := r.URL.Query()
+	customers, err := a.store.CustomerRepository().List(r.Context(), store.CustomerListOptions{Limit: 100, Search: q.Get("customer_q"), Cursor: q.Get("customer_cursor")})
 	if err != nil {
 		return data, err
 	}
-	catalog, err := a.store.CatalogRepository().List(r.Context(), store.CatalogListOptions{Limit: 100})
+	catalog, err := a.store.CatalogRepository().List(r.Context(), store.CatalogListOptions{Limit: 100, Search: q.Get("catalog_q"), Cursor: q.Get("catalog_cursor")})
 	if err != nil {
 		return data, err
 	}
 	data.InvoiceCustomers = customers
 	data.InvoiceCatalog = catalog
+	data.InvoicePickerPath = "/invoices/new"
+	if data.Invoice != nil {
+		data.InvoicePickerPath = "/invoices/" + data.Invoice.ID
+		data.InvoiceSelectedCustomer = data.Invoice.CustomerID
+	}
+	if data.Raw != nil {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/new"), strings.HasSuffix(r.URL.Path, "/customer"):
+			data.InvoiceSelectedCustomer = data.Raw["customer_id"]
+		case strings.HasSuffix(r.URL.Path, "/items/catalog"):
+			data.InvoiceCatalogRaw = data.Raw
+			data.InvoiceSelectedCatalog = data.Raw["catalog_id"]
+		case strings.HasSuffix(r.URL.Path, "/items/manual"):
+			data.InvoiceManualRaw = data.Raw
+		}
+		if strings.HasSuffix(r.URL.Path, "/edit") {
+			parts := strings.Split(r.URL.Path, "/")
+			data.Raw["line_id"] = parts[len(parts)-2]
+		} else {
+			data.Raw = nil
+		}
+	}
+	if data.InvoiceSelectedCustomer != "" {
+		found := false
+		for _, c := range customers.Customers {
+			if c.ID == data.InvoiceSelectedCustomer {
+				found = true
+			}
+		}
+		if !found {
+			c, e := a.store.CustomerRepository().Get(r.Context(), data.InvoiceSelectedCustomer)
+			if e != nil {
+				return data, e
+			}
+			data.InvoiceCustomers.Customers = append(data.InvoiceCustomers.Customers, c)
+		}
+	}
+	references := []string{data.InvoiceSelectedCatalog}
+	if data.Invoice != nil {
+		for _, line := range data.Invoice.Lines {
+			references = append(references, line.CatalogItemID)
+		}
+	}
+	for _, id := range references {
+		if id == "" {
+			continue
+		}
+		found := false
+		for _, item := range data.InvoiceCatalog.Items {
+			if item.ID == id {
+				found = true
+			}
+		}
+		if !found {
+			item, e := a.store.CatalogRepository().Get(r.Context(), id)
+			if e != nil {
+				return data, e
+			}
+			data.InvoiceCatalog.Items = append(data.InvoiceCatalog.Items, item)
+		}
+	}
+	data.InvoiceCustomerSearch = q.Get("customer_q")
+	data.InvoiceCatalogSearch = q.Get("catalog_q")
+	if customers.NextCursor != "" {
+		next := r.URL.Query()
+		next.Set("customer_cursor", customers.NextCursor)
+		data.InvoiceCustomerNextURL = data.InvoicePickerPath + invoiceQuerySuffix(next)
+	}
+	if catalog.NextCursor != "" {
+		next := r.URL.Query()
+		next.Set("catalog_cursor", catalog.NextCursor)
+		data.InvoiceCatalogNextURL = data.InvoicePickerPath + invoiceQuerySuffix(next)
+	}
 	return data, nil
 }
 func (a *app) invoiceEditorData(r *http.Request, data pageData) (pageData, error) {
@@ -471,15 +539,29 @@ func (a *app) invoiceEditorData(r *http.Request, data pageData) (pageData, error
 	if err != nil {
 		return data, err
 	}
+	data.InvoiceNavigation = r.URL.Query()
+	if data.Invoice != nil {
+		company, e := a.store.CompanyRepository().Get(r.Context())
+		if e != nil && !errors.Is(e, store.ErrNotFound) {
+			return data, e
+		}
+		data.InvoicePreview = invoicing.PreviewData(*data.Invoice, company.CompanyInput)
+	}
 	return a.withPageData(r, data), nil
 }
 func (a *app) validateInvoiceNavigation(r *http.Request) error {
-	_, err := a.invoiceListData(r, pageData{})
+	_, err := a.invoiceEditorData(r, pageData{})
 	return err
 }
 func invoiceQuerySuffix(q url.Values) string {
-	if state := q.Get("state"); state == "draft" {
-		return "?state=draft"
+	values := url.Values{}
+	for _, key := range []string{"state", "q", "cursor", "customer_q", "customer_cursor", "catalog_q", "catalog_cursor"} {
+		if value := q.Get(key); value != "" {
+			values.Set(key, value)
+		}
 	}
-	return ""
+	if len(values) == 0 {
+		return ""
+	}
+	return "?" + values.Encode()
 }

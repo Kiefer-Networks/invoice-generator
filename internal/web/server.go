@@ -18,6 +18,7 @@ import (
 
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
 	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
+	"github.com/kiefer-networks/invoice-generator/internal/render"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
@@ -56,29 +57,34 @@ type app struct {
 }
 
 type pageData struct {
-	Nonce, CSRFToken, DisplayName, CSSURL, HTMXURL, InvoiceJSURL string
-	CompanyInput                                                 store.CompanyInput
-	Customers                                                    store.CustomerPage
-	Customer                                                     *store.Customer
-	CustomerInput                                                store.CustomerInput
-	CustomerVersion                                              int
-	CustomerAction, CustomerTitle, Search                        string
-	CustomerState, NextPageURL                                   string
-	Catalog                                                      store.CatalogPage
-	CatalogItem                                                  *store.CatalogItem
-	CatalogInput                                                 store.CatalogInput
-	CatalogVersion                                               int
-	CatalogAction, CatalogTitle, CatalogState                    string
-	CatalogQuery, CatalogCurrency                                string
-	Invoices                                                     []store.InvoiceDraft
-	Invoice                                                      *invoicing.Draft
-	InvoicePreview                                               *invoicePreview
-	InvoiceCustomers                                             store.CustomerPage
-	InvoiceCatalog                                               store.CatalogPage
-	InvoiceAction, InvoiceQuery                                  string
-	InvoiceNextURL                                               string
-	Errors                                                       map[string]string
-	Raw                                                          map[string]string
+	Nonce, CSRFToken, DisplayName, CSSURL, HTMXURL, InvoiceJSURL       string
+	CompanyInput                                                       store.CompanyInput
+	Customers                                                          store.CustomerPage
+	Customer                                                           *store.Customer
+	CustomerInput                                                      store.CustomerInput
+	CustomerVersion                                                    int
+	CustomerAction, CustomerTitle, Search                              string
+	CustomerState, NextPageURL                                         string
+	Catalog                                                            store.CatalogPage
+	CatalogItem                                                        *store.CatalogItem
+	CatalogInput                                                       store.CatalogInput
+	CatalogVersion                                                     int
+	CatalogAction, CatalogTitle, CatalogState                          string
+	CatalogQuery, CatalogCurrency                                      string
+	Invoices                                                           []store.InvoiceDraft
+	Invoice                                                            *invoicing.Draft
+	InvoicePreview                                                     *render.TplData
+	InvoiceCustomers                                                   store.CustomerPage
+	InvoiceCatalog                                                     store.CatalogPage
+	InvoiceAction, InvoiceQuery                                        string
+	InvoiceNextURL                                                     string
+	InvoiceCustomerSearch, InvoiceCatalogSearch                        string
+	InvoiceCustomerNextURL, InvoiceCatalogNextURL                      string
+	InvoicePickerPath, InvoiceSelectedCustomer, InvoiceSelectedCatalog string
+	InvoiceNavigation                                                  url.Values
+	InvoiceManualRaw, InvoiceCatalogRaw                                map[string]string
+	Errors                                                             map[string]string
+	Raw                                                                map[string]string
 }
 
 func New(deps Dependencies) (http.Handler, error) {

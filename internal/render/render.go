@@ -37,6 +37,10 @@ const chromeTimeout = 60 * time.Second
 
 // TplData holds pre-formatted values for the HTML template.
 type TplData struct {
+	// Currency and TaxGroups allow integer-domain document adapters to retain
+	// exact preformatted totals, including invoices with multiple VAT rates.
+	Currency  string
+	TaxGroups []TplTaxGroup
 	Lang      string
 	Color     string
 	ColorDark string
@@ -92,12 +96,15 @@ type TplData struct {
 
 // TplRow is a single line item for the HTML template.
 type TplRow struct {
-	Desc  string
-	Det   string
-	Qty   string
-	Price string
-	Amt   string
+	Unit, Discount, TaxRate string
+	Desc                    string
+	Det                     string
+	Qty                     string
+	Price                   string
+	Amt                     string
 }
+
+type TplTaxGroup struct{ Rate, Net, Tax, Gross string }
 
 // PrepareTplData converts Config into pre-formatted template data for the
 // given document type (invoice or quote).

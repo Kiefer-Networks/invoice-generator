@@ -13,7 +13,7 @@ import (
 type Draft struct {
 	ID, CustomerID, Number, Currency string
 	Customer                         store.CustomerInput
-	DueDate                          time.Time
+	IssueDate, DueDate               time.Time
 	Version                          int
 	Lines                            []DraftLine
 	NetMinor, TaxMinor, GrossMinor   int64
@@ -249,5 +249,5 @@ func toDraft(input store.InvoiceDraft) (Draft, error) {
 	if err != nil {
 		return Draft{}, fmt.Errorf("calculate invoice draft: %w", err)
 	}
-	return Draft{ID: input.ID, CustomerID: input.CustomerID, Number: input.Number, Currency: input.Currency, Customer: input.Customer, DueDate: input.DueDate, Version: input.Version, Lines: lines, NetMinor: totals.NetMinor, TaxMinor: totals.TaxMinor, GrossMinor: totals.GrossMinor, TaxGroups: totals.TaxGroups}, nil
+	return Draft{ID: input.ID, CustomerID: input.CustomerID, Number: input.Number, Currency: input.Currency, Customer: input.Customer, IssueDate: input.IssueDate, DueDate: input.DueDate, Version: input.Version, Lines: lines, NetMinor: totals.NetMinor, TaxMinor: totals.TaxMinor, GrossMinor: totals.GrossMinor, TaxGroups: totals.TaxGroups}, nil
 }

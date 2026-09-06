@@ -2,6 +2,7 @@ package invoicing
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -16,6 +17,71 @@ func TestCalculateUsesScaledQuantityAndRoundsEachLineHalfUp(t *testing.T) {
 	}
 	if len(totals.TaxGroups) != 1 || totals.TaxGroups[0].TaxRateBasisPoints != 1900 || totals.TaxGroups[0].TaxMinor != 1900 {
 		t.Fatalf("tax groups = %#v", totals.TaxGroups)
+	}
+}
+
+func TestCalculateThreeTimesFractionalQuantityAtNineteenPercent(t *testing.T) {
+	t.Parallel()
+	// EUR 3.00 x 0.3333 = EUR 0.9999 -> 100 cents net, 19 VAT, 119 gross.
+	totals, err := Calculate([]Line{{QuantityScaled: 3333, UnitPriceMinor: 300, TaxRateBasisPoints: 1900}})
+	if err != nil || totals.NetMinor != 100 || totals.TaxMinor != 19 || totals.GrossMinor != 119 {
+		t.Fatalf("3 x 0.3333: %#v %v", totals, err)
+	}
+	// Three separately rounded positions must not be rounded as one aggregate.
+	totals, err = Calculate([]Line{{QuantityScaled: 3333, UnitPriceMinor: 100, TaxRateBasisPoints: 1900}, {QuantityScaled: 3333, UnitPriceMinor: 100, TaxRateBasisPoints: 1900}, {QuantityScaled: 3333, UnitPriceMinor: 100, TaxRateBasisPoints: 1900}})
+	if err != nil || totals.NetMinor != 99 || totals.TaxMinor != 18 || totals.GrossMinor != 117 {
+		t.Fatalf("three positions: %#v %v", totals, err)
+	}
+}
+
+func TestCalculateVATHalfUpAndDiscountBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                                   string
+		price, discount, rate, net, tax, gross int64
+		invalid                                bool
+	}{
+		{"VAT below tie", 49, 0, 100, 49, 0, 49, false},
+		{"VAT tie", 50, 0, 100, 50, 1, 51, false},
+		{"VAT above tie", 51, 0, 100, 51, 1, 52, false},
+		{"19 percent tie", 50, 0, 1900, 50, 10, 60, false},
+		{"zero discount", 101, 0, 1900, 101, 19, 120, false},
+		{"full discount", 101, 10000, 1900, 0, 0, 0, false},
+		{"discount below tie", 1, 4999, 0, 1, 0, 1, false},
+		{"discount tie", 1, 5000, 1900, 0, 0, 0, false},
+		{"discount above tie", 1, 5001, 1900, 0, 0, 0, false},
+		{"discount odd cent tie", 101, 5000, 1900, 50, 10, 60, false},
+		{"negative discount", 100, -1, 1900, 0, 0, 0, true},
+		{"over full discount", 100, 10001, 1900, 0, 0, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Calculate([]Line{{QuantityScaled: 10000, UnitPriceMinor: tc.price, DiscountBasisPoints: tc.discount, TaxRateBasisPoints: tc.rate}})
+			if tc.invalid {
+				if err == nil {
+					t.Fatal("invalid discount accepted")
+				}
+				return
+			}
+			if err != nil || got.NetMinor != tc.net || got.TaxMinor != tc.tax || got.GrossMinor != tc.gross {
+				t.Fatalf("totals: %#v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestCalculateRejectsAggregateOverflowOfIndividuallyValidLines(t *testing.T) {
+	t.Parallel()
+	line := Line{QuantityScaled: 1, UnitPriceMinor: math.MaxInt64 - 10000}
+	one, err := Calculate([]Line{line})
+	if err != nil || one.NetMinor != 922337203685477 {
+		t.Fatalf("valid line: %#v %v", one, err)
+	}
+	lines := make([]Line, 10001)
+	for i := range lines {
+		lines[i] = line
+	}
+	if _, err = Calculate(lines); err == nil || !strings.Contains(err.Error(), "overflow") {
+		t.Fatalf("aggregate overflow: %v", err)
 	}
 }
 
