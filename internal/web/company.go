@@ -51,9 +51,10 @@ func companyInputFromRequest(r *http.Request) (store.CompanyInput, error) {
 	return store.CompanyInput{LegalName: r.Form.Get("legal_name"), ContactName: r.Form.Get("contact_name"), Email: r.Form.Get("email"), Phone: r.Form.Get("phone"), AddressLine1: r.Form.Get("address_line1"), AddressLine2: r.Form.Get("address_line2"), PostalCode: r.Form.Get("postal_code"), City: r.Form.Get("city"), Country: r.Form.Get("country"), TaxNumber: r.Form.Get("tax_number"), VATIdentifier: r.Form.Get("vat_identifier"), BankName: r.Form.Get("bank_name"), IBAN: r.Form.Get("iban"), BIC: r.Form.Get("bic"), LogoKey: r.Form.Get("logo_key"), BrandColor: r.Form.Get("brand_color"), DefaultLanguage: r.Form.Get("default_language"), Currency: r.Form.Get("currency"), PaymentTermsDays: terms, InvoicePrefix: r.Form.Get("invoice_prefix"), StandardNotes: r.Form.Get("standard_notes")}, err
 }
 func formInt(r *http.Request, name string) (int, error) {
-	value, err := strconv.Atoi(r.Form.Get(name))
+	raw := r.Form.Get(name)
+	value, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0, &store.ValidationError{Field: name, Message: "must be a whole number"}
+		return 0, &store.ValidationError{Field: name, Message: "enter a whole number; received: " + raw}
 	}
 	return value, nil
 }

@@ -73,9 +73,6 @@ func (r *CustomerRepository) Get(ctx context.Context, id string) (Customer, erro
 }
 
 func (r *CustomerRepository) List(ctx context.Context, options CustomerListOptions) (CustomerPage, error) {
-	if err := r.backfillCustomerKeys(ctx); err != nil {
-		return CustomerPage{}, err
-	}
 	limit := options.Limit
 	if limit <= 0 {
 		limit = 25
@@ -260,8 +257,8 @@ func customerKeys(in CustomerInput) (string, string) {
 
 func customerSortKey(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
 
-func (r *CustomerRepository) backfillCustomerKeys(ctx context.Context) error {
-	rows, err := r.store.db.QueryContext(ctx, `SELECT id, number, display_name, legal_name, contact_name, email, vat_identifier, search_key, sort_key FROM customers`)
+func backfillCustomerKeysOnConn(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, `SELECT id, number, display_name, legal_name, contact_name, email, vat_identifier, search_key, sort_key FROM customers`)
 	if err != nil {
 		return fmt.Errorf("read customer keys: %w", err)
 	}
@@ -287,7 +284,7 @@ func (r *CustomerRepository) backfillCustomerKeys(ctx context.Context) error {
 		return fmt.Errorf("read customer keys: %w", err)
 	}
 	for _, item := range records {
-		if _, err := r.store.db.ExecContext(ctx, `UPDATE customers SET search_key=?, sort_key=? WHERE id=?`, item.search, item.sort, item.id); err != nil {
+		if _, err := conn.ExecContext(ctx, `UPDATE customers SET search_key=?, sort_key=? WHERE id=?`, item.search, item.sort, item.id); err != nil {
 			return fmt.Errorf("backfill customer keys: %w", err)
 		}
 	}

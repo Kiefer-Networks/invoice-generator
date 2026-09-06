@@ -18,17 +18,12 @@ func (a *app) customers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "customer storage is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	state, options, err := customerListOptions(r.URL.Query())
+	data, err := a.customerListViewData(r, pageData{})
 	if err != nil {
 		http.Error(w, "invalid customer query", http.StatusBadRequest)
 		return
 	}
-	page, err := a.store.CustomerRepository().List(r.Context(), options)
-	if err != nil {
-		http.Error(w, "invalid customer query", http.StatusBadRequest)
-		return
-	}
-	data := a.withPageData(r, pageData{Customers: page, Search: options.Search, CustomerState: state, NextPageURL: customerListURL(options.Search, state, page.NextCursor)})
+	data = a.withPageData(r, data)
 	if r.Header.Get("HX-Request") == "true" {
 		a.renderTemplate(w, "customerList", data)
 		return
@@ -114,12 +109,11 @@ func (a *app) customerDetail(w http.ResponseWriter, r *http.Request, id string) 
 		a.renderTemplate(w, "customerDetail", data)
 		return
 	}
-	page, err := a.store.CustomerRepository().List(r.Context(), store.CustomerListOptions{})
+	data, err = a.customerListViewData(r, data)
 	if err != nil {
 		http.Error(w, "unable to load customers", http.StatusInternalServerError)
 		return
 	}
-	data.Customers = page
 	a.renderTemplate(w, "customersPage", data)
 }
 
@@ -221,12 +215,12 @@ func (a *app) renderCustomerPage(w http.ResponseWriter, r *http.Request, data pa
 		a.renderTemplate(w, "customerForm", data)
 		return
 	}
-	page, err := a.store.CustomerRepository().List(r.Context(), store.CustomerListOptions{})
+	var err error
+	data, err = a.customerListViewData(r, data)
 	if err != nil {
 		http.Error(w, "unable to load customers", http.StatusInternalServerError)
 		return
 	}
-	data.Customers = page
 	a.renderTemplate(w, "customersPage", data)
 }
 func (a *app) renderCustomerError(w http.ResponseWriter, r *http.Request, data pageData, err error) {
@@ -311,4 +305,20 @@ func customerListURL(search, state, cursor string) string {
 		values.Set("cursor", cursor)
 	}
 	return "/customers?" + values.Encode()
+}
+
+func (a *app) customerListViewData(r *http.Request, data pageData) (pageData, error) {
+	state, options, err := customerListOptions(r.URL.Query())
+	if err != nil {
+		return data, err
+	}
+	page, err := a.store.CustomerRepository().List(r.Context(), options)
+	if err != nil {
+		return data, err
+	}
+	data.Customers = page
+	data.Search = options.Search
+	data.CustomerState = state
+	data.NextPageURL = customerListURL(options.Search, state, page.NextCursor)
+	return data, nil
 }

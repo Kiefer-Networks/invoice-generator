@@ -138,3 +138,37 @@ go: -race requires cgo; enable cgo by setting CGO_ENABLED=1
 ```
 
 New focused coverage includes Unicode accented search and cursor paging, literal `%`, `_`, and `!` search, the 100-record cap, unsupported ISO placeholders, 400/409 HTMX swap configuration and outcomes, full-page versus fragment errors, raw invalid number and unsupported language preservation, archived filtering and restore UI, and escaped query/filter pagination.
+
+## Fix round 2: migration safety and full-page list state
+
+### RED evidence
+
+Before implementation, focused tests failed with these reproducible defects:
+
+- A populated database upgraded through migration 003 retained empty `search_key` and `sort_key` values. The only backfill was the unsafe `List`-time scan and rewrite.
+- Customer detail, new, edit, validation, and conflict full pages rendered a `More customers` link with an empty URL or lost the active search/filter state.
+- The company and customer payment-term controls were `type=number`; browsers can sanitize arbitrary rejected text even though the server returned it in markup.
+
+### Fixes and guard evidence
+
+- Migration 003 now backfills customer keys using the application’s Unicode normalization on the same dedicated SQLite connection, after schema changes and before the migration record is committed. `applyMigration` already begins with `BEGIN IMMEDIATE`, so competing writers cannot update a customer between the key read and write. The runtime repository list path is read-only and no longer performs a table scan or key rewrite.
+- Added a populated-upgrade regression that seeds an accented legacy customer, holds a competing `BEGIN IMMEDIATE` writer lock to prove the migration waits, then verifies the committed migration writes the expected normalized keys. This covers the SQLite coordination boundary rather than relying on a timing-sensitive in-process race.
+- Centralized customer list-view construction. Every full-page detail, new, edit, validation, and conflict renderer now uses it, retaining the current `q`, state filter, cursor, results, and next-page URL.
+- Invalid payment terms now appear in the linked field error text (`received: <submitted value>`), which is browser-visible and accessible through the existing `aria-describedby` association even when a browser sanitizes the number control value.
+
+### Fix-round GREEN and verification
+
+Passed:
+
+```text
+go test ./internal/store ./internal/web -run 'TestCustomerKeyMigrationBackfills|TestFullCustomerRenderers|TestCustomerValidationFullPage|TestCompanyValidationPreserves' -v
+go test ./...
+go vet ./...
+git diff --check
+```
+
+The race command was attempted and remains unavailable only because this Windows toolchain reports:
+
+```text
+go: -race requires cgo; enable cgo by setting CGO_ENABLED=1
+```

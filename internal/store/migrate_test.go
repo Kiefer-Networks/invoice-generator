@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestMigrateCreatesSchemaAndIsIdempotent(t *testing.T) {
@@ -169,6 +170,63 @@ func TestMigrateUpgradesOriginalSchema(t *testing.T) {
 	}
 	if migrationsApplied != 3 {
 		t.Fatalf("migration count=%d, want 3", migrationsApplied)
+	}
+}
+
+func TestCustomerKeyMigrationBackfillsPopulatedDatabaseUnderWriterLock(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.ensureMigrationTable(ctx); err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := embeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range migrations[:2] {
+		if _, err := s.db.ExecContext(ctx, item.sql); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, '2026-09-06T00:00:00Z')`, item.version, item.name, item.checksum); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO customers (id, number, display_name, country, preferred_language, currency) VALUES ('legacy-customer', 'C-001', 'Éclair Studio', 'DE', 'de', 'EUR')`); err != nil {
+		t.Fatal(err)
+	}
+
+	locker, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locker.Close()
+	if _, err := locker.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	blocked, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	err = s.Migrate(blocked)
+	cancel()
+	if err == nil {
+		t.Fatal("migration proceeded while another SQLite writer held BEGIN IMMEDIATE")
+	}
+	if _, err := locker.ExecContext(ctx, "ROLLBACK"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var searchKey, sortKey string
+	if err := s.db.QueryRowContext(ctx, `SELECT search_key, sort_key FROM customers WHERE id='legacy-customer'`).Scan(&searchKey, &sortKey); err != nil {
+		t.Fatal(err)
+	}
+	wantSearch, wantSort := customerKeys(CustomerInput{Number: "C-001", DisplayName: "Éclair Studio"})
+	if searchKey != wantSearch || sortKey != wantSort {
+		t.Fatalf("backfilled keys = %q, %q; want %q, %q", searchKey, sortKey, wantSearch, wantSort)
 	}
 }
 

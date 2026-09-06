@@ -140,6 +140,11 @@ func (s *Store) applyMigration(ctx context.Context, migration migration) (err er
 		if _, err = conn.ExecContext(ctx, migration.sql); err != nil {
 			return fmt.Errorf("apply migration %03d: %w", migration.version, err)
 		}
+		if migration.version == 3 {
+			if err = backfillCustomerKeysOnConn(ctx, conn); err != nil {
+				return fmt.Errorf("backfill migration %03d: %w", migration.version, err)
+			}
+		}
 		if _, err = conn.ExecContext(ctx,
 			"INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
 			migration.version, migration.name, migration.checksum, time.Now().UTC().Format(time.RFC3339Nano),
