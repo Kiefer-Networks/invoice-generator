@@ -72,9 +72,11 @@ type pageData struct {
 	CatalogQuery, CatalogCurrency                                string
 	Invoices                                                     []store.InvoiceDraft
 	Invoice                                                      *invoicing.Draft
+	InvoicePreview                                               *invoicePreview
 	InvoiceCustomers                                             store.CustomerPage
 	InvoiceCatalog                                               store.CatalogPage
 	InvoiceAction, InvoiceQuery                                  string
+	InvoiceNextURL                                               string
 	Errors                                                       map[string]string
 	Raw                                                          map[string]string
 }

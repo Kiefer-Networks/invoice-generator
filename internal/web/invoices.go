@@ -21,6 +21,24 @@ func formatInvoiceQuantity(value int64) string {
 	return strconv.FormatInt(whole, 10) + "." + strings.TrimRight(fmt.Sprintf("%04d", fraction), "0")
 }
 
+type invoicePreview struct {
+	Customer, Currency, DueDate    string
+	Lines                          []invoicePreviewLine
+	NetMinor, TaxMinor, GrossMinor int64
+}
+type invoicePreviewLine struct {
+	Title, Description, Unit, Quantity string
+	GrossMinor                         int64
+}
+
+func previewForDraft(d invoicing.Draft) invoicePreview {
+	p := invoicePreview{Customer: d.Customer.DisplayName, Currency: d.Currency, DueDate: d.DueDate.Format("2006-01-02"), NetMinor: d.NetMinor, TaxMinor: d.TaxMinor, GrossMinor: d.GrossMinor}
+	for _, l := range d.Lines {
+		p.Lines = append(p.Lines, invoicePreviewLine{Title: l.Title, Description: l.Description, Unit: l.Unit, Quantity: formatInvoiceQuantity(l.QuantityScaled), GrossMinor: l.GrossMinor})
+	}
+	return p
+}
+
 func (a *app) invoiceService() *invoicing.DraftService { return invoicing.NewDraftService(a.store) }
 func (a *app) invoices(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -120,7 +138,48 @@ func (a *app) invoiceRoute(w http.ResponseWriter, r *http.Request) {
 		a.invoiceEditLine(w, r, id, parts[2])
 		return
 	}
+	if len(parts) == 4 && parts[1] == "items" && (parts[3] == "up" || parts[3] == "down") {
+		a.invoiceMoveLine(w, r, id, parts[2], parts[3] == "up")
+		return
+	}
 	http.NotFound(w, r)
+}
+func (a *app) invoiceMoveLine(w http.ResponseWriter, r *http.Request, id, lineID string, up bool) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	version, err := formInt(r, "version")
+	draft, getErr := a.invoiceService().Get(r.Context(), id)
+	if err == nil {
+		err = getErr
+	}
+	if err == nil {
+		ids, index := make([]string, len(draft.Lines)), -1
+		for i, line := range draft.Lines {
+			ids[i] = line.ID
+			if line.ID == lineID {
+				index = i
+			}
+		}
+		if index < 0 {
+			err = store.ErrNotFound
+		} else {
+			target := index + 1
+			if up {
+				target = index - 1
+			}
+			if target >= 0 && target < len(ids) {
+				ids[index], ids[target] = ids[target], ids[index]
+			}
+			draft, err = a.invoiceService().ReorderLines(r.Context(), id, version, ids)
+		}
+	}
+	if err == nil {
+		a.invoiceSaved(w, r, draft)
+		return
+	}
+	a.renderInvoiceError(w, r, id, err)
 }
 func (a *app) invoiceDetail(w http.ResponseWriter, r *http.Request, id string) {
 	draft, err := a.invoiceService().Get(r.Context(), id)
@@ -153,7 +212,8 @@ func (a *app) invoicePreview(w http.ResponseWriter, r *http.Request, id string) 
 		http.Error(w, "unable to load invoice", http.StatusInternalServerError)
 		return
 	}
-	a.renderTemplate(w, "invoiceTotals", a.withPageData(r, pageData{Invoice: &draft}))
+	preview := previewForDraft(draft)
+	a.renderTemplate(w, "invoiceDocumentPreview", a.withPageData(r, pageData{Invoice: &draft, InvoicePreview: &preview}))
 }
 func (a *app) invoiceCustomer(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
@@ -344,7 +404,11 @@ func (a *app) renderInvoiceError(w http.ResponseWriter, r *http.Request, id stri
 			return
 		}
 		data = a.withPageData(r, data)
-		a.renderTemplate(w, "invoiceNew", data)
+		if isHTMX(r) {
+			a.renderTemplate(w, "invoiceNewForm", data)
+		} else {
+			a.renderTemplate(w, "invoiceNew", data)
+		}
 		return
 	}
 	draft, e := a.invoiceService().Get(r.Context(), id)
@@ -368,11 +432,20 @@ func (a *app) invoiceListData(r *http.Request, data pageData) (pageData, error) 
 	if state != "" && state != "draft" {
 		return data, errors.New("invalid state")
 	}
-	items, err := a.store.InvoiceRepository().ListDrafts(r.Context(), store.InvoiceListOptions{State: "draft"})
+	page, err := a.store.InvoiceRepository().ListDraftPage(r.Context(), store.InvoiceListOptions{State: "draft", Search: r.URL.Query().Get("q"), Cursor: r.URL.Query().Get("cursor")})
 	if err != nil {
 		return data, err
 	}
-	data.Invoices = items
+	data.Invoices = page.Drafts
+	data.Search = r.URL.Query().Get("q")
+	if page.NextCursor != "" {
+		values := url.Values{}
+		if q := r.URL.Query().Get("q"); q != "" {
+			values.Set("q", q)
+		}
+		values.Set("cursor", page.NextCursor)
+		data.InvoiceNextURL = "/invoices?" + values.Encode()
+	}
 	data.InvoiceQuery = invoiceQuerySuffix(r.URL.Query())
 	return data, nil
 }

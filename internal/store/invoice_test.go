@@ -62,3 +62,48 @@ func TestDraftRepositoryRejectsDuplicateAndForeignReorderIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestDraftRepositoryRollsBackHeaderAfterBumpFailure(t *testing.T) {
+	t.Parallel()
+	s := openMigratedStore(t)
+	ctx := context.Background()
+	c, err := s.CustomerRepository().Create(ctx, validCustomer("C-001", "Acme"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := s.InvoiceRepository()
+	d, err := repo.CreateDraft(ctx, InvoiceDraftInput{CustomerID: c.ID, Currency: "EUR", Customer: c.CustomerInput, DueDate: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.afterBump = func() error { return errors.New("injected") }
+	_, err = repo.AddLine(ctx, d.ID, d.Version, InvoiceLine{Title: "L", Unit: "piece", QuantityScaled: 10000, UnitPriceMinor: 100, NetMinor: 100, GrossMinor: 100}, InvoiceTotals{NetMinor: 100, GrossMinor: 100})
+	if err == nil {
+		t.Fatal("want injected failure")
+	}
+	got, err := repo.GetDraft(ctx, d.ID)
+	if err != nil || got.Version != d.Version || got.NetMinor != 0 || len(got.Lines) != 0 {
+		t.Fatalf("rollback=%#v %v", got, err)
+	}
+}
+
+func TestDraftRepositoryRejectsMutationsAfterFinalization(t *testing.T) {
+	t.Parallel()
+	s := openMigratedStore(t)
+	ctx := context.Background()
+	c, err := s.CustomerRepository().Create(ctx, validCustomer("C-001", "Acme"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := s.InvoiceRepository()
+	d, err := repo.CreateDraft(ctx, InvoiceDraftInput{CustomerID: c.ID, Currency: "EUR", Customer: c.CustomerInput, DueDate: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB().ExecContext(ctx, `UPDATE invoices SET state='finalized', number='I-1', company_snapshot='{}', payment_snapshot='{}', locale_snapshot='{}', tax_snapshot='{}', note_snapshot='{}' WHERE id=?`, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.AddLine(ctx, d.ID, d.Version, InvoiceLine{Title: "L", Unit: "piece", QuantityScaled: 10000, UnitPriceMinor: 1, NetMinor: 1, GrossMinor: 1}, InvoiceTotals{NetMinor: 1, GrossMinor: 1}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("finalized mutation=%v", err)
+	}
+}

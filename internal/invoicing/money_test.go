@@ -53,3 +53,14 @@ func TestCalculateRejectsInvalidValuesAndOverflow(t *testing.T) {
 		}
 	}
 }
+
+func TestCalculateFormatsFractionalQuantityAndRoundsHalfUpTies(t *testing.T) {
+	t.Parallel()
+	totals, err := Calculate([]Line{{QuantityScaled: 3333, UnitPriceMinor: 100, TaxRateBasisPoints: 1900}, {QuantityScaled: 50, UnitPriceMinor: 100, DiscountBasisPoints: 5000, TaxRateBasisPoints: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if totals.Lines[0].NetMinor != 33 || totals.Lines[0].TaxMinor != 6 || totals.Lines[1].NetMinor != 0 {
+		t.Fatalf("ties=%#v", totals.Lines)
+	}
+}

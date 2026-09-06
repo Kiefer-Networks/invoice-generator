@@ -127,3 +127,29 @@ func TestInvoiceEditorReordersLines(t *testing.T) {
 		t.Fatalf("draft=%#v %v", draft, err)
 	}
 }
+
+func TestInvoiceEditorMoveControlsReorderWithHTMX(t *testing.T) {
+	t.Parallel()
+	h, s := customerApp(t, &fakeAuth{})
+	ctx := context.Background()
+	c, err := s.CustomerRepository().Create(ctx, store.CustomerInput{Number: "C-001", DisplayName: "Acme", Country: "DE", PreferredLanguage: "de", Currency: "EUR", PaymentTermsDays: 14})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := customerRequest(t, h, http.MethodPost, "/invoices/new", invoiceForm(c.ID), false)
+	path := created.Header().Get("Location")
+	for i := 0; i < 2; i++ {
+		response := customerRequest(t, h, http.MethodPost, path+"/items/manual", url.Values{"title": {"Line " + strconv.Itoa(i)}, "unit": {"piece"}, "quantity": {"1"}, "unit_price": {"1.00"}, "tax_rate": {"19"}, "version": {strconv.Itoa(i + 1)}}, false)
+		if response.Code != http.StatusSeeOther {
+			t.Fatal(response.Code)
+		}
+	}
+	draft, err := s.InvoiceRepository().GetDraft(ctx, strings.TrimPrefix(path, "/invoices/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := customerRequest(t, h, http.MethodPost, path+"/items/"+draft.Lines[1].ID+"/up", url.Values{"version": {"3"}}, true)
+	if response.Code != http.StatusOK || response.Header().Get("HX-Retarget") != "#invoice-editor" || !strings.Contains(response.Body.String(), `aria-label="Move Line 1 up"`) {
+		t.Fatalf("move=%d %q", response.Code, response.Body.String())
+	}
+}

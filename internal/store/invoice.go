@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,10 +35,17 @@ type InvoiceDraftInput struct {
 	DueDate              time.Time
 }
 type InvoiceListOptions struct {
-	State string
-	Limit int
+	State, Search, Cursor string
+	Limit                 int
 }
-type InvoiceRepository struct{ store *Store }
+type InvoicePage struct {
+	Drafts     []InvoiceDraft
+	NextCursor string
+}
+type InvoiceRepository struct {
+	store     *Store
+	afterBump func() error
+}
 
 func (s *Store) InvoiceRepository() *InvoiceRepository { return &InvoiceRepository{store: s} }
 
@@ -101,6 +109,10 @@ func (r *InvoiceRepository) GetDraft(ctx context.Context, id string) (InvoiceDra
 	return draft, nil
 }
 func (r *InvoiceRepository) ListDrafts(ctx context.Context, options InvoiceListOptions) ([]InvoiceDraft, error) {
+	page, err := r.ListDraftPage(ctx, options)
+	return page.Drafts, err
+}
+func (r *InvoiceRepository) ListDraftPage(ctx context.Context, options InvoiceListOptions) (InvoicePage, error) {
 	limit := options.Limit
 	if limit <= 0 {
 		limit = 25
@@ -113,22 +125,45 @@ func (r *InvoiceRepository) ListDrafts(ctx context.Context, options InvoiceListO
 		state = "draft"
 	}
 	if state != "draft" {
-		return nil, fieldError("state", "is invalid")
+		return InvoicePage{}, fieldError("state", "is invalid")
 	}
-	rows, err := r.store.db.QueryContext(ctx, `SELECT id, customer_id, number, state, currency, issue_date, due_date, customer_snapshot, version, net_total_minor, tax_total_minor, gross_total_minor FROM invoices WHERE state=? ORDER BY updated_at DESC,id DESC LIMIT ?`, state, limit)
+	offset := 0
+	if options.Cursor != "" {
+		var err error
+		offset, err = strconv.Atoi(options.Cursor)
+		if err != nil || offset < 0 {
+			return InvoicePage{}, fieldError("cursor", "is invalid")
+		}
+	}
+	where := "state=?"
+	args := []any{state}
+	if search := strings.ToLower(strings.TrimSpace(options.Search)); search != "" {
+		where += " AND lower(customer_snapshot) LIKE ? ESCAPE '!'"
+		args = append(args, "%"+escapeLike(search)+"%")
+	}
+	args = append(args, limit+1, offset)
+	rows, err := r.store.db.QueryContext(ctx, `SELECT id, customer_id, number, state, currency, issue_date, due_date, customer_snapshot, version, net_total_minor, tax_total_minor, gross_total_minor FROM invoices WHERE `+where+` ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list invoice drafts: %w", err)
+		return InvoicePage{}, fmt.Errorf("list invoice drafts: %w", err)
 	}
 	defer rows.Close()
 	var result []InvoiceDraft
 	for rows.Next() {
 		draft, err := scanInvoiceDraft(rows)
 		if err != nil {
-			return nil, err
+			return InvoicePage{}, err
 		}
 		result = append(result, draft)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return InvoicePage{}, err
+	}
+	page := InvoicePage{Drafts: result}
+	if len(page.Drafts) > limit {
+		page.Drafts = page.Drafts[:limit]
+		page.NextCursor = strconv.Itoa(offset + limit)
+	}
+	return page, nil
 }
 func (r *InvoiceRepository) UpdateDraft(ctx context.Context, id string, version int, input InvoiceDraftInput, totals InvoiceTotals) (InvoiceDraft, error) {
 	if version < 1 || strings.TrimSpace(input.CustomerID) == "" || strings.TrimSpace(input.Currency) == "" || input.DueDate.IsZero() {
@@ -162,6 +197,11 @@ func (r *InvoiceRepository) AddLine(ctx context.Context, id string, version int,
 	if err := bumpDraft(tx, ctx, id, version, totals); err != nil {
 		return InvoiceDraft{}, err
 	}
+	if r.afterBump != nil {
+		if err = r.afterBump(); err != nil {
+			return InvoiceDraft{}, err
+		}
+	}
 	lineID, err := newBusinessID()
 	if err != nil {
 		return InvoiceDraft{}, err
@@ -193,6 +233,11 @@ func (r *InvoiceRepository) UpdateLine(ctx context.Context, id string, version i
 	defer func() { _ = tx.Rollback() }()
 	if err = bumpDraft(tx, ctx, id, version, totals); err != nil {
 		return InvoiceDraft{}, err
+	}
+	if r.afterBump != nil {
+		if err = r.afterBump(); err != nil {
+			return InvoiceDraft{}, err
+		}
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE invoice_items SET title_snapshot=?,description_snapshot=?,unit_snapshot=?,quantity_scaled=?,net_unit_price_minor=?,discount_basis_points=?,tax_rate_scaled=?,net_total_minor=?,tax_total_minor=?,gross_total_minor=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND invoice_id=?`, line.Title, line.Description, line.Unit, line.QuantityScaled, line.UnitPriceMinor, line.DiscountBasisPoints, line.TaxRateBasisPoints, line.NetMinor, line.TaxMinor, line.GrossMinor, line.ID, id)
 	if err != nil {

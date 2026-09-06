@@ -75,6 +75,13 @@ func TestDraftServiceCopiesCatalogAndUsesOptimisticVersions(t *testing.T) {
 	if err != nil || found.Lines[0].Title != "Advice" {
 		t.Fatalf("catalog snapshot = %#v, %v", found, err)
 	}
+	if _, err = s.CatalogRepository().Archive(ctx, item.ID, 2); err != nil {
+		t.Fatal(err)
+	}
+	found, err = service.Get(ctx, draft.ID)
+	if err != nil || found.Lines[0].Title != "Advice" {
+		t.Fatalf("archived catalog snapshot=%#v %v", found, err)
+	}
 	if _, err = service.RemoveLine(ctx, draft.ID, draft.Version-1, draft.Lines[0].ID); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("stale error = %v", err)
 	}
