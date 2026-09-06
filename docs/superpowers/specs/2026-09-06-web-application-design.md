@@ -2,10 +2,11 @@
 
 ## Purpose
 
-Extend the existing invoice CLI into a secure, self-hosted web application while preserving the CLI and its established HTML, PDF, locale, Paperless, and Factur-X/ZUGFeRD behavior. The application is intended for one administrator and runs on a private server behind a NetBird proxy.
+Extend the existing invoice CLI into a secure, self-hosted web application while preserving the CLI and its established HTML, PDF, locale, Paperless, and Factur-X/ZUGFeRD behavior. The application authorizes members of the Pocket ID group `invoice-admins` and runs on a private server behind a NetBird proxy.
 
 The first release provides:
 
+- Pocket ID authentication through OpenID Connect and one application administrator role;
 - one company profile;
 - customer CRUD;
 - a reusable goods and services catalog without inventory management;
@@ -16,7 +17,7 @@ The first release provides:
 - a local development and test mode;
 - a production Docker image and comprehensive GitHub Actions checks.
 
-Quotes, multiple administrators, roles, inventory, online payment, email delivery, and public registration are outside the first release.
+Quotes, application-managed users or passwords, multiple application roles, inventory, online payment, email delivery, and public registration are outside the first release.
 
 ## Architecture
 
@@ -32,7 +33,7 @@ The implementation introduces these focused units:
 
 - `cmd/server`: production and development server startup, configuration validation, graceful shutdown, and administrative subcommands.
 - `internal/store`: SQLite connection policy, migrations, transactions, repositories, backup, and restore.
-- `internal/auth`: password hashing, login throttling, opaque sessions, CSRF tokens, and administrator bootstrap.
+- `internal/auth`: Pocket ID discovery, Authorization Code with PKCE, callback validation, group authorization, opaque local sessions, and CSRF tokens.
 - `internal/web`: routes, middleware, view models, response negotiation, and error mapping.
 - `internal/web/templates`: full-page and HTMX fragment templates.
 - `internal/web/static`: vendored HTMX, icon assets, CSS, and minimal local JavaScript.
@@ -74,7 +75,7 @@ Paperless jobs record document ID, state, attempt count, next attempt time, last
 
 ### Audit events
 
-Audit events cover authentication outcomes, administrator credential changes, invoice finalization, status transitions, correction links, configuration changes, backup/restore operations, and Paperless delivery state. They contain actor, action, target type and ID, result, request correlation ID, timestamp, and a minimal structured change summary. Passwords, session tokens, CSRF tokens, API keys, full customer records, and rendered document contents are prohibited from logs and audit payloads.
+Audit events cover OIDC authentication and authorization outcomes, invoice finalization, status transitions, correction links, configuration changes, backup/restore operations, and Paperless delivery state. They contain actor subject, action, target type and ID, result, request correlation ID, timestamp, and a minimal structured change summary. Authorization codes, tokens, session tokens, CSRF tokens, API keys, full customer records, and rendered document contents are prohibited from logs and audit payloads.
 
 ## User Experience
 
@@ -92,15 +93,17 @@ The primary sections are dashboard, invoices, customers, catalog, and settings:
 
 All workflows meet WCAG 2.2 AA, support keyboard-only use, retain focus across HTMX swaps, announce validation results, and remain usable without animation. Server-rendered pages remain functional when optional JavaScript enhancements fail; dynamic position editing requires HTMX but returns actionable error states.
 
-## Authentication and Sessions
+## Pocket ID Authentication and Sessions
 
-There is one administrator account and no registration endpoint. The first administrator is created with an interactive local command. Startup refuses normal service when no administrator exists. Password reset is also an interactive local command and invalidates all sessions.
+Pocket ID is the only identity and user-management system. The application has no password database, local registration, password reset, or account-management interface. Every Pocket ID identity in the `invoice-admins` group receives the same application administrator role; every other authenticated identity is denied.
 
-Passwords use Argon2id with a random per-password salt and an application pepper supplied through a Docker secret. Parameters are calibrated on the deployment host to an approved memory and time floor above the current OWASP recommendation and encoded with the hash for future upgrades. Passwords are never passed through command-line arguments or environment variables.
+The application is a confidential OpenID Connect client. It uses Authorization Code flow with PKCE S256, exact redirect URI matching, high-entropy `state` and `nonce`, issuer discovery over HTTPS, and an allow-listed issuer. It verifies the ID-token signature against discovered JWKS, issuer, audience, authorized party when present, nonce, expiry, issued-at bounds, and authentication time policy. It requests only `openid profile email groups`, requires a stable nonempty `sub`, and never uses email as the identity key. The Pocket ID client secret is mounted as a Docker secret.
 
-Sessions use opaque random 256-bit tokens from the operating-system CSPRNG. Only a keyed hash is stored. Authentication rotates the token. Sessions expire after inactivity and at an absolute limit, and logout or password reset revokes them server-side. Cookies use `Secure`, `HttpOnly`, `SameSite=Strict`, a narrow path, and no domain attribute.
+The callback requires the `invoice-admins` value in the verified `groups` claim. A successful callback upserts a minimal local identity projection containing issuer, subject, display name, email, last login, last authorization check, and active session references. Pocket ID remains the source of truth. Removing a user from the required group prevents new sessions and ends existing access no later than the 15-minute local authorization lifetime.
 
-Login failures use per-account and per-source progressive delay with bounded state and generic responses. Successful authentication clears only the appropriate failure window. Authentication, session, and recovery paths are constant in observable response structure where practical.
+OIDC transaction cookies are short-lived, encrypted and authenticated, `Secure`, `HttpOnly`, `SameSite=Lax`, and bound to state, nonce, PKCE verifier, original safe relative destination, and creation time. They are deleted after one callback attempt. Callback errors use generic user-facing responses and never log codes or tokens.
+
+Application sessions use opaque random 256-bit tokens from the operating-system CSPRNG. Only a keyed hash is stored. Authentication rotates the token. Sessions expire after 15 minutes and cannot be extended beyond the most recent verified Pocket ID group membership. Logout revokes the local session and may redirect to Pocket ID's discovered end-session endpoint when available. Cookies use `Secure`, `HttpOnly`, `SameSite=Strict`, a narrow path, and no domain attribute.
 
 ## Application Security
 
@@ -120,7 +123,7 @@ The web layer provides:
 - generic external errors and correlated structured internal errors;
 - no public metrics, debug, profiling, schema, or version endpoints.
 
-Forwarded headers are accepted only from configured NetBird proxy addresses. Host headers are allow-listed. The production application must reject insecure configuration, default secrets, world-readable secrets, development mode on a non-loopback listener, and writable executable/template directories.
+Forwarded headers are accepted only from configured NetBird proxy addresses. Host headers are allow-listed. The production application must reject insecure configuration, default secrets, world-readable secrets, a non-HTTPS Pocket ID issuer, issuer or redirect-host mismatch outside explicit proxy configuration, development mode on a non-loopback listener, and writable executable/template directories.
 
 PDF downloads require an authenticated session and authorization check, use server-generated identifiers, set a fixed media type and safe filename, and prevent MIME sniffing. Uploaded logos are decoded, size- and dimension-limited, re-encoded to an allowed raster format, and stored outside executable paths. SVG upload is not accepted in the first release.
 
@@ -136,7 +139,7 @@ The server volume uses host-level full-disk encryption. Backup archives are addi
 
 `go run ./cmd/server -dev` starts a clearly marked development instance on `127.0.0.1`. It uses a separate development database and deterministic sample company, customer, catalog, invoice, and job data. It never reads production database paths or production secret locations.
 
-Development mode retains authentication, CSRF, validation, authorization, and security headers. It may use a loopback-compatible non-`Secure` session cookie only when the request is plain HTTP on loopback. It refuses non-loopback binding and cannot enable real Paperless delivery. A local fake Paperless server exercises success, delayed processing, rejection, and retry behavior.
+Development mode retains OIDC authentication, group authorization, CSRF, validation, authorization, and security headers. It starts a loopback-only fake OIDC provider with deterministic test identities in and outside `invoice-admins`; no login bypass or local password is introduced. It may use loopback-compatible non-`Secure` transaction and session cookies only when the request is plain HTTP on loopback. It refuses non-loopback binding and cannot enable real Paperless delivery. A local fake Paperless server exercises success, delayed processing, rejection, and retry behavior.
 
 Templates and static assets reload from a dedicated development directory. Production embeds immutable, fingerprinted assets. Go source changes use a fast process restart. No development endpoint, sample credential, verbose stack trace, test data, or file watcher is included in the production image.
 
@@ -172,13 +175,13 @@ The runtime container:
 - handles termination signals and drains writes and jobs before exit;
 - reports separate liveness and readiness without confidential details.
 
-Startup validates directory ownership, file permissions, database integrity, migration state, secret quality, trusted proxy configuration, Chrome availability, and document storage writability. Failure is closed and explicit.
+Startup validates directory ownership, file permissions, database integrity, migration state, secret quality, Pocket ID issuer discovery and callback configuration, trusted proxy configuration, Chrome availability, and document storage writability. Failure is closed and explicit.
 
 ## Migrations, Backup, and Recovery
 
 Migrations are embedded, checksummed, monotonic, and applied under an exclusive migration lock. The process creates and verifies an encrypted backup before a production schema migration. Migration failure leaves the prior database recoverable and prevents service readiness.
 
-Administrative commands provide backup, verify, restore, integrity-check, administrator creation, password reset, and session revocation. Restore always writes to a new temporary database, verifies it, then atomically switches after explicitly stopping normal service access. Recovery documentation includes regular restore drills and expected recovery-time and recovery-point behavior.
+Administrative commands provide backup, verify, restore, integrity-check, and local session revocation. User creation, deletion, passkey management, group assignment, and account recovery remain exclusively in Pocket ID. Restore always writes to a new temporary database, verifies it, then atomically switches after explicitly stopping normal service access. Recovery documentation includes regular restore drills and expected recovery-time and recovery-point behavior.
 
 ## Error Handling and Observability
 
@@ -194,7 +197,7 @@ GitHub Actions is a required gate for every pull request and release commit. Fas
 - unit and integration tests with the race detector and atomic coverage;
 - repository tests against temporary SQLite databases;
 - forward migration, clean install, populated upgrade, backup, integrity, and restore tests;
-- authentication, session rotation/revocation, CSRF, rate-limit, host-header, proxy-header, validation, security-header, and unauthorized-download tests;
+- OIDC discovery, state, nonce, PKCE, signature, claim, required-group, callback replay, session rotation/revocation, CSRF, host-header, proxy-header, validation, security-header, and unauthorized-download tests;
 - browser end-to-end tests for login, customer CRUD, catalog CRUD, draft editing, preview, finalization, PDF download, cancellation, and Paperless retry;
 - concurrent invoice finalization tests proving unique monotonic numbers;
 - HTML/PDF visual regression checks at fixed fonts and viewport, plus Factur-X/ZUGFeRD validation and attachment checks;
@@ -217,8 +220,8 @@ Automated freshness checks report newer stable releases. Security fixes are prio
 
 The first release is accepted when:
 
-1. An administrator can start a local development instance with fixtures and exercise every workflow without deploying a server release.
-2. The administrator can securely log in and manage customers and catalog items through the Blue Split View UI.
+1. A developer can start a local development instance with fake Pocket ID, fixtures, and fake Paperless and exercise every workflow without deploying a server release.
+2. A member of the Pocket ID group `invoice-admins` can securely log in and manage customers and catalog items through the Blue Split View UI, while a user outside the group is denied.
 3. Draft invoices can be edited without consuming a number.
 4. Concurrent finalization produces unique monotonic numbers and immutable snapshots.
 5. Each finalized invoice produces the selected HTML layout as a PDF with a valid Factur-X/ZUGFeRD attachment.
