@@ -707,8 +707,6 @@ git commit -m "Add encrypted backup and recovery"
 - Create: `testdata/dev/catalog.json`
 - Create: `scripts/test.ps1`
 - Create: `scripts/test.sh`
-- Create: `scripts/ci-local.ps1`
-- Create: `scripts/ci-local.sh`
 - Modify: `cmd/server/main.go`
 - Modify: `cmd/server/main_test.go`
 
@@ -744,7 +742,7 @@ Expected: failure at the first unavailable workflow control.
 
 - [ ] **Step 6: Complete browser-visible wiring and test scripts**
 
-Make `scripts/test` run format verification, vet, unit, integration, and browser tests. Make `scripts/ci-local` additionally build the server, build the Docker image once it exists, and run container smoke/security checks. Both PowerShell and shell variants execute equivalent named stages and stop on first failure.
+Make `scripts/test` run format verification, vet, unit, integration, and browser tests. The PowerShell and shell variants execute equivalent named stages and stop on first failure.
 
 - [ ] **Step 7: Verify and commit local development**
 
@@ -758,7 +756,7 @@ go test ./...
 Then run `powershell -File scripts/test.ps1` on Windows and commit:
 
 ```bash
-git add internal/devmode internal/web/browser_test.go cmd/server testdata/dev scripts/test.* scripts/ci-local.*
+git add internal/devmode internal/web/browser_test.go cmd/server testdata/dev scripts/test.*
 git commit -m "Add isolated local development mode"
 ```
 
@@ -772,6 +770,8 @@ git commit -m "Add isolated local development mode"
 - Create: `docker/entrypoint`
 - Create: `docker/healthcheck`
 - Create: `docker/seccomp.json`
+- Create: `scripts/ci-local.ps1`
+- Create: `scripts/ci-local.sh`
 - Create: `internal/web/health.go`
 - Create: `internal/web/health_test.go`
 - Modify: `README.md`
