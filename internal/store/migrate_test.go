@@ -168,8 +168,8 @@ func TestMigrateUpgradesOriginalSchema(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationsApplied); err != nil {
 		t.Fatal(err)
 	}
-	if migrationsApplied != 6 {
-		t.Fatalf("migration count=%d, want 6", migrationsApplied)
+	if migrationsApplied != 7 {
+		t.Fatalf("migration count=%d, want 7", migrationsApplied)
 	}
 }
 
@@ -311,8 +311,8 @@ func TestCustomerKeyRepairMigrationUpgradesRecorded003WithoutChecksumDrift(t *te
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
-	if applied != 6 {
-		t.Fatalf("migration count after idempotent repair = %d, want 6", applied)
+	if applied != 7 {
+		t.Fatalf("migration count after idempotent repair = %d, want 7", applied)
 	}
 }
 
@@ -373,7 +373,7 @@ func TestCatalogKeyMigrationUpgradesPre005DatabaseWithoutChecksumDrift(t *testin
 		t.Fatal(err)
 	}
 	var applied int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != 6 {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != 7 {
 		t.Fatalf("idempotent catalog migration count=%d, %v", applied, err)
 	}
 }
@@ -452,4 +452,48 @@ func fractionalOrInteger(column, fractionalColumn, integer string) string {
 		return "1.5"
 	}
 	return integer
+}
+
+func TestFinalizationMigrationUpgrades006AndPreservesChecksums(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "upgrade.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if err = s.ensureMigrationTable(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := embeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range ms[:6] {
+		if err = s.applyMigration(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = s.DB().Exec(`INSERT INTO customers(id,number,display_name,country,currency) VALUES('c','C','Buyer','DE','EUR'); INSERT INTO invoices(id,customer_id,state,currency) VALUES('draft','c','draft','EUR')`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err = s.Migrate(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, m := range ms[:6] {
+		var checksum string
+		if err = s.DB().QueryRow(`SELECT checksum FROM schema_migrations WHERE version=?`, m.version).Scan(&checksum); err != nil || checksum != m.checksum {
+			t.Fatalf("checksum %d=%q %v", m.version, checksum, err)
+		}
+	}
+	var state string
+	var frozen, key, paid sql.NullString
+	var seq sql.NullInt64
+	if err = s.DB().QueryRow(`SELECT state,frozen_snapshot,finalization_key,paid_at,invoice_sequence FROM invoices WHERE id='draft'`).Scan(&state, &frozen, &key, &paid, &seq); err != nil || state != "draft" || frozen.Valid || key.Valid || paid.Valid || seq.Valid {
+		t.Fatalf("upgrade state=%s %v", state, err)
+	}
+	if _, err = s.DB().Exec(`UPDATE invoices SET invoice_sequence=1.5 WHERE id='draft'`); err == nil {
+		t.Fatal("fractional sequence accepted")
+	}
 }

@@ -57,6 +57,10 @@ type app struct {
 }
 
 type pageData struct {
+	Finalized                                                          *invoicing.FinalizedInvoice
+	FinalizationKey, InvoiceConfirmation, InvoiceReason                string
+	InvoiceState                                                       string
+	FinalizationReady                                                  bool
 	Nonce, CSRFToken, DisplayName, CSSURL, HTMXURL, InvoiceJSURL       string
 	CompanyInput                                                       store.CompanyInput
 	Customers                                                          store.CustomerPage
@@ -104,7 +108,7 @@ func New(deps Dependencies) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	t, err := template.New("pages").Funcs(templateFunctions()).ParseFS(embeddedFiles, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html", "templates/catalog.html", "templates/catalog_detail.html", "templates/catalog_form.html", "templates/invoices.html", "templates/invoice_editor.html", "templates/invoice_items.html")
+	t, err := template.New("pages").Funcs(templateFunctions()).ParseFS(embeddedFiles, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html", "templates/catalog.html", "templates/catalog_detail.html", "templates/catalog_form.html", "templates/invoices.html", "templates/invoice_editor.html", "templates/invoice_items.html", "templates/invoice_review.html", "templates/invoice_detail.html")
 	if err != nil {
 		return nil, err
 	}

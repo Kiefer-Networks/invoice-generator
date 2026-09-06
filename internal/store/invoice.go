@@ -81,6 +81,22 @@ func (r *InvoiceRepository) GetDraft(ctx context.Context, id string) (InvoiceDra
 		return InvoiceDraft{}, fmt.Errorf("begin draft read: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	draft, err := readInvoice(ctx, tx, id)
+	if err != nil {
+		return InvoiceDraft{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return InvoiceDraft{}, err
+	}
+	return draft, nil
+}
+
+type invoiceReader interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func readInvoice(ctx context.Context, tx invoiceReader, id string) (InvoiceDraft, error) {
 	draft, err := scanInvoiceDraft(tx.QueryRowContext(ctx, `SELECT id, customer_id, number, state, currency, issue_date, due_date, customer_snapshot, version, net_total_minor, tax_total_minor, gross_total_minor FROM invoices WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return InvoiceDraft{}, ErrNotFound
@@ -103,9 +119,6 @@ func (r *InvoiceRepository) GetDraft(ctx context.Context, id string) (InvoiceDra
 	if err := rows.Err(); err != nil {
 		return InvoiceDraft{}, fmt.Errorf("list invoice lines: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return InvoiceDraft{}, fmt.Errorf("commit draft read: %w", err)
-	}
 	return draft, nil
 }
 func (r *InvoiceRepository) ListDrafts(ctx context.Context, options InvoiceListOptions) ([]InvoiceDraft, error) {
@@ -124,7 +137,7 @@ func (r *InvoiceRepository) ListDraftPage(ctx context.Context, options InvoiceLi
 	if state == "" {
 		state = "draft"
 	}
-	if state != "draft" {
+	if state != "draft" && state != "finalized" && state != "paid" && state != "overdue" && state != "cancelled" {
 		return InvoicePage{}, fieldError("state", "is invalid")
 	}
 	offset := 0
@@ -138,8 +151,8 @@ func (r *InvoiceRepository) ListDraftPage(ctx context.Context, options InvoiceLi
 	where := "state=?"
 	args := []any{state}
 	if search := strings.ToLower(strings.TrimSpace(options.Search)); search != "" {
-		where += " AND lower(customer_snapshot) LIKE ? ESCAPE '!'"
-		args = append(args, "%"+escapeLike(search)+"%")
+		where += " AND (lower(customer_snapshot) LIKE ? ESCAPE '!' OR lower(number) LIKE ? ESCAPE '!')"
+		args = append(args, "%"+escapeLike(search)+"%", "%"+escapeLike(search)+"%")
 	}
 	args = append(args, limit+1, offset)
 	rows, err := r.store.db.QueryContext(ctx, `SELECT id, customer_id, number, state, currency, issue_date, due_date, customer_snapshot, version, net_total_minor, tax_total_minor, gross_total_minor FROM invoices WHERE `+where+` ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ?`, args...)

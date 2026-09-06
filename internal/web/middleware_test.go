@@ -29,7 +29,7 @@ func (f *fakeAuth) Callback(context.Context, *url.URL, *http.Cookie) (auth.Sessi
 	return auth.SessionResult{SessionCookie: &http.Cookie{Name: "invoice_session", Value: "session"}, TransactionCookie: &http.Cookie{Name: "invoice_oidc_transaction", MaxAge: -1}, ReturnTo: "/"}, nil
 }
 func (f *fakeAuth) Authenticate(context.Context, *http.Cookie) (auth.Principal, error) {
-	return auth.Principal{UserID: "u1", DisplayName: "Ada"}, f.authenticateErr
+	return auth.Principal{UserID: "u1", Subject: "subject-ada", DisplayName: "Ada"}, f.authenticateErr
 }
 
 func TestAuthenticationDenialIgnoresHXHeaders(t *testing.T) {

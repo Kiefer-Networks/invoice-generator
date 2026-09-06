@@ -83,6 +83,13 @@ func (a *app) invoiceRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
+	if len(parts) == 2 {
+		switch parts[1] {
+		case "review", "finalize", "paid", "cancel", "correction":
+			a.invoiceFinalizationRoute(w, r, id, parts[1])
+			return
+		}
+	}
 	if len(parts) == 1 {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w, http.MethodGet)
@@ -172,6 +179,13 @@ func (a *app) invoiceMoveLine(w http.ResponseWriter, r *http.Request, id, lineID
 	a.renderInvoiceError(w, r, id, err)
 }
 func (a *app) invoiceDetail(w http.ResponseWriter, r *http.Request, id string) {
+	if f, err := invoicing.NewFinalizationService(a.store).Get(r.Context(), id); err == nil {
+		a.renderFinalInvoice(w, r, f, "", nil)
+		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "unable to load invoice", 500)
+		return
+	}
 	draft, err := a.invoiceService().Get(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
@@ -179,6 +193,10 @@ func (a *app) invoiceDetail(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	if err != nil {
 		http.Error(w, "unable to load invoice", 500)
+		return
+	}
+	if err := a.validateInvoiceNavigation(r); err != nil {
+		http.Error(w, "invalid invoice query", 400)
 		return
 	}
 	data, err := a.invoiceEditorData(r, pageData{Invoice: &draft})
@@ -193,6 +211,13 @@ func (a *app) invoiceDetail(w http.ResponseWriter, r *http.Request, id string) {
 	a.renderTemplate(w, "invoicesPage", data)
 }
 func (a *app) invoicePreview(w http.ResponseWriter, r *http.Request, id string) {
+	if f, err := invoicing.NewFinalizationService(a.store).Get(r.Context(), id); err == nil {
+		a.renderFinalInvoice(w, r, f, "", nil)
+		return
+	} else if !errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "unable to load invoice", 500)
+		return
+	}
 	draft, err := a.invoiceService().Get(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
@@ -366,6 +391,10 @@ func invoiceLineInput(r *http.Request) (invoicing.DraftLineInput, error) {
 	return invoicing.DraftLineInput{Title: r.Form.Get("title"), Description: r.Form.Get("description"), Unit: r.Form.Get("unit"), QuantityScaled: int64(q), UnitPriceMinor: int64(price), DiscountBasisPoints: int64(discount), TaxRateBasisPoints: int64(tax)}, nil
 }
 func (a *app) invoiceSaved(w http.ResponseWriter, r *http.Request, draft invoicing.Draft) {
+	if err := a.validateInvoiceNavigation(r); err != nil {
+		http.Error(w, "invalid invoice query", 400)
+		return
+	}
 	data, err := a.invoiceEditorData(r, pageData{Invoice: &draft})
 	if err != nil {
 		http.Error(w, "unable to load invoice", 500)
@@ -426,14 +455,18 @@ func (a *app) renderInvoiceError(w http.ResponseWriter, r *http.Request, id stri
 }
 func (a *app) invoiceListData(r *http.Request, data pageData) (pageData, error) {
 	state := r.URL.Query().Get("state")
-	if state != "" && state != "draft" {
+	if state != "" && state != "draft" && state != "finalized" && state != "paid" && state != "overdue" && state != "cancelled" {
 		return data, errors.New("invalid state")
 	}
-	page, err := a.store.InvoiceRepository().ListDraftPage(r.Context(), store.InvoiceListOptions{State: "draft", Search: r.URL.Query().Get("q"), Cursor: r.URL.Query().Get("cursor")})
+	page, err := a.store.InvoiceRepository().ListDraftPage(r.Context(), store.InvoiceListOptions{State: state, Search: r.URL.Query().Get("q"), Cursor: r.URL.Query().Get("cursor")})
 	if err != nil {
 		return data, err
 	}
 	data.Invoices = page.Drafts
+	data.InvoiceState = state
+	if data.InvoiceState == "" {
+		data.InvoiceState = "draft"
+	}
 	data.Search = r.URL.Query().Get("q")
 	if page.NextCursor != "" {
 		values := r.URL.Query()
@@ -550,6 +583,9 @@ func (a *app) invoiceEditorData(r *http.Request, data pageData) (pageData, error
 	return a.withPageData(r, data), nil
 }
 func (a *app) validateInvoiceNavigation(r *http.Request) error {
+	if state := r.URL.Query().Get("state"); state != "" && state != "draft" {
+		return errors.New("invalid draft state")
+	}
 	_, err := a.invoiceEditorData(r, pageData{})
 	return err
 }
