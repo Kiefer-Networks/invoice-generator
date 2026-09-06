@@ -223,6 +223,40 @@ func TestMiddlewareProxyChainUsesFirstUntrustedHop(t *testing.T) {
 	}
 }
 
+func TestMiddlewareProxyValidatesEveryForwardedField(t *testing.T) {
+	prefixes := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")}
+	for _, tc := range []struct {
+		name   string
+		fields []string
+		want   string
+		bad    bool
+	}{
+		{"multiple field lines", []string{"203.0.113.66", "198.51.100.8, 10.0.0.2"}, "198.51.100.8", false},
+		{"malformed left prefix", []string{"not-an-ip", "198.51.100.8, 10.0.0.2"}, "", true},
+		{"empty element", []string{"203.0.113.66,, 10.0.0.2"}, "", true},
+		{"all trusted", []string{"10.0.0.3, 10.0.0.2"}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "http://internal/_health", nil)
+			r.RemoteAddr = "10.0.0.2:443"
+			r.Header["X-Forwarded-For"] = tc.fields
+			got, err := normalizeProxy(r, prefixes)
+			if tc.bad {
+				if err == nil {
+					t.Fatal("accepted unsafe chain")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.RemoteAddr != tc.want {
+				t.Fatalf("client=%q", got.RemoteAddr)
+			}
+		})
+	}
+}
+
 func TestProductionTransportRequiresTLSOrTrustedHTTPSProxy(t *testing.T) {
 	a := &fakeAuth{}
 	h, err := New(Dependencies{Auth: a, Config: Config{AllowedHosts: []string{"app.example.test"}, TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/24")}, BodyLimit: 1 << 20}})

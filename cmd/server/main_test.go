@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/kiefer-networks/invoice-generator/internal/store"
@@ -120,6 +121,26 @@ func TestConfigRejectsUnsafeSettings(t *testing.T) {
 			tc.mutate(&cfg)
 			if err := cfg.Validate(); err == nil {
 				t.Fatal("Validate accepted unsafe configuration")
+			}
+		})
+	}
+}
+
+func TestConfigRejectsWeakApplicationKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"repeated session", func(c *Config) { c.SessionKeyFile = writeSecret(t, encodedKey(strings.Repeat("s", 32))) }},
+		{"repeated csrf", func(c *Config) { c.TransactionKeyFile = writeSecret(t, encodedKey(strings.Repeat("t", 32))) }},
+		{"default session", func(c *Config) { c.SessionKeyFile = writeSecret(t, encodedKey(strings.Repeat("\x00", 32))) }},
+		{"default csrf", func(c *Config) { c.TransactionKeyFile = writeSecret(t, encodedKey("0123456789abcdef0123456789abcdef")) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			tc.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("accepted weak application key")
 			}
 		})
 	}

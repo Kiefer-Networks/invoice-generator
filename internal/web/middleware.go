@@ -187,20 +187,26 @@ func normalizeProxy(r *http.Request, trusted []netip.Prefix) (*http.Request, err
 	}
 	copy := r.Clone(r.Context())
 	copy = copy.WithContext(context.WithValue(copy.Context(), trustedPeerKey, true))
-	chain := r.Header.Get("X-Forwarded-For")
-	if chain == "" {
+	fields := r.Header.Values("X-Forwarded-For")
+	if len(fields) == 0 {
 		return copy, nil
 	}
-	parts := strings.Split(chain, ",")
-	for i := len(parts) - 1; i >= 0; i-- {
-		value := strings.TrimSpace(parts[i])
-		if value == "" {
-			return nil, errors.New("empty forwarded address")
+	var addresses []netip.Addr
+	for _, field := range fields {
+		for _, part := range strings.Split(field, ",") {
+			value := strings.TrimSpace(part)
+			if value == "" {
+				return nil, errors.New("empty forwarded address")
+			}
+			address, err := netip.ParseAddr(value)
+			if err != nil {
+				return nil, errors.New("invalid forwarded address")
+			}
+			addresses = append(addresses, address)
 		}
-		address, err := netip.ParseAddr(value)
-		if err != nil {
-			return nil, errors.New("invalid forwarded address")
-		}
+	}
+	for i := len(addresses) - 1; i >= 0; i-- {
+		address := addresses[i]
 		hopTrusted := false
 		for _, prefix := range trusted {
 			if prefix.Contains(address) {

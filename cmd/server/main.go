@@ -2,8 +2,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -172,6 +174,11 @@ func (c Config) Validate() error {
 			return err
 		}
 	}
+	for _, key := range []struct{ path, label string }{{c.SessionKeyFile, "session key"}, {c.TransactionKeyFile, "CSRF key"}} {
+		if err := validateApplicationKey(key.path, key.label); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -187,6 +194,31 @@ func protectedSecretFile(path, label string) error {
 		return fmt.Errorf("%s file permissions are too broad", label)
 	}
 	return nil
+}
+func validateApplicationKey(path, label string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", label, err)
+	}
+	key, err := base64.RawStdEncoding.DecodeString(string(data))
+	if err != nil || len(key) != 32 {
+		return fmt.Errorf("%s must be raw standard base64 for exactly 32 bytes", label)
+	}
+	if weakApplicationKey(key) {
+		return fmt.Errorf("%s is a known or repeated default", label)
+	}
+	return nil
+}
+func weakApplicationKey(key []byte) bool {
+	if len(key) != 32 || bytes.Count(key, key[:1]) == len(key) {
+		return true
+	}
+	for _, known := range [][]byte{[]byte("0123456789abcdef0123456789abcdef"), []byte("00000000000000000000000000000000"), []byte("changemechangemechangemechangeme")} {
+		if bytes.Equal(key, known) {
+			return true
+		}
+	}
+	return false
 }
 func parseHTTPURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)

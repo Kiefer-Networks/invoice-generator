@@ -45,3 +45,16 @@ func TestEmbeddedAssetManifest(t *testing.T) {
 		}
 	}
 }
+
+func TestHTMXLicenseContainsCompleteUpstream0BSDText(t *testing.T) {
+	b, err := embeddedFiles.ReadFile("static/HTMX-LICENSE.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	license := string(b)
+	for _, fragment := range []string{"Zero-Clause BSD", "Source: https://github.com/bigskysoftware/htmx/releases/tag/v2.0.4", "INCLUDING ALL IMPLIED WARRANTIES", "IN NO EVENT SHALL THE AUTHOR BE LIABLE", "ARISING OUT\nOF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE."} {
+		if !strings.Contains(license, fragment) {
+			t.Fatalf("license is incomplete: missing %q", fragment)
+		}
+	}
+}
