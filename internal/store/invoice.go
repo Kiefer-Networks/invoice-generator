@@ -228,7 +228,14 @@ func (r *InvoiceRepository) RemoveLine(ctx context.Context, id string, version i
 	if n, _ := result.RowsAffected(); n == 0 {
 		return InvoiceDraft{}, ErrNotFound
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE invoice_items SET position=position-1 WHERE invoice_id=? AND position>?`, id, removedPosition); err != nil {
+	var remaining int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM invoice_items WHERE invoice_id=?`, id).Scan(&remaining); err != nil {
+		return InvoiceDraft{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE invoice_items SET position=position+? WHERE invoice_id=? AND position>?`, remaining+1, id, removedPosition); err != nil {
+		return InvoiceDraft{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE invoice_items SET position=position-? WHERE invoice_id=? AND position>?`, remaining+2, id, removedPosition+remaining+1); err != nil {
 		return InvoiceDraft{}, err
 	}
 	if err = tx.Commit(); err != nil {

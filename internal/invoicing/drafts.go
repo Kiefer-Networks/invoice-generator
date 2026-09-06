@@ -104,7 +104,10 @@ func (s *DraftService) AddCatalogItem(ctx context.Context, id string, version in
 		return Draft{}, &store.ValidationError{Field: "catalog_item", Message: "must be active"}
 	}
 	company, companyErr := s.store.CompanyRepository().Get(ctx)
-	if companyErr != nil && !errors.Is(companyErr, store.ErrNotFound) {
+	if errors.Is(companyErr, store.ErrNotFound) {
+		return Draft{}, &store.ValidationError{Field: "catalog_item", Message: "company setup is required before catalog prices can be added"}
+	}
+	if companyErr != nil {
 		return Draft{}, companyErr
 	}
 	if companyErr == nil && company.Currency != current.Currency {

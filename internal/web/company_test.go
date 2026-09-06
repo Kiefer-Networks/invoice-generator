@@ -42,6 +42,9 @@ func customerApp(t *testing.T, authn *fakeAuth) (http.Handler, *store.Store) {
 	if err := s.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.CompanyRepository().Save(context.Background(), store.CompanyInput{LegalName: "Issuer", Country: "DE", DefaultLanguage: "de", Currency: "EUR", BrandColor: "#123456", PaymentTermsDays: 14}); err != nil {
+		t.Fatal(err)
+	}
 	h, err := New(Dependencies{Auth: authn, Store: s, Config: Config{AllowedHosts: []string{"app.example.test"}, BodyLimit: 1 << 20}})
 	if err != nil {
 		t.Fatal(err)
