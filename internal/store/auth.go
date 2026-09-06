@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -76,7 +77,7 @@ func (r *AuthRepository) CreateSession(ctx context.Context, session StoredSessio
 	if session.ID == "" || session.UserID == "" || len(session.TokenHash) == 0 || len(session.CSRFSecretHash) == 0 || session.ExpiresAt.IsZero() || session.AuthorizationExpiresAt.IsZero() {
 		return errors.New("incomplete session")
 	}
-	_, err := r.store.db.ExecContext(ctx, `INSERT INTO sessions (id,user_id,token_hash,csrf_secret_hash,authorization_expires_at,expires_at) VALUES (?,?,?,?,?,?)`, session.ID, session.UserID, session.TokenHash, session.CSRFSecretHash, formatAuthTime(session.AuthorizationExpiresAt), formatAuthTime(session.ExpiresAt))
+	_, err := r.store.db.ExecContext(ctx, `INSERT INTO sessions (id,user_id,token_hash,csrf_secret_hash,authorization_expires_at,expires_at) VALUES (?,?,?,?,?,?)`, session.ID, session.UserID, session.TokenHash, session.CSRFSecretHash, formatSessionTime(session.AuthorizationExpiresAt), formatSessionTime(session.ExpiresAt))
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
@@ -91,12 +92,12 @@ func (r *AuthRepository) SessionByTokenHash(ctx context.Context, tokenHash []byt
 SELECT s.id,s.user_id,s.token_hash,s.csrf_secret_hash,s.authorization_expires_at,s.expires_at,
  u.id,u.issuer,u.subject,u.display_name,u.email
 FROM sessions s JOIN oidc_users u ON u.id=s.user_id
-WHERE s.token_hash=? AND unixepoch(s.expires_at)>unixepoch(?) AND unixepoch(s.authorization_expires_at)>unixepoch(?) AND u.active=1`, tokenHash, formatAuthTime(now), formatAuthTime(now)).Scan(&session.ID, &session.UserID, &session.TokenHash, &session.CSRFSecretHash, &authExpiry, &expiry, &user.ID, &user.Issuer, &user.Subject, &user.DisplayName, &user.Email)
+WHERE s.token_hash=? AND CAST(s.expires_at AS INTEGER)>? AND CAST(s.authorization_expires_at AS INTEGER)>? AND u.active=1`, tokenHash, now.UTC().UnixNano(), now.UTC().UnixNano()).Scan(&session.ID, &session.UserID, &session.TokenHash, &session.CSRFSecretHash, &authExpiry, &expiry, &user.ID, &user.Issuer, &user.Subject, &user.DisplayName, &user.Email)
 	if err != nil {
 		return StoredSession{}, OIDCUser{}, err
 	}
-	session.AuthorizationExpiresAt = parseAuthTime(authExpiry)
-	session.ExpiresAt = parseAuthTime(expiry)
+	session.AuthorizationExpiresAt = parseSessionTime(authExpiry)
+	session.ExpiresAt = parseSessionTime(expiry)
 	return session, user, nil
 }
 
@@ -112,7 +113,7 @@ func (r *AuthRepository) DeleteExpiredSessions(ctx context.Context, now time.Tim
 	if limit <= 0 {
 		return nil
 	}
-	_, err := r.store.db.ExecContext(ctx, `DELETE FROM sessions WHERE id IN (SELECT id FROM sessions WHERE expires_at <= ? OR authorization_expires_at <= ? LIMIT ?)`, formatAuthTime(now), formatAuthTime(now), limit)
+	_, err := r.store.db.ExecContext(ctx, `DELETE FROM sessions WHERE id IN (SELECT id FROM sessions WHERE CAST(expires_at AS INTEGER) <= ? OR CAST(authorization_expires_at AS INTEGER) <= ? LIMIT ?)`, now.UTC().UnixNano(), now.UTC().UnixNano(), limit)
 	return err
 }
 
@@ -125,3 +126,8 @@ func newAuthID() (string, error) {
 }
 func formatAuthTime(t time.Time) string    { return t.UTC().Format(time.RFC3339Nano) }
 func parseAuthTime(value string) time.Time { t, _ := time.Parse(time.RFC3339Nano, value); return t }
+func formatSessionTime(t time.Time) string { return fmt.Sprintf("%019d", t.UTC().UnixNano()) }
+func parseSessionTime(value string) time.Time {
+	n, _ := strconv.ParseInt(value, 10, 64)
+	return time.Unix(0, n).UTC()
+}

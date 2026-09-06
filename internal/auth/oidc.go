@@ -371,11 +371,13 @@ func (r *boundedRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 type limitedReadCloser struct {
 	io.ReadCloser
 	reader *io.LimitedReader
+	read   int64
 }
 
 func (r *limitedReadCloser) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
-	if r.reader.N == 0 && err == nil {
+	r.read += int64(n)
+	if r.read > maxOIDCDocumentBytes {
 		return n, errors.New("OIDC response exceeds size limit")
 	}
 	return n, err

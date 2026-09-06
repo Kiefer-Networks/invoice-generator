@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -113,15 +114,16 @@ func TestAuthorizationTransactionRejectsDuplicateStateAndOAuthError(t *testing.T
 }
 
 type testProvider struct {
-	server           *httptest.Server
-	exchangeN        atomic.Int32
-	key              *rsa.PrivateKey
-	mu               sync.Mutex
-	nonce            string
-	groups           []string
-	tokenStatus      int
-	claims           map[string]any
-	corruptSignature bool
+	server                    *httptest.Server
+	exchangeN                 atomic.Int32
+	key                       *rsa.PrivateKey
+	mu                        sync.Mutex
+	nonce                     string
+	groups                    []string
+	tokenStatus               int
+	claims                    map[string]any
+	corruptSignature          bool
+	expectedVerifierChallenge string
 }
 
 func (p *testProvider) exchanges() int { return int(p.exchangeN.Load()) }
@@ -151,6 +153,12 @@ func (p *testProvider) setClaims(claims map[string]any, corrupt bool) {
 	p.mu.Unlock()
 }
 
+func (p *testProvider) setExpectedVerifierChallenge(challenge string) {
+	p.mu.Lock()
+	p.expectedVerifierChallenge = challenge
+	p.mu.Unlock()
+}
+
 func newTestProvider(t *testing.T) *testProvider {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -171,9 +179,18 @@ func newTestProvider(t *testing.T) *testProvider {
 			w.WriteHeader(http.StatusNoContent)
 		case "/token":
 			provider.exchangeN.Add(1)
+			_ = r.ParseForm()
 			provider.mu.Lock()
 			status := provider.tokenStatus
+			challenge := provider.expectedVerifierChallenge
 			provider.mu.Unlock()
+			if challenge != "" {
+				sum := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
+				if base64.RawURLEncoding.EncodeToString(sum[:]) != challenge {
+					http.Error(w, "bad verifier", http.StatusBadRequest)
+					return
+				}
+			}
 			if status != 0 {
 				http.Error(w, "rejected", status)
 				return

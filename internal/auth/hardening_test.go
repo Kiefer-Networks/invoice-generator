@@ -69,6 +69,18 @@ func TestOIDCResponseLimiterPreservesCloseSetsTimeoutAndRejectsOverflow(t *testi
 	}
 }
 
+func TestOIDCResponseLimiterRejectsOverflowReturnedWithEOF(t *testing.T) {
+	t.Parallel()
+	body := &limitedReadCloser{ReadCloser: io.NopCloser(&eofReader{remaining: maxOIDCDocumentBytes + 1}), reader: &io.LimitedReader{R: &eofReader{remaining: maxOIDCDocumentBytes + 1}, N: maxOIDCDocumentBytes + 1}}
+	// A legal reader may return its final bytes and io.EOF together. Feed that
+	// shape directly to the limiter so the overflow decision cannot depend on
+	// err being nil.
+	body.reader = &io.LimitedReader{R: &eofReader{remaining: maxOIDCDocumentBytes + 1}, N: maxOIDCDocumentBytes + 1}
+	if _, err := body.Read(make([]byte, maxOIDCDocumentBytes+1)); err == nil {
+		t.Fatal("limiter accepted max+1 bytes returned with io.EOF")
+	}
+}
+
 func TestBeginPKCEChallengeMatchesEncryptedVerifier(t *testing.T) {
 	t.Parallel()
 	provider := newTestProvider(t)
@@ -86,6 +98,80 @@ func TestBeginPKCEChallengeMatchesEncryptedVerifier(t *testing.T) {
 	want := base64.RawURLEncoding.EncodeToString(sum[:])
 	if u.Query().Get("code_challenge") != want {
 		t.Fatal("PKCE challenge was not derived from stored verifier")
+	}
+}
+
+func TestCallbackPersistsOnlyExactSessionAndCSRFHMACs(t *testing.T) {
+	t.Parallel()
+	provider := newTestProvider(t)
+	database := testStore(t)
+	manager := newTestManager(t, provider, database)
+	redirect, transactionCookie, err := manager.Begin("/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(redirect)
+	provider.setNonce(u.Query().Get("nonce"))
+	provider.setExpectedVerifierChallenge(u.Query().Get("code_challenge"))
+	callback, _ := url.Parse("https://app.example.test/auth/callback?code=code&state=" + u.Query().Get("state"))
+	result, err := manager.Callback(context.Background(), callback, transactionCookie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, csrf, ok := splitSessionCookie(result.SessionCookie)
+	if !ok {
+		t.Fatal("callback did not return a bound session cookie")
+	}
+	var tokenHash, csrfHash []byte
+	if err := database.DB().QueryRowContext(context.Background(), "SELECT token_hash, csrf_secret_hash FROM sessions").Scan(&tokenHash, &csrfHash); err != nil {
+		t.Fatal(err)
+	}
+	if string(tokenHash) != string(manager.keyedHash(token)) || string(csrfHash) != string(manager.keyedHash(csrf)) {
+		t.Fatal("SQLite does not contain the exact keyed session and CSRF hashes")
+	}
+	for _, raw := range []string{token, csrf} {
+		var count int
+		if err := database.DB().QueryRowContext(context.Background(), "SELECT COUNT(*) FROM sessions WHERE token_hash=? OR csrf_secret_hash=?", []byte(raw), []byte(raw)).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatal("SQLite contains a raw session or CSRF value")
+		}
+	}
+	if err := manager.ValidateCSRF(context.Background(), result.SessionCookie, result.CSRFToken); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAuthorizationTransactionValuesAreIndependentAndExpire(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	provider := newTestProvider(t)
+	manager := newTestManager(t, provider, testStore(t))
+	manager.now = func() time.Time { return now }
+	redirect, cookie, err := manager.Begin("/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := manager.openTransaction(cookie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{tx.State, tx.Nonce, tx.Verifier} {
+		decoded, err := base64.RawURLEncoding.DecodeString(value)
+		if err != nil || len(decoded) != 32 {
+			t.Fatal("transaction value is not an independent 32-byte random value")
+		}
+	}
+	if tx.State == tx.Nonce || tx.State == tx.Verifier || tx.Nonce == tx.Verifier {
+		t.Fatal("transaction state, nonce, and verifier were reused")
+	}
+	now = now.Add(transactionLifetime)
+	u, _ := url.Parse(redirect)
+	callback, _ := url.Parse("https://app.example.test/auth/callback?code=x&state=" + u.Query().Get("state"))
+	result, err := manager.Callback(context.Background(), callback, cookie)
+	if err == nil || result.TransactionCookie == nil || result.TransactionCookie.MaxAge >= 0 {
+		t.Fatal("expired transaction was accepted or not deleted")
 	}
 }
 
@@ -146,6 +232,20 @@ func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { r
 type trackingBody struct {
 	io.Reader
 	closed atomic.Bool
+}
+
+type eofReader struct{ remaining int64 }
+
+func (r *eofReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	n := len(p)
+	if int64(n) > r.remaining {
+		n = int(r.remaining)
+	}
+	r.remaining -= int64(n)
+	return n, io.EOF
 }
 
 func (b *trackingBody) Close() error { b.closed.Store(true); return nil }
