@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -66,6 +67,83 @@ func TestCustomerRepositoryListsSearchResultsInStableCursorOrder(t *testing.T) {
 	}
 	if len(page.Customers) != 1 || page.Customers[0].Number != "C-001" || page.NextCursor != "" {
 		t.Fatalf("second page = %#v", page)
+	}
+}
+
+func TestCustomerRepositoryUsesUnicodeNormalizedKeysForSearchAndCursor(t *testing.T) {
+	t.Parallel()
+	repo := openMigratedStore(t).CustomerRepository()
+	ctx := context.Background()
+	for _, in := range []CustomerInput{
+		validCustomer("C-001", "Éclair Studio"),
+		validCustomer("C-002", "École Conseil"),
+		validCustomer("C-003", "Zulu GmbH"),
+	} {
+		if _, err := repo.Create(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := repo.List(ctx, CustomerListOptions{Search: "é", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Customers) != 1 || page.Customers[0].Number != "C-001" || page.NextCursor == "" {
+		t.Fatalf("first Unicode page = %#v", page)
+	}
+	page, err = repo.List(ctx, CustomerListOptions{Search: "é", Limit: 1, Cursor: page.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Customers) != 1 || page.Customers[0].Number != "C-002" || page.NextCursor != "" {
+		t.Fatalf("second Unicode page = %#v", page)
+	}
+}
+
+func TestCustomerRepositoryCapsPageAndEscapesLiteralSearchCharacters(t *testing.T) {
+	t.Parallel()
+	repo := openMigratedStore(t).CustomerRepository()
+	ctx := context.Background()
+	for i := 0; i < 102; i++ {
+		name := "Customer"
+		if i == 0 {
+			name = "100%_! literal"
+		}
+		if _, err := repo.Create(ctx, validCustomer(fmt.Sprintf("C-%03d", i), name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := repo.List(ctx, CustomerListOptions{Limit: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Customers) != 100 || page.NextCursor == "" {
+		t.Fatalf("capped page = %#v", page)
+	}
+	page, err = repo.List(ctx, CustomerListOptions{Search: "100%_! literal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Customers) != 1 || page.Customers[0].Number != "C-000" {
+		t.Fatalf("literal search = %#v", page)
+	}
+}
+
+func TestCustomerRepositoryRejectsUnsupportedISOCodes(t *testing.T) {
+	t.Parallel()
+	repo := openMigratedStore(t).CustomerRepository()
+	for _, change := range []struct {
+		name  string
+		input CustomerInput
+	}{
+		{"country", CustomerInput{Number: "C-001", DisplayName: "Acme", Country: "ZZ", PreferredLanguage: "de", Currency: "EUR", PaymentTermsDays: 14}},
+		{"currency", CustomerInput{Number: "C-002", DisplayName: "Acme", Country: "DE", PreferredLanguage: "de", Currency: "ZZZ", PaymentTermsDays: 14}},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			_, err := repo.Create(context.Background(), change.input)
+			if !IsValidationError(err) {
+				t.Fatalf("Create() error = %v, want validation error", err)
+			}
+		})
 	}
 }
 

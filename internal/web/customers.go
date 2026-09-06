@@ -3,6 +3,7 @@ package web
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/kiefer-networks/invoice-generator/internal/store"
@@ -17,12 +18,17 @@ func (a *app) customers(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "customer storage is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	page, err := a.store.CustomerRepository().List(r.Context(), store.CustomerListOptions{Search: r.URL.Query().Get("q"), Cursor: r.URL.Query().Get("cursor")})
+	state, options, err := customerListOptions(r.URL.Query())
 	if err != nil {
 		http.Error(w, "invalid customer query", http.StatusBadRequest)
 		return
 	}
-	data := a.withPageData(r, pageData{Customers: page, Search: r.URL.Query().Get("q")})
+	page, err := a.store.CustomerRepository().List(r.Context(), options)
+	if err != nil {
+		http.Error(w, "invalid customer query", http.StatusBadRequest)
+		return
+	}
+	data := a.withPageData(r, pageData{Customers: page, Search: options.Search, CustomerState: state, NextPageURL: customerListURL(options.Search, state, page.NextCursor)})
 	if r.Header.Get("HX-Request") == "true" {
 		a.renderTemplate(w, "customerList", data)
 		return
@@ -48,7 +54,7 @@ func (a *app) customerNew(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		a.renderCustomerError(w, r, pageData{CustomerInput: input, CustomerAction: "/customers/new", CustomerTitle: "New customer"}, err)
+		a.renderCustomerError(w, r, pageData{CustomerInput: input, CustomerAction: "/customers/new", CustomerTitle: "New customer", Raw: rawForm(r)}, err)
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -152,8 +158,12 @@ func (a *app) customerEdit(w http.ResponseWriter, r *http.Request, id string) {
 			http.NotFound(w, r)
 			return
 		}
+		data := pageData{CustomerInput: input, CustomerVersion: version, CustomerAction: "/customers/" + id + "/edit", CustomerTitle: "Edit customer", Errors: errorFields(err), Raw: rawForm(r)}
+		if isHTMX(r) {
+			w.Header().Set("HX-Retarget", "#customer-detail")
+		}
 		w.WriteHeader(status)
-		a.renderCustomerPage(w, r, pageData{CustomerInput: input, CustomerVersion: version, CustomerAction: "/customers/" + id + "/edit", CustomerTitle: "Edit customer", Errors: errorFields(err)}, true)
+		a.renderCustomerPage(w, r, data, isHTMX(r))
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -197,7 +207,7 @@ func customerInputFromRequest(r *http.Request) (store.CustomerInput, error) {
 	return store.CustomerInput{Number: r.Form.Get("number"), DisplayName: r.Form.Get("display_name"), LegalName: r.Form.Get("legal_name"), ContactName: r.Form.Get("contact_name"), Email: r.Form.Get("email"), AddressLine1: r.Form.Get("address_line1"), AddressLine2: r.Form.Get("address_line2"), PostalCode: r.Form.Get("postal_code"), City: r.Form.Get("city"), Country: r.Form.Get("country"), VATIdentifier: r.Form.Get("vat_identifier"), PreferredLanguage: r.Form.Get("preferred_language"), Currency: r.Form.Get("currency"), PaymentTermsDays: terms, Notes: r.Form.Get("notes")}, err
 }
 func (a *app) customerSaved(w http.ResponseWriter, r *http.Request, c store.Customer) {
-	if r.Header.Get("HX-Request") == "true" {
+	if isHTMX(r) {
 		w.Header().Set("HX-Retarget", "#customer-detail")
 		w.Header().Set("HX-Push-Url", "/customers/"+c.ID)
 		a.renderTemplate(w, "customerDetail", a.withPageData(r, pageData{Customer: &c}))
@@ -207,7 +217,7 @@ func (a *app) customerSaved(w http.ResponseWriter, r *http.Request, c store.Cust
 }
 func (a *app) renderCustomerPage(w http.ResponseWriter, r *http.Request, data pageData, fragment bool) {
 	data = a.withPageData(r, data)
-	if fragment || r.Header.Get("HX-Request") == "true" {
+	if fragment || isHTMX(r) {
 		a.renderTemplate(w, "customerForm", data)
 		return
 	}
@@ -220,9 +230,12 @@ func (a *app) renderCustomerPage(w http.ResponseWriter, r *http.Request, data pa
 	a.renderTemplate(w, "customersPage", data)
 }
 func (a *app) renderCustomerError(w http.ResponseWriter, r *http.Request, data pageData, err error) {
+	if isHTMX(r) {
+		w.Header().Set("HX-Retarget", "#customer-detail")
+	}
 	w.WriteHeader(http.StatusBadRequest)
 	data.Errors = errorFields(err)
-	a.renderCustomerPage(w, r, data, true)
+	a.renderCustomerPage(w, r, data, isHTMX(r))
 }
 func errorFields(err error) map[string]string {
 	result := map[string]string{}
@@ -257,4 +270,45 @@ func (a *app) renderTemplate(w http.ResponseWriter, name string, data pageData) 
 	if err := a.templates.ExecuteTemplate(w, name, data); err != nil {
 		a.logger.Error("render page", "error", err)
 	}
+}
+
+func isHTMX(r *http.Request) bool { return r.Header.Get("HX-Request") == "true" }
+func rawForm(r *http.Request) map[string]string {
+	values := make(map[string]string)
+	for key := range r.Form {
+		values[key] = r.Form.Get(key)
+	}
+	return values
+}
+func customerListOptions(query url.Values) (string, store.CustomerListOptions, error) {
+	state := query.Get("state")
+	if state == "" {
+		state = "active"
+	}
+	options := store.CustomerListOptions{Search: query.Get("q"), Cursor: query.Get("cursor")}
+	switch state {
+	case "active":
+	case "archived":
+		options.ArchivedOnly = true
+	case "all":
+		options.IncludeArchived = true
+	default:
+		return "", options, errors.New("invalid state")
+	}
+	return state, options, nil
+}
+func customerListURL(search, state, cursor string) string {
+	values := url.Values{}
+	if search != "" {
+		values.Set("q", search)
+	}
+	if state != "" && state != "active" {
+		values.Set("state", state)
+	} else {
+		values.Set("state", "active")
+	}
+	if cursor != "" {
+		values.Set("cursor", cursor)
+	}
+	return "/customers?" + values.Encode()
 }

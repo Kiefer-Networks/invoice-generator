@@ -91,3 +91,50 @@ It could not run because this Windows Go installation reports `go: -race require
 ## Remaining concern
 
 Race-detector coverage requires a Windows environment with CGO and a compatible C compiler enabled. No application test failures remain in the available environment.
+
+## Fix round 1: review findings
+
+### Root causes and RED evidence
+
+Focused regressions were added before the fixes and run with:
+
+```text
+go test ./internal/store ./internal/web -run 'TestCustomerRepository(UsesUnicode|CapsPage|RejectsUnsupported)|TestHTMXConfiguration|TestCustomerValidationFullPage|TestCompanyValidationPreserves|TestCustomerConflictUses|TestCustomersExpose' -v
+```
+
+The initial run failed as intended:
+
+- Unicode `é` search returned no rows because SQLite `LOWER()` only handled ASCII while cursor values used Go Unicode lowercasing.
+- `ZZ` and `ZZZ` passed the former length-only country and currency validation.
+- HTMX used its default 4xx response policy, which declines swaps; validation responses also lacked a retarget header.
+- Customer validation and conflict handlers unconditionally rendered a form fragment even for ordinary full-page POSTs.
+- Integer parsing returned a generic conversion error, so validation was not associated with `payment_terms_days` and the raw input was lost.
+- No explicit archived-state filter was parsed or rendered, and pagination links discarded both the query and state.
+
+### Fixes
+
+- Added migration 003 with persisted `search_key` and `sort_key` columns. The repository writes them on create/update and safely backfills existing rows using the same Go Unicode normalization before querying. Search and cursor ordering no longer use SQLite `LOWER()`.
+- Enforced explicit ISO 3166-1 alpha-2 and ISO 4217 allow lists for company and customer data.
+- Added a safe HTMX `responseHandling` configuration that swaps 400 and 409 responses while keeping other 4xx/5xx responses unswapped errors. HTMX validation and conflict responses set the correct retarget header.
+- Rendered a complete Blue Split View page for non-HTMX validation and conflict responses; only actual HTMX requests receive fragments.
+- Kept raw submitted form values independently of typed conversion. Both forms now include a focusable validation summary, field-specific message IDs, invalid-state attributes, described-by links, and preserved unsupported language options.
+- Added an accessible active/archived/all customer filter. Archived records visibly identify their state and continue to expose their deliberate restore form. Pagination URLs preserve escaped `q`, `state`, and cursor values.
+
+### Fix-round GREEN and verification
+
+Passed:
+
+```text
+go test ./internal/store ./internal/web -run 'Company|Customer' -v
+go test ./...
+go vet ./...
+git diff --check
+```
+
+The race command was attempted again and remains unavailable only because Go reports:
+
+```text
+go: -race requires cgo; enable cgo by setting CGO_ENABLED=1
+```
+
+New focused coverage includes Unicode accented search and cursor paging, literal `%`, `_`, and `!` search, the 100-record cap, unsupported ISO placeholders, 400/409 HTMX swap configuration and outcomes, full-page versus fragment errors, raw invalid number and unsupported language preservation, archived filtering and restore UI, and escaped query/filter pagination.

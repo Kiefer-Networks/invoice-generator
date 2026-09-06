@@ -167,8 +167,8 @@ func TestMigrateUpgradesOriginalSchema(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationsApplied); err != nil {
 		t.Fatal(err)
 	}
-	if migrationsApplied != 2 {
-		t.Fatalf("migration count=%d, want 2", migrationsApplied)
+	if migrationsApplied != 3 {
+		t.Fatalf("migration count=%d, want 3", migrationsApplied)
 	}
 }
 

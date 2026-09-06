@@ -29,10 +29,10 @@ func (a *app) company(w http.ResponseWriter, r *http.Request) {
 			_, err = a.store.CompanyRepository().Save(r.Context(), input)
 		}
 		if err != nil {
-			a.renderCompanyError(w, r, input, err)
+			a.renderCompanyError(w, r, input, rawForm(r), err)
 			return
 		}
-		if r.Header.Get("HX-Request") == "true" {
+		if isHTMX(r) {
 			w.Header().Set("HX-Retarget", "#company-profile")
 			a.renderTemplate(w, "companyForm", a.withPageData(r, pageData{CompanyInput: input}))
 			return
@@ -50,11 +50,25 @@ func companyInputFromRequest(r *http.Request) (store.CompanyInput, error) {
 	terms, err := formInt(r, "payment_terms_days")
 	return store.CompanyInput{LegalName: r.Form.Get("legal_name"), ContactName: r.Form.Get("contact_name"), Email: r.Form.Get("email"), Phone: r.Form.Get("phone"), AddressLine1: r.Form.Get("address_line1"), AddressLine2: r.Form.Get("address_line2"), PostalCode: r.Form.Get("postal_code"), City: r.Form.Get("city"), Country: r.Form.Get("country"), TaxNumber: r.Form.Get("tax_number"), VATIdentifier: r.Form.Get("vat_identifier"), BankName: r.Form.Get("bank_name"), IBAN: r.Form.Get("iban"), BIC: r.Form.Get("bic"), LogoKey: r.Form.Get("logo_key"), BrandColor: r.Form.Get("brand_color"), DefaultLanguage: r.Form.Get("default_language"), Currency: r.Form.Get("currency"), PaymentTermsDays: terms, InvoicePrefix: r.Form.Get("invoice_prefix"), StandardNotes: r.Form.Get("standard_notes")}, err
 }
-func formInt(r *http.Request, name string) (int, error) { return strconv.Atoi(r.Form.Get(name)) }
+func formInt(r *http.Request, name string) (int, error) {
+	value, err := strconv.Atoi(r.Form.Get(name))
+	if err != nil {
+		return 0, &store.ValidationError{Field: name, Message: "must be a whole number"}
+	}
+	return value, nil
+}
 func (a *app) renderCompany(w http.ResponseWriter, r *http.Request, data pageData) {
 	a.renderTemplate(w, "companyPage", a.withPageData(r, data))
 }
-func (a *app) renderCompanyError(w http.ResponseWriter, r *http.Request, input store.CompanyInput, err error) {
+func (a *app) renderCompanyError(w http.ResponseWriter, r *http.Request, input store.CompanyInput, raw map[string]string, err error) {
+	if isHTMX(r) {
+		w.Header().Set("HX-Retarget", "#company-profile")
+	}
 	w.WriteHeader(http.StatusBadRequest)
-	a.renderTemplate(w, "companyPage", a.withPageData(r, pageData{CompanyInput: input, Errors: errorFields(err)}))
+	data := a.withPageData(r, pageData{CompanyInput: input, Errors: errorFields(err), Raw: raw})
+	if isHTMX(r) {
+		a.renderTemplate(w, "companyForm", data)
+		return
+	}
+	a.renderTemplate(w, "companyPage", data)
 }

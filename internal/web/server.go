@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
@@ -61,7 +62,9 @@ type pageData struct {
 	CustomerInput                                  store.CustomerInput
 	CustomerVersion                                int
 	CustomerAction, CustomerTitle, Search          string
+	CustomerState, NextPageURL                     string
 	Errors                                         map[string]string
+	Raw                                            map[string]string
 }
 
 func New(deps Dependencies) (http.Handler, error) {
@@ -81,7 +84,7 @@ func New(deps Dependencies) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	t, err := template.ParseFS(embeddedFiles, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html")
+	t, err := template.New("pages").Funcs(templateFunctions()).ParseFS(embeddedFiles, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html")
 	if err != nil {
 		return nil, err
 	}
@@ -91,6 +94,27 @@ func New(deps Dependencies) (http.Handler, error) {
 	}
 	a := &app{auth: deps.Auth, store: deps.Store, config: deps.Config, logger: logger, templates: t, static: http.StripPrefix("/assets/", http.FileServer(http.FS(files)))}
 	return a.chain(http.HandlerFunc(a.routes)), nil
+}
+
+func templateFunctions() template.FuncMap {
+	return template.FuncMap{
+		"formValue": func(raw map[string]string, name, fallback string) string {
+			if raw != nil {
+				if value, ok := raw[name]; ok {
+					return value
+				}
+			}
+			return fallback
+		},
+		"hasError": func(errors map[string]string, field string) bool { _, ok := errors[field]; return ok },
+		"errorID": func(errors map[string]string, field string) string {
+			if _, ok := errors[field]; ok {
+				return field + "-error"
+			}
+			return ""
+		},
+		"string": func(value int) string { return strconv.Itoa(value) },
+	}
 }
 
 func (a *app) routes(w http.ResponseWriter, r *http.Request) {

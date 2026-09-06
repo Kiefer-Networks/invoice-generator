@@ -113,10 +113,10 @@ func normalizeCompany(in CompanyInput) (CompanyInput, error) {
 			return in, fieldError("email", "must be a valid address")
 		}
 	}
-	if err := code(in.Country, "country", 2); err != nil {
+	if err := countryCode(in.Country); err != nil {
 		return in, err
 	}
-	if err := code(in.Currency, "currency", 3); err != nil {
+	if err := currencyCode(in.Currency); err != nil {
 		return in, err
 	}
 	if in.DefaultLanguage != "de" && in.DefaultLanguage != "en" {
@@ -153,17 +153,31 @@ func optional(value, field string, max int) error {
 	}
 	return nil
 }
-func code(value, field string, length int) error {
-	if len(value) != length {
-		return fieldError(field, fmt.Sprintf("must be a %d-letter code", length))
-	}
-	for _, r := range value {
-		if r < 'A' || r > 'Z' {
-			return fieldError(field, "must contain letters only")
-		}
+func countryCode(value string) error {
+	if len(value) != 2 || !supportedCountries[value] {
+		return fieldError("country", "must be a supported ISO 3166-1 alpha-2 code")
 	}
 	return nil
 }
+
+func currencyCode(value string) error {
+	if len(value) != 3 || !supportedCurrencies[value] {
+		return fieldError("currency", "must be a supported ISO 4217 code")
+	}
+	return nil
+}
+
+func codeSet(values string) map[string]bool {
+	set := make(map[string]bool)
+	for _, value := range strings.Fields(values) {
+		set[value] = true
+	}
+	return set
+}
+
+var supportedCountries = codeSet(`AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW`)
+var supportedCurrencies = codeSet(`AED AFN ALL AMD AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BOV BRL BSD BTN BWP BYN BZD CAD CDF CHE CHF CHW CLF CLP CNY COP COU CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HRK HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD UYI UYU UZS VES VND VUV WST XAF XCD XOF XPF YER ZAR ZMW ZWG`)
+
 func newBusinessID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {

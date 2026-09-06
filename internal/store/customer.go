@@ -31,9 +31,9 @@ type Customer struct {
 }
 
 type CustomerListOptions struct {
-	Search, Cursor  string
-	Limit           int
-	IncludeArchived bool
+	Search, Cursor                string
+	Limit                         int
+	IncludeArchived, ArchivedOnly bool
 }
 type CustomerPage struct {
 	Customers  []Customer
@@ -52,7 +52,8 @@ func (r *CustomerRepository) Create(ctx context.Context, input CustomerInput) (C
 	if err != nil {
 		return Customer{}, err
 	}
-	_, err = r.store.db.ExecContext(ctx, `INSERT INTO customers (id, number, display_name, legal_name, contact_name, email, address_line1, address_line2, postal_code, city, country, vat_identifier, preferred_language, currency, payment_terms_days, notes, active, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`, id, in.Number, in.DisplayName, in.LegalName, in.ContactName, in.Email, in.AddressLine1, in.AddressLine2, in.PostalCode, in.City, in.Country, in.VATIdentifier, in.PreferredLanguage, in.Currency, in.PaymentTermsDays, in.Notes)
+	searchKey, sortKey := customerKeys(in)
+	_, err = r.store.db.ExecContext(ctx, `INSERT INTO customers (id, number, display_name, legal_name, contact_name, email, address_line1, address_line2, postal_code, city, country, vat_identifier, preferred_language, currency, payment_terms_days, notes, active, version, search_key, sort_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`, id, in.Number, in.DisplayName, in.LegalName, in.ContactName, in.Email, in.AddressLine1, in.AddressLine2, in.PostalCode, in.City, in.Country, in.VATIdentifier, in.PreferredLanguage, in.Currency, in.PaymentTermsDays, in.Notes, searchKey, sortKey)
 	if err != nil {
 		return Customer{}, customerDBError(err)
 	}
@@ -72,6 +73,9 @@ func (r *CustomerRepository) Get(ctx context.Context, id string) (Customer, erro
 }
 
 func (r *CustomerRepository) List(ctx context.Context, options CustomerListOptions) (CustomerPage, error) {
+	if err := r.backfillCustomerKeys(ctx); err != nil {
+		return CustomerPage{}, err
+	}
 	limit := options.Limit
 	if limit <= 0 {
 		limit = 25
@@ -85,25 +89,25 @@ func (r *CustomerRepository) List(ctx context.Context, options CustomerListOptio
 	}
 	where := make([]string, 0, 3)
 	args := make([]any, 0, 8)
-	if !options.IncludeArchived {
+	if options.ArchivedOnly {
+		where = append(where, "active = 0")
+	} else if !options.IncludeArchived {
 		where = append(where, "active = 1")
 	}
 	if search := strings.ToLower(clean(options.Search)); search != "" {
 		pattern := "%" + escapeLike(search) + "%"
-		where = append(where, `(LOWER(number) LIKE ? ESCAPE '!' OR LOWER(display_name) LIKE ? ESCAPE '!' OR LOWER(legal_name) LIKE ? ESCAPE '!' OR LOWER(contact_name) LIKE ? ESCAPE '!' OR LOWER(email) LIKE ? ESCAPE '!' OR LOWER(vat_identifier) LIKE ? ESCAPE '!')`)
-		for range 6 {
-			args = append(args, pattern)
-		}
+		where = append(where, "search_key LIKE ? ESCAPE '!'")
+		args = append(args, pattern)
 	}
 	if cursor.ID != "" {
-		where = append(where, `(LOWER(display_name) > ? OR (LOWER(display_name) = ? AND (number > ? OR (number = ? AND id > ?))))`)
+		where = append(where, `(sort_key > ? OR (sort_key = ? AND (number > ? OR (number = ? AND id > ?))))`)
 		args = append(args, cursor.Name, cursor.Name, cursor.Number, cursor.Number, cursor.ID)
 	}
 	query := `SELECT id, number, display_name, legal_name, contact_name, email, address_line1, address_line2, postal_code, city, country, vat_identifier, preferred_language, currency, payment_terms_days, notes, active, version, created_at, updated_at FROM customers`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
-	query += " ORDER BY LOWER(display_name), number, id LIMIT ?"
+	query += " ORDER BY sort_key, number, id LIMIT ?"
 	args = append(args, limit+1)
 	rows, err := r.store.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -122,10 +126,8 @@ func (r *CustomerRepository) List(ctx context.Context, options CustomerListOptio
 		return CustomerPage{}, fmt.Errorf("list customers: %w", err)
 	}
 	if len(page.Customers) > limit {
-		extra := page.Customers[limit]
 		page.Customers = page.Customers[:limit]
-		page.NextCursor = encodeCustomerCursor(customerCursor{Name: strings.ToLower(page.Customers[len(page.Customers)-1].DisplayName), Number: page.Customers[len(page.Customers)-1].Number, ID: page.Customers[len(page.Customers)-1].ID})
-		_ = extra
+		page.NextCursor = encodeCustomerCursor(customerCursor{Name: customerSortKey(page.Customers[len(page.Customers)-1].DisplayName), Number: page.Customers[len(page.Customers)-1].Number, ID: page.Customers[len(page.Customers)-1].ID})
 	}
 	return page, nil
 }
@@ -138,7 +140,8 @@ func (r *CustomerRepository) Update(ctx context.Context, id string, version int,
 	if version < 1 {
 		return Customer{}, fieldError("version", "is invalid")
 	}
-	result, err := r.store.db.ExecContext(ctx, `UPDATE customers SET number=?, display_name=?, legal_name=?, contact_name=?, email=?, address_line1=?, address_line2=?, postal_code=?, city=?, country=?, vat_identifier=?, preferred_language=?, currency=?, payment_terms_days=?, notes=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=?`, in.Number, in.DisplayName, in.LegalName, in.ContactName, in.Email, in.AddressLine1, in.AddressLine2, in.PostalCode, in.City, in.Country, in.VATIdentifier, in.PreferredLanguage, in.Currency, in.PaymentTermsDays, in.Notes, id, version)
+	searchKey, sortKey := customerKeys(in)
+	result, err := r.store.db.ExecContext(ctx, `UPDATE customers SET number=?, display_name=?, legal_name=?, contact_name=?, email=?, address_line1=?, address_line2=?, postal_code=?, city=?, country=?, vat_identifier=?, preferred_language=?, currency=?, payment_terms_days=?, notes=?, search_key=?, sort_key=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=?`, in.Number, in.DisplayName, in.LegalName, in.ContactName, in.Email, in.AddressLine1, in.AddressLine2, in.PostalCode, in.City, in.Country, in.VATIdentifier, in.PreferredLanguage, in.Currency, in.PaymentTermsDays, in.Notes, searchKey, sortKey, id, version)
 	if err != nil {
 		return Customer{}, customerDBError(err)
 	}
@@ -217,10 +220,10 @@ func normalizeCustomer(in CustomerInput) (CustomerInput, error) {
 			return in, fieldError("email", "must be a valid address")
 		}
 	}
-	if err := code(in.Country, "country", 2); err != nil {
+	if err := countryCode(in.Country); err != nil {
 		return in, err
 	}
-	if err := code(in.Currency, "currency", 3); err != nil {
+	if err := currencyCode(in.Currency); err != nil {
 		return in, err
 	}
 	if in.PreferredLanguage != "de" && in.PreferredLanguage != "en" {
@@ -249,6 +252,46 @@ func escapeLike(value string) string {
 	value = strings.ReplaceAll(value, "!", "!!")
 	value = strings.ReplaceAll(value, "%", "!%")
 	return strings.ReplaceAll(value, "_", "!_")
+}
+
+func customerKeys(in CustomerInput) (string, string) {
+	return strings.Join([]string{customerSortKey(in.Number), customerSortKey(in.DisplayName), customerSortKey(in.LegalName), customerSortKey(in.ContactName), customerSortKey(in.Email), customerSortKey(in.VATIdentifier)}, "\x1f"), customerSortKey(in.DisplayName)
+}
+
+func customerSortKey(value string) string { return strings.ToLower(strings.TrimSpace(value)) }
+
+func (r *CustomerRepository) backfillCustomerKeys(ctx context.Context) error {
+	rows, err := r.store.db.QueryContext(ctx, `SELECT id, number, display_name, legal_name, contact_name, email, vat_identifier, search_key, sort_key FROM customers`)
+	if err != nil {
+		return fmt.Errorf("read customer keys: %w", err)
+	}
+	defer rows.Close()
+	type row struct {
+		id           string
+		in           CustomerInput
+		search, sort string
+	}
+	var records []row
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.id, &item.in.Number, &item.in.DisplayName, &item.in.LegalName, &item.in.ContactName, &item.in.Email, &item.in.VATIdentifier, &item.search, &item.sort); err != nil {
+			return fmt.Errorf("scan customer keys: %w", err)
+		}
+		wantSearch, wantSort := customerKeys(item.in)
+		if item.search != wantSearch || item.sort != wantSort {
+			item.search, item.sort = wantSearch, wantSort
+			records = append(records, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read customer keys: %w", err)
+	}
+	for _, item := range records {
+		if _, err := r.store.db.ExecContext(ctx, `UPDATE customers SET search_key=?, sort_key=? WHERE id=?`, item.search, item.sort, item.id); err != nil {
+			return fmt.Errorf("backfill customer keys: %w", err)
+		}
+	}
+	return nil
 }
 
 type customerCursor struct{ Name, Number, ID string }
