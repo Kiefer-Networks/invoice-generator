@@ -602,7 +602,7 @@ func SnapshotHTML(data *TplData) (string, error) {
 func FromSnapshot(ctx context.Context, data *TplData, path string) error {
 	chrome := FindChrome()
 	if chrome == "" {
-		return fmt.Errorf("Chrome renderer unavailable")
+		return fmt.Errorf("required Chrome renderer unavailable")
 	}
 	body, e := SnapshotHTML(data)
 	if e != nil {
