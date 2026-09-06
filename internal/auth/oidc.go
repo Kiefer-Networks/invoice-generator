@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,11 +31,13 @@ import (
 )
 
 const (
-	requiredGroup         = "invoice-admins"
-	maxOIDCDocumentBytes  = 1 << 20
-	transactionLifetime   = 5 * time.Minute
-	sessionLifetime       = 15 * time.Minute
-	allowedIssuedAtFuture = 2 * time.Minute
+	requiredGroup          = "invoice-admins"
+	maxOIDCDocumentBytes   = 1 << 20
+	transactionLifetime    = 5 * time.Minute
+	sessionLifetime        = 15 * time.Minute
+	allowedIssuedAtFuture  = 2 * time.Minute
+	oidcHTTPTimeout        = 10 * time.Second
+	maxPendingTransactions = 1024
 )
 
 type Config struct {
@@ -81,7 +84,7 @@ type discoveredProvider struct {
 }
 
 func (p discoveredProvider) AuthorizationURL(state, nonce, verifier string) string {
-	return p.oauth.AuthCodeURL(state, oauth2.SetAuthURLParam("nonce", nonce), oauth2.S256ChallengeOption(verifier))
+	return p.oauth.AuthCodeURL(state, oauth2.SetAuthURLParam("nonce", nonce), oauth2.SetAuthURLParam("max_age", strconv.Itoa(int(sessionLifetime.Seconds()))), oauth2.S256ChallengeOption(verifier))
 }
 func (p discoveredProvider) Exchange(ctx context.Context, code, verifier string) (string, error) {
 	token, err := p.oauth.Exchange(oidc.ClientContext(ctx, p.client), code, oauth2.VerifierOption(verifier))
@@ -115,11 +118,11 @@ func NewManager(ctx context.Context, database *store.Store, cfg Config) (*Manage
 	if err != nil {
 		return nil, err
 	}
-	sessionKey, err := configuredSecret(cfg.SessionKey, cfg.SessionKeyFile, cfg.Development, "session key")
+	sessionKey, err := configuredKey(cfg.SessionKey, cfg.SessionKeyFile, cfg.Development, "session key")
 	if err != nil {
 		return nil, err
 	}
-	transactionKey, err := configuredSecret(cfg.TransactionKey, cfg.TransactionKeyFile, cfg.Development, "transaction key")
+	transactionKey, err := configuredKey(cfg.TransactionKey, cfg.TransactionKeyFile, cfg.Development, "transaction key")
 	if err != nil {
 		return nil, err
 	}
@@ -129,9 +132,12 @@ func NewManager(ctx context.Context, database *store.Store, cfg Config) (*Manage
 	if len(sessionKey) != 32 || len(transactionKey) != 32 {
 		return nil, errors.New("session and transaction keys must each be 32 bytes")
 	}
+	if subtle.ConstantTimeCompare(sessionKey, transactionKey) == 1 {
+		return nil, errors.New("session and transaction keys must differ")
+	}
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = &http.Client{Timeout: oidcHTTPTimeout}
 	}
 	client = boundedClient(client)
 	doc, err := discover(ctx, client, issuer)
@@ -143,7 +149,7 @@ func NewManager(ctx context.Context, database *store.Store, cfg Config) (*Manage
 	}
 	keySet := oidc.NewRemoteKeySet(oidc.ClientContext(ctx, client), doc.JWKSURI)
 	verifier := oidc.NewVerifier(doc.Issuer, keySet, &oidc.Config{ClientID: cfg.ClientID, SupportedSigningAlgs: doc.SigningAlgorithms})
-	block, err := aes.NewCipher([]byte(transactionKey))
+	block, err := aes.NewCipher(transactionKey)
 	if err != nil {
 		return nil, fmt.Errorf("transaction cipher: %w", err)
 	}
@@ -158,7 +164,7 @@ func NewManager(ctx context.Context, database *store.Store, cfg Config) (*Manage
 	if group != requiredGroup {
 		return nil, errors.New("only the invoice-admins group is supported")
 	}
-	manager := &Manager{provider: discoveredProvider{oauth: oauth2.Config{ClientID: cfg.ClientID, ClientSecret: clientSecret, RedirectURL: redirect.String(), Endpoint: oauth2.Endpoint{AuthURL: doc.AuthorizationEndpoint, TokenURL: doc.TokenEndpoint}, Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"}}, verifier: verifier, client: client}, issuer: issuer.String(), clientID: cfg.ClientID, redirectURL: redirect.String(), group: group, sessionKey: []byte(sessionKey), transactionAEAD: aead, secureCookies: redirect.Scheme == "https", now: now, transactions: make(map[[32]byte]time.Time)}
+	manager := &Manager{provider: discoveredProvider{oauth: oauth2.Config{ClientID: cfg.ClientID, ClientSecret: clientSecret, RedirectURL: redirect.String(), Endpoint: oauth2.Endpoint{AuthURL: doc.AuthorizationEndpoint, TokenURL: doc.TokenEndpoint, AuthStyle: oauth2.AuthStyleInHeader}, Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"}}, verifier: verifier, client: client}, issuer: issuer.String(), clientID: cfg.ClientID, redirectURL: redirect.String(), group: group, sessionKey: sessionKey, transactionAEAD: aead, secureCookies: redirect.Scheme == "https", now: now, transactions: make(map[[32]byte]time.Time)}
 	if database != nil {
 		manager.repo = database.AuthRepository()
 	}
@@ -171,14 +177,17 @@ func configuredSecret(value, filename string, development bool, label string) (s
 		if err != nil {
 			return "", fmt.Errorf("read %s: %w", label, err)
 		}
-		if info.IsDir() {
-			return "", fmt.Errorf("read %s: path is a directory", label)
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("read %s: path is not a regular file", label)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+			return "", fmt.Errorf("read %s: file permissions are too broad", label)
 		}
 		data, err := os.ReadFile(filename)
 		if err != nil {
 			return "", fmt.Errorf("read %s: %w", label, err)
 		}
-		return strings.TrimSpace(string(data)), nil
+		return string(data), nil
 	}
 	if value != "" && development {
 		return value, nil
@@ -187,6 +196,21 @@ func configuredSecret(value, filename string, development bool, label string) (s
 		return "", fmt.Errorf("%s must be supplied from a protected file", label)
 	}
 	return "", fmt.Errorf("%s is required", label)
+}
+
+func configuredKey(value, filename string, development bool, label string) ([]byte, error) {
+	secret, err := configuredSecret(value, filename, development, label)
+	if err != nil {
+		return nil, err
+	}
+	if filename == "" {
+		return []byte(secret), nil
+	}
+	decoded, err := base64.RawStdEncoding.DecodeString(secret)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: expected raw standard base64", label)
+	}
+	return decoded, nil
 }
 
 type discoveryDocument struct {
@@ -300,7 +324,6 @@ func validateIssuer(raw string, development bool) (*url.URL, error) {
 	if u.Scheme != "https" && !(development && u.Scheme == "http" && isLoopback(u.Hostname())) {
 		return nil, errors.New("Pocket ID issuer must use HTTPS")
 	}
-	u.Path = strings.TrimSuffix(u.Path, "/")
 	return u, nil
 }
 func validateRedirect(raw string, development bool) (*url.URL, error) {
@@ -322,6 +345,10 @@ func isLoopback(host string) bool {
 }
 func boundedClient(base *http.Client) *http.Client {
 	copy := *base
+	if copy.Timeout <= 0 {
+		copy.Timeout = oidcHTTPTimeout
+	}
+	copy.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("OIDC redirects are not allowed") }
 	copy.Transport = &boundedRoundTripper{base: base.Transport}
 	return &copy
 }
@@ -337,8 +364,21 @@ func (r *boundedRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	if err != nil {
 		return nil, err
 	}
-	resp.Body = io.NopCloser(io.LimitReader(resp.Body, maxOIDCDocumentBytes+1))
+	resp.Body = &limitedReadCloser{ReadCloser: resp.Body, reader: &io.LimitedReader{R: resp.Body, N: maxOIDCDocumentBytes + 1}}
 	return resp, nil
+}
+
+type limitedReadCloser struct {
+	io.ReadCloser
+	reader *io.LimitedReader
+}
+
+func (r *limitedReadCloser) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if r.reader.N == 0 && err == nil {
+		return n, errors.New("OIDC response exceeds size limit")
+	}
+	return n, err
 }
 
 func randomValue() (string, error) {
@@ -374,6 +414,11 @@ func (m *Manager) Begin(returnTo string) (string, *http.Cookie, error) {
 	}
 	hash := sha256.Sum256([]byte(state))
 	m.transactionsMu.Lock()
+	m.cleanupTransactionsLocked(m.now())
+	if len(m.transactions) >= maxPendingTransactions {
+		m.transactionsMu.Unlock()
+		return "", nil, errors.New("too many pending authorization transactions")
+	}
 	m.transactions[hash] = t.ExpiresAt
 	m.transactionsMu.Unlock()
 	return m.provider.AuthorizationURL(state, nonce, verifier), m.transactionCookie(encoded, transactionLifetime), nil
@@ -384,11 +429,17 @@ func (m *Manager) Callback(ctx context.Context, callbackURL *url.URL, cookie *ht
 	if callbackURL == nil || callbackURL.Scheme+"://"+callbackURL.Host+callbackURL.Path != m.redirectURL {
 		return SessionResult{TransactionCookie: deleted}, errors.New("callback URL does not match configured redirect URL")
 	}
-	q := callbackURL.Query()
+	q, queryErr := url.ParseQuery(callbackURL.RawQuery)
+	if queryErr != nil {
+		return SessionResult{TransactionCookie: deleted}, errors.New("callback has malformed OAuth parameters")
+	}
 	if hasDuplicate(q, "state") || hasDuplicate(q, "code") || hasDuplicate(q, "error") {
 		return SessionResult{TransactionCookie: deleted}, errors.New("callback has duplicate OAuth parameters")
 	}
 	if q.Get("error") != "" {
+		if q.Get("code") != "" {
+			return SessionResult{TransactionCookie: deleted}, errors.New("callback mixes OAuth error and code")
+		}
 		return SessionResult{TransactionCookie: deleted}, errors.New("Pocket ID authorization was denied")
 	}
 	state := q.Get("state")
@@ -602,6 +653,13 @@ func (m *Manager) consumeTransaction(state string) bool {
 	expiry, ok := m.transactions[hash]
 	delete(m.transactions, hash)
 	return ok && m.now().Before(expiry)
+}
+func (m *Manager) cleanupTransactionsLocked(now time.Time) {
+	for hash, expiry := range m.transactions {
+		if !now.Before(expiry) {
+			delete(m.transactions, hash)
+		}
+	}
 }
 func hasDuplicate(values url.Values, key string) bool { return len(values[key]) > 1 }
 func splitSessionCookie(cookie *http.Cookie) (string, string, bool) {

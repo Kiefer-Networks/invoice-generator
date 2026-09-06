@@ -91,7 +91,7 @@ func (r *AuthRepository) SessionByTokenHash(ctx context.Context, tokenHash []byt
 SELECT s.id,s.user_id,s.token_hash,s.csrf_secret_hash,s.authorization_expires_at,s.expires_at,
  u.id,u.issuer,u.subject,u.display_name,u.email
 FROM sessions s JOIN oidc_users u ON u.id=s.user_id
-WHERE s.token_hash=? AND s.expires_at>? AND s.authorization_expires_at>? AND u.active=1`, tokenHash, formatAuthTime(now), formatAuthTime(now)).Scan(&session.ID, &session.UserID, &session.TokenHash, &session.CSRFSecretHash, &authExpiry, &expiry, &user.ID, &user.Issuer, &user.Subject, &user.DisplayName, &user.Email)
+WHERE s.token_hash=? AND unixepoch(s.expires_at)>unixepoch(?) AND unixepoch(s.authorization_expires_at)>unixepoch(?) AND u.active=1`, tokenHash, formatAuthTime(now), formatAuthTime(now)).Scan(&session.ID, &session.UserID, &session.TokenHash, &session.CSRFSecretHash, &authExpiry, &expiry, &user.ID, &user.Issuer, &user.Subject, &user.DisplayName, &user.Email)
 	if err != nil {
 		return StoredSession{}, OIDCUser{}, err
 	}

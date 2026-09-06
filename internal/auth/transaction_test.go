@@ -113,12 +113,15 @@ func TestAuthorizationTransactionRejectsDuplicateStateAndOAuthError(t *testing.T
 }
 
 type testProvider struct {
-	server    *httptest.Server
-	exchangeN atomic.Int32
-	key       *rsa.PrivateKey
-	mu        sync.Mutex
-	nonce     string
-	groups    []string
+	server           *httptest.Server
+	exchangeN        atomic.Int32
+	key              *rsa.PrivateKey
+	mu               sync.Mutex
+	nonce            string
+	groups           []string
+	tokenStatus      int
+	claims           map[string]any
+	corruptSignature bool
 }
 
 func (p *testProvider) exchanges() int { return int(p.exchangeN.Load()) }
@@ -132,6 +135,19 @@ func (p *testProvider) setNonce(nonce string) {
 func (p *testProvider) setGroups(groups []string) {
 	p.mu.Lock()
 	p.groups = append([]string(nil), groups...)
+	p.mu.Unlock()
+}
+
+func (p *testProvider) setTokenStatus(status int) {
+	p.mu.Lock()
+	p.tokenStatus = status
+	p.mu.Unlock()
+}
+
+func (p *testProvider) setClaims(claims map[string]any, corrupt bool) {
+	p.mu.Lock()
+	p.claims = claims
+	p.corruptSignature = corrupt
 	p.mu.Unlock()
 }
 
@@ -155,6 +171,13 @@ func newTestProvider(t *testing.T) *testProvider {
 			w.WriteHeader(http.StatusNoContent)
 		case "/token":
 			provider.exchangeN.Add(1)
+			provider.mu.Lock()
+			status := provider.tokenStatus
+			provider.mu.Unlock()
+			if status != 0 {
+				http.Error(w, "rejected", status)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			idToken, err := provider.idToken()
 			if err != nil {
@@ -177,25 +200,34 @@ func (p *testProvider) idToken() (string, error) {
 	p.mu.Lock()
 	nonce := p.nonce
 	groups := append([]string(nil), p.groups...)
+	overrides := p.claims
+	corrupt := p.corruptSignature
 	p.mu.Unlock()
 	if groups == nil {
 		groups = []string{"invoice-admins"}
 	}
-	claims, err := json.Marshal(map[string]any{
+	claims := map[string]any{
 		"iss": p.server.URL, "aud": "invoice-generator", "sub": "person-1", "name": "Person",
 		"email": "person@example.test", "nonce": nonce, "groups": groups,
 		"iat": time.Now().Unix(), "auth_time": time.Now().Unix(), "exp": time.Now().Add(10 * time.Minute).Unix(),
-	})
+	}
+	for key, value := range overrides {
+		claims[key] = value
+	}
+	encodedClaims, err := json.Marshal(claims)
 	if err != nil {
 		return "", err
 	}
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"test-key","typ":"JWT"}`))
-	payload := base64.RawURLEncoding.EncodeToString(claims)
+	payload := base64.RawURLEncoding.EncodeToString(encodedClaims)
 	sum := crypto.SHA256.New()
 	_, _ = sum.Write([]byte(header + "." + payload))
 	signature, err := rsa.SignPKCS1v15(rand.Reader, p.key, crypto.SHA256, sum.Sum(nil))
 	if err != nil {
 		return "", err
+	}
+	if corrupt {
+		signature[0] ^= 1
 	}
 	return header + "." + payload + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
