@@ -83,16 +83,16 @@ func (w *PaperlessWorker) Process(ctx context.Context, j store.PaperlessJob) err
 	}
 	id, e := client.FindDocument(ctx, title)
 	if e != nil {
-		return errors.New("request_failed")
+		return deliveryError(e, "request_failed")
 	}
 	if id > 0 {
 		if e = client.VerifyDocument(ctx, id, title, d.SHA256, d.Size); e != nil {
-			return errors.New("delivery_uncertain")
+			return deliveryError(e, "delivery_uncertain")
 		}
 		return repo.Complete(ctx, j, id)
 	}
 	if j.UploadStarted {
-		return errors.New("delivery_uncertain")
+		return deliveryError(e, "delivery_uncertain")
 	}
 	f, e := w.storage.Open(d.StorageKey, d.SHA256, d.Size)
 	if e != nil {
@@ -101,7 +101,7 @@ func (w *PaperlessWorker) Process(ctx context.Context, j store.PaperlessJob) err
 	defer f.Close()
 	tags, e := client.ResolveTags(ctx)
 	if e != nil {
-		return errors.New("request_failed")
+		return deliveryError(e, "request_failed")
 	}
 	if e = repo.BeginUpload(ctx, j); e != nil {
 		return e
@@ -114,10 +114,10 @@ func (w *PaperlessWorker) Process(ctx context.Context, j store.PaperlessJob) err
 		if e = repo.RejectUpload(cleanup, j); e != nil {
 			return e
 		}
-		return errors.New("request_failed")
+		return deliveryError(failure, "request_failed")
 	}
 	if e != nil {
-		return errors.New("delivery_uncertain")
+		return deliveryError(e, "delivery_uncertain")
 	}
 	if e = repo.SaveTask(ctx, j, task); e != nil {
 		return e
@@ -132,10 +132,17 @@ func (w *PaperlessWorker) Process(ctx context.Context, j store.PaperlessJob) err
 func (w *PaperlessWorker) verifyDelivery(ctx context.Context, client *paperless.Client, j store.PaperlessJob, d store.Document, title string, id int64) error {
 	candidate, e := client.FindDocument(ctx, title)
 	if e != nil || (candidate != 0 && candidate != id) {
-		return errors.New("delivery_uncertain")
+		return deliveryError(e, "delivery_uncertain")
 	}
 	if e = client.VerifyDocument(ctx, id, title, d.SHA256, d.Size); e != nil {
-		return errors.New("delivery_uncertain")
+		return deliveryError(e, "delivery_uncertain")
 	}
 	return w.db.PaperlessRepository().Complete(ctx, j, id)
+}
+
+func deliveryError(err error, fallback string) error {
+	if errors.Is(err, paperless.ErrAPIIncompatible) {
+		return paperless.ErrAPIIncompatible
+	}
+	return errors.New(fallback)
 }

@@ -32,6 +32,7 @@ var ErrRejected = errors.New("Paperless upload rejected")
 var ErrResponse = errors.New("Paperless response invalid")
 var ErrPending = errors.New("remote_pending")
 var ErrRemoteFailed = errors.New("remote_failed")
+var ErrAPIIncompatible = errors.New("api_incompatible")
 
 type DeliveryCertainty uint8
 
@@ -177,6 +178,7 @@ func NewClient(cfg Config, injected *http.Client, fixture bool) (*Client, error)
 }
 func (c *Client) request(ctx context.Context, method, path, contentType string, body io.Reader, out any) (err error) {
 	upload := method == "POST" && path == "/api/documents/post_document/"
+	versionRejected := false
 	var connected, wrote, read atomic.Bool
 	if upload {
 		ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
@@ -192,7 +194,7 @@ func (c *Client) request(ctx context.Context, method, path, contentType string, 
 			if !connected.Load() && !wrote.Load() && !read.Load() {
 				certainty = NotSent
 			}
-			if errors.Is(err, ErrRejected) {
+			if errors.Is(err, ErrRejected) || versionRejected {
 				certainty = Rejected
 			}
 			err = &SubmissionError{Certainty: certainty, cause: err}
@@ -217,6 +219,10 @@ func (c *Client) request(ctx context.Context, method, path, contentType string, 
 		return ErrRequest
 	}
 	defer resp.Body.Close()
+	if e = checkAPIVersion(resp); e != nil {
+		versionRejected = resp.StatusCode == http.StatusNotAcceptable
+		return e
+	}
 	if method == "POST" && path == "/api/documents/post_document/" {
 		switch resp.StatusCode {
 		case 400, 401, 403, 404, 405, 413, 415, 422, 429:
@@ -352,28 +358,50 @@ func (c *Client) Poll(ctx context.Context, task string) (int64, error) {
 	if !taskPattern.MatchString(task) {
 		return 0, ErrResponse
 	}
-	var list []struct {
-		TaskID          string          `json:"task_id"`
-		Status          string          `json:"status"`
-		RelatedDocument json.RawMessage `json:"related_document"`
-	}
-	if e := c.request(ctx, "GET", "/api/tasks/?task_id="+url.QueryEscape(task), "", nil, &list); e != nil {
+	var raw json.RawMessage
+	if e := c.request(ctx, "GET", "/api/tasks/?task_id="+url.QueryEscape(task)+"&page_size=2", "", nil, &raw); e != nil {
 		return 0, e
 	}
-	if len(list) != 1 || list[0].TaskID != task {
+	if bytes.HasPrefix(bytes.TrimSpace(raw), []byte("[")) {
+		return 0, ErrAPIIncompatible
+	}
+	var page struct {
+		Count          *int `json:"count"`
+		Next, Previous *string
+		Results        json.RawMessage `json:"results"`
+	}
+	if e := json.Unmarshal(raw, &page); e != nil || page.Count == nil || *page.Count < 0 || *page.Count > 1 || page.Next != nil || page.Previous != nil || !bytes.HasPrefix(bytes.TrimSpace(page.Results), []byte("[")) {
+		return 0, ErrResponse
+	}
+	var list []struct {
+		TaskID             string  `json:"task_id"`
+		TaskType           string  `json:"task_type"`
+		TriggerSource      string  `json:"trigger_source"`
+		Status             string  `json:"status"`
+		RelatedDocumentIDs []int64 `json:"related_document_ids"`
+		ResultData         struct {
+			DocumentID int64 `json:"document_id"`
+		} `json:"result_data"`
+	}
+	if e := json.Unmarshal(page.Results, &list); e != nil || len(list) != *page.Count {
+		return 0, ErrResponse
+	}
+	if len(list) == 0 {
+		return 0, ErrPending
+	}
+	if list[0].TaskID != task || list[0].TaskType != "consume_file" || list[0].TriggerSource != "api_upload" {
 		return 0, ErrResponse
 	}
 	switch list[0].Status {
-	case "SUCCESS":
-		raw := strings.Trim(string(list[0].RelatedDocument), `"`)
-		id, e := strconv.ParseInt(raw, 10, 64)
-		if e != nil || id <= 0 {
+	case "success":
+		id := list[0].ResultData.DocumentID
+		if id <= 0 || len(list[0].RelatedDocumentIDs) != 1 || list[0].RelatedDocumentIDs[0] != id {
 			return 0, ErrResponse
 		}
 		return id, nil
-	case "FAILURE", "REVOKED":
+	case "failure", "revoked":
 		return 0, ErrRemoteFailed
-	case "PENDING", "STARTED", "RETRY":
+	case "pending", "started":
 		return 0, ErrPending
 	default:
 		return 0, ErrResponse
@@ -411,6 +439,9 @@ func (c *Client) VerifyDocument(ctx context.Context, id int64, title, sum string
 		return ErrRequest
 	}
 	defer resp.Body.Close()
+	if e = checkAPIVersion(resp); e != nil {
+		return e
+	}
 	if resp.StatusCode != http.StatusOK || (resp.ContentLength >= 0 && resp.ContentLength != size) {
 		return ErrResponse
 	}
@@ -418,6 +449,23 @@ func (c *Client) VerifyDocument(ctx context.Context, id int64, title, sum string
 	n, e := io.Copy(hash, io.LimitReader(resp.Body, size+1))
 	if e != nil || n != size || hex.EncodeToString(hash.Sum(nil)) != sum {
 		return ErrResponse
+	}
+	return nil
+}
+
+// X-Api-Version advertises the server's current version, not necessarily the
+// requested version. Newer servers may continue to support our explicit API 10;
+// a 406 is authoritative when API 10 is unavailable. Missing headers may have
+// been stripped by a proxy; the versioned request and strict schema still apply.
+func checkAPIVersion(resp *http.Response) error {
+	if resp.StatusCode == http.StatusNotAcceptable {
+		return ErrAPIIncompatible
+	}
+	if advertised := resp.Header.Get("X-Api-Version"); advertised != "" {
+		v, e := strconv.Atoi(advertised)
+		if e != nil || v < 10 {
+			return ErrAPIIncompatible
+		}
 	}
 	return nil
 }

@@ -66,6 +66,10 @@ func TestPaperlessRestartReconcilesWithoutSecondUpload(t *testing.T) {
 			visible := false
 			title := paperless.Title("PL-1", d.ID)
 			remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Accept") != "application/json; version=10" {
+					t.Error("unversioned API request", r.URL.Path)
+				}
+				w.Header().Set("X-Api-Version", "10")
 				switch r.URL.Path {
 				case "/api/documents/":
 					if visible {
@@ -93,13 +97,16 @@ func TestPaperlessRestartReconcilesWithoutSecondUpload(t *testing.T) {
 					}
 				case "/api/tasks/":
 					if visible {
-						fmt.Fprint(w, `[{"task_id":"task-123","status":"SUCCESS","related_document":42}]`)
+						paperlessTaskResponse(w, "success", 42)
 					} else {
-						fmt.Fprint(w, `[{"task_id":"task-123","status":"STARTED"}]`)
+						paperlessTaskResponse(w, "started", 0)
 					}
 				case "/api/documents/42/":
 					fmt.Fprintf(w, `{"id":42,"title":%q}`, title)
 				case "/api/documents/42/download/":
+					if r.URL.Query().Get("original") != "true" {
+						t.Error("archive requested instead of original")
+					}
 					fmt.Fprint(w, "%PDF-test")
 				default:
 					w.WriteHeader(404)
@@ -211,7 +218,7 @@ func TestPaperlessExplicitRejectionCanRetryUpload(t *testing.T) {
 				fmt.Fprint(w, `"task-123"`)
 			}
 		case "/api/tasks/":
-			fmt.Fprint(w, `[{"task_id":"task-123","status":"SUCCESS","related_document":"42"}]`)
+			paperlessTaskResponse(w, "success", 42)
 		case "/api/documents/42/":
 			fmt.Fprintf(w, `{"id":42,"title":%q}`, paperless.Title("PL-1", d.ID))
 		case "/api/documents/42/download/":
@@ -262,9 +269,9 @@ func TestPaperlessKnownTaskAndContentRequiredForAdoption(t *testing.T) {
 				switch r.URL.Path {
 				case "/api/tasks/":
 					if mode == "pending_task" {
-						fmt.Fprint(w, `[{"task_id":"task-123","status":"STARTED"}]`)
+						paperlessTaskResponse(w, "started", 0)
 					} else {
-						fmt.Fprint(w, `[{"task_id":"task-123","status":"SUCCESS","related_document":43}]`)
+						paperlessTaskResponse(w, "success", 43)
 					}
 				case "/api/documents/":
 					if mode == "duplicate" {
@@ -337,7 +344,7 @@ func TestPaperlessPreSendFailureAfterTagsRetriesOnce(t *testing.T) {
 			uploads++
 			fmt.Fprint(w, `"task-123"`)
 		case "/api/tasks/":
-			fmt.Fprint(w, `[{"task_id":"task-123","status":"SUCCESS","related_document":42}]`)
+			paperlessTaskResponse(w, "success", 42)
 		case "/api/documents/42/":
 			fmt.Fprintf(w, `{"id":42,"title":%q}`, title)
 		case "/api/documents/42/download/":
@@ -433,4 +440,41 @@ func TestPaperlessCancelledBeforeUploadPersistsSafeRetry(t *testing.T) {
 	if saved.UploadStarted || uploads != 0 || calls != 8 {
 		t.Fatal("cancelled proven-unsent request retained intent", saved, uploads, calls)
 	}
+}
+
+func TestPaperlessIncompatibleAPIIsVisible(t *testing.T) {
+	s, st, d := paperlessFixture(t)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(406)
+		fmt.Fprint(w, `{"detail":"secret-token"}`)
+	}))
+	defer remote.Close()
+	c, _ := paperless.NewClient(paperless.Config{URL: remote.URL, APIKey: "secret-token"}, remote.Client(), true)
+	worker := NewPaperlessWorker(s, st, func() (*paperless.Client, error) { return c, nil })
+	ctx := context.Background()
+	j, e := s.PaperlessRepository().Claim(ctx, time.Now().Add(time.Second), time.Minute)
+	if e != nil {
+		t.Fatal(e)
+	}
+	e = worker.Process(ctx, j)
+	if !errors.Is(e, paperless.ErrAPIIncompatible) {
+		t.Fatal("incompatibility hidden", e)
+	}
+	if e = s.PaperlessRepository().Fail(ctx, j, time.Now(), e.Error(), 1); e != nil {
+		t.Fatal(e)
+	}
+	saved, e := s.PaperlessRepository().ForDocument(ctx, d.ID)
+	if e != nil || saved.ErrorCode != "api_incompatible" || !strings.Contains(saved.ErrorSummary, "API 10") || saved.UploadStarted {
+		t.Fatal(saved, e)
+	}
+}
+
+// Paperless-ngx v3.1.3 TaskSerializerV10's paginated consumption task response.
+func paperlessTaskResponse(w http.ResponseWriter, status string, id int64) {
+	result, ids := "null", "[]"
+	if id > 0 {
+		result = fmt.Sprintf(`{"document_id":%d}`, id)
+		ids = fmt.Sprintf(`[%d]`, id)
+	}
+	fmt.Fprintf(w, `{"count":1,"next":null,"previous":null,"results":[{"id":7,"task_id":"task-123","task_type":"consume_file","trigger_source":"api_upload","status":%q,"result_data":%s,"related_document_ids":%s,"acknowledged":false}]}`, status, result, ids)
 }

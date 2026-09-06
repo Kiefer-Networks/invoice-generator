@@ -158,4 +158,7 @@ type tagCreateResponse struct {
 	ID int `json:"id"`
 }
 
-func setAuth(req *http.Request, key string) { req.Header.Set("Authorization", "Token "+key) }
+func setAuth(req *http.Request, key string) {
+	req.Header.Set("Authorization", "Token "+key)
+	req.Header.Set("Accept", "application/json; version=10")
+}

@@ -98,6 +98,8 @@ func (r *PaperlessRepository) Complete(ctx context.Context, j PaperlessJob, id i
 }
 func PaperlessErrorSummary(code string) string {
 	switch code {
+	case "api_incompatible":
+		return "Paperless API 10 is required. Upgrade Paperless or check API version negotiation."
 	case "configuration_missing":
 		return "Paperless URL or token unavailable. Configure delivery and retry."
 	case "configuration_invalid":
@@ -118,7 +120,7 @@ func PaperlessErrorSummary(code string) string {
 }
 func (r *PaperlessRepository) Fail(ctx context.Context, j PaperlessJob, now time.Time, code string, maxAttempts int) error {
 	switch code {
-	case "configuration_missing", "configuration_invalid", "delivery_uncertain", "remote_pending", "remote_failed", "document_invalid", "lease_expired":
+	case "api_incompatible", "configuration_missing", "configuration_invalid", "delivery_uncertain", "remote_pending", "remote_failed", "document_invalid", "lease_expired":
 	default:
 		code = "request_failed"
 	}
