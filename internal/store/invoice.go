@@ -1,0 +1,325 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// InvoiceLine is the editable snapshot of one draft position. Integer fields
+// retain their scale at every persistence boundary.
+type InvoiceLine struct {
+	ID, CatalogItemID, Title, Description, Unit string
+	Position                                    int
+	QuantityScaled, UnitPriceMinor              int64
+	DiscountBasisPoints, TaxRateBasisPoints     int64
+	NetMinor, TaxMinor, GrossMinor              int64
+}
+
+type InvoiceDraft struct {
+	ID, CustomerID, Number, State, Currency string
+	Customer                                CustomerInput
+	IssueDate, DueDate                      time.Time
+	Version                                 int
+	Lines                                   []InvoiceLine
+	NetMinor, TaxMinor, GrossMinor          int64
+}
+type InvoiceDraftInput struct {
+	CustomerID, Currency string
+	Customer             CustomerInput
+	DueDate              time.Time
+}
+type InvoiceListOptions struct {
+	State string
+	Limit int
+}
+type InvoiceRepository struct{ store *Store }
+
+func (s *Store) InvoiceRepository() *InvoiceRepository { return &InvoiceRepository{store: s} }
+
+func (r *InvoiceRepository) CreateDraft(ctx context.Context, input InvoiceDraftInput) (InvoiceDraft, error) {
+	if strings.TrimSpace(input.CustomerID) == "" || strings.TrimSpace(input.Currency) == "" || input.DueDate.IsZero() {
+		return InvoiceDraft{}, fieldError("draft", "is incomplete")
+	}
+	id, err := newBusinessID()
+	if err != nil {
+		return InvoiceDraft{}, err
+	}
+	snapshot, err := json.Marshal(input.Customer)
+	if err != nil {
+		return InvoiceDraft{}, fmt.Errorf("encode customer snapshot: %w", err)
+	}
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return InvoiceDraft{}, fmt.Errorf("begin invoice draft: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.ExecContext(ctx, `INSERT INTO invoices (id, customer_id, state, currency, due_date, customer_snapshot, version) VALUES (?, ?, 'draft', ?, ?, ?, 1)`, id, input.CustomerID, strings.ToUpper(strings.TrimSpace(input.Currency)), input.DueDate.UTC().Format(time.RFC3339Nano), string(snapshot))
+	if err != nil {
+		return InvoiceDraft{}, fmt.Errorf("create invoice draft: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return InvoiceDraft{}, fmt.Errorf("commit invoice draft: %w", err)
+	}
+	return r.GetDraft(ctx, id)
+}
+func (r *InvoiceRepository) GetDraft(ctx context.Context, id string) (InvoiceDraft, error) {
+	draft, err := scanInvoiceDraft(r.store.db.QueryRowContext(ctx, `SELECT id, customer_id, number, state, currency, issue_date, due_date, customer_snapshot, version, net_total_minor, tax_total_minor, gross_total_minor FROM invoices WHERE id=?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return InvoiceDraft{}, ErrNotFound
+	}
+	if err != nil {
+		return InvoiceDraft{}, fmt.Errorf("get invoice draft: %w", err)
+	}
+	rows, err := r.store.db.QueryContext(ctx, `SELECT id, COALESCE(catalog_item_id,''), position, title_snapshot, description_snapshot, unit_snapshot, quantity_scaled, net_unit_price_minor, discount_basis_points, tax_rate_scaled, net_total_minor, tax_total_minor, gross_total_minor FROM invoice_items WHERE invoice_id=? ORDER BY position`, id)
+	if err != nil {
+		return InvoiceDraft{}, fmt.Errorf("list invoice lines: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var line InvoiceLine
+		if err := rows.Scan(&line.ID, &line.CatalogItemID, &line.Position, &line.Title, &line.Description, &line.Unit, &line.QuantityScaled, &line.UnitPriceMinor, &line.DiscountBasisPoints, &line.TaxRateBasisPoints, &line.NetMinor, &line.TaxMinor, &line.GrossMinor); err != nil {
+			return InvoiceDraft{}, fmt.Errorf("scan invoice line: %w", err)
+		}
+		draft.Lines = append(draft.Lines, line)
+	}
+	if err := rows.Err(); err != nil {
+		return InvoiceDraft{}, fmt.Errorf("list invoice lines: %w", err)
+	}
+	return draft, nil
+}
+func (r *InvoiceRepository) ListDrafts(ctx context.Context, options InvoiceListOptions) ([]InvoiceDraft, error) {
+	limit := options.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	state := options.State
+	if state == "" {
+		state = "draft"
+	}
+	if state != "draft" {
+		return nil, fieldError("state", "is invalid")
+	}
+	rows, err := r.store.db.QueryContext(ctx, `SELECT id, customer_id, number, state, currency, issue_date, due_date, customer_snapshot, version, net_total_minor, tax_total_minor, gross_total_minor FROM invoices WHERE state=? ORDER BY updated_at DESC,id DESC LIMIT ?`, state, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list invoice drafts: %w", err)
+	}
+	defer rows.Close()
+	var result []InvoiceDraft
+	for rows.Next() {
+		draft, err := scanInvoiceDraft(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, draft)
+	}
+	return result, rows.Err()
+}
+func (r *InvoiceRepository) UpdateDraft(ctx context.Context, id string, version int, input InvoiceDraftInput, totals InvoiceTotals) (InvoiceDraft, error) {
+	if version < 1 || strings.TrimSpace(input.CustomerID) == "" || strings.TrimSpace(input.Currency) == "" || input.DueDate.IsZero() {
+		return InvoiceDraft{}, fieldError("draft", "is invalid")
+	}
+	snapshot, err := json.Marshal(input.Customer)
+	if err != nil {
+		return InvoiceDraft{}, err
+	}
+	result, err := r.store.db.ExecContext(ctx, `UPDATE invoices SET customer_id=?, currency=?, due_date=?, customer_snapshot=?, net_total_minor=?, tax_total_minor=?, gross_total_minor=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=? AND state='draft'`, input.CustomerID, strings.ToUpper(strings.TrimSpace(input.Currency)), input.DueDate.UTC().Format(time.RFC3339Nano), string(snapshot), totals.NetMinor, totals.TaxMinor, totals.GrossMinor, id, version)
+	if err != nil {
+		return InvoiceDraft{}, fmt.Errorf("update invoice draft: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return InvoiceDraft{}, r.draftMissingOrConflict(ctx, id)
+	}
+	return r.GetDraft(ctx, id)
+}
+
+type InvoiceTotals struct{ NetMinor, TaxMinor, GrossMinor int64 }
+
+func (r *InvoiceRepository) AddLine(ctx context.Context, id string, version int, line InvoiceLine, totals InvoiceTotals) (InvoiceDraft, error) {
+	if err := validInvoiceLine(line); err != nil {
+		return InvoiceDraft{}, err
+	}
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return InvoiceDraft{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := bumpDraft(tx, ctx, id, version, totals); err != nil {
+		return InvoiceDraft{}, err
+	}
+	lineID, err := newBusinessID()
+	if err != nil {
+		return InvoiceDraft{}, err
+	}
+	var position int
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position),0)+1 FROM invoice_items WHERE invoice_id=?`, id).Scan(&position); err != nil {
+		return InvoiceDraft{}, err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO invoice_items (id,invoice_id,catalog_item_id,position,title_snapshot,description_snapshot,unit_snapshot,quantity_scaled,net_unit_price_minor,discount_basis_points,tax_rate_scaled,net_total_minor,tax_total_minor,gross_total_minor) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, lineID, id, nullID(line.CatalogItemID), position, line.Title, line.Description, line.Unit, line.QuantityScaled, line.UnitPriceMinor, line.DiscountBasisPoints, line.TaxRateBasisPoints, line.NetMinor, line.TaxMinor, line.GrossMinor)
+	if err != nil {
+		return InvoiceDraft{}, fmt.Errorf("add invoice line: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return InvoiceDraft{}, err
+	}
+	return r.GetDraft(ctx, id)
+}
+func (r *InvoiceRepository) UpdateLine(ctx context.Context, id string, version int, line InvoiceLine, totals InvoiceTotals) (InvoiceDraft, error) {
+	if line.ID == "" {
+		return InvoiceDraft{}, fieldError("line", "is required")
+	}
+	if err := validInvoiceLine(line); err != nil {
+		return InvoiceDraft{}, err
+	}
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return InvoiceDraft{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err = bumpDraft(tx, ctx, id, version, totals); err != nil {
+		return InvoiceDraft{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE invoice_items SET title_snapshot=?,description_snapshot=?,unit_snapshot=?,quantity_scaled=?,net_unit_price_minor=?,discount_basis_points=?,tax_rate_scaled=?,net_total_minor=?,tax_total_minor=?,gross_total_minor=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND invoice_id=?`, line.Title, line.Description, line.Unit, line.QuantityScaled, line.UnitPriceMinor, line.DiscountBasisPoints, line.TaxRateBasisPoints, line.NetMinor, line.TaxMinor, line.GrossMinor, line.ID, id)
+	if err != nil {
+		return InvoiceDraft{}, err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return InvoiceDraft{}, ErrNotFound
+	}
+	if err = tx.Commit(); err != nil {
+		return InvoiceDraft{}, err
+	}
+	return r.GetDraft(ctx, id)
+}
+func (r *InvoiceRepository) RemoveLine(ctx context.Context, id string, version int, lineID string, totals InvoiceTotals) (InvoiceDraft, error) {
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return InvoiceDraft{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err = bumpDraft(tx, ctx, id, version, totals); err != nil {
+		return InvoiceDraft{}, err
+	}
+	var removedPosition int
+	if err := tx.QueryRowContext(ctx, `SELECT position FROM invoice_items WHERE id=? AND invoice_id=?`, lineID, id).Scan(&removedPosition); errors.Is(err, sql.ErrNoRows) {
+		return InvoiceDraft{}, ErrNotFound
+	} else if err != nil {
+		return InvoiceDraft{}, err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM invoice_items WHERE id=? AND invoice_id=?`, lineID, id)
+	if err != nil {
+		return InvoiceDraft{}, err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return InvoiceDraft{}, ErrNotFound
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE invoice_items SET position=position-1 WHERE invoice_id=? AND position>?`, id, removedPosition); err != nil {
+		return InvoiceDraft{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return InvoiceDraft{}, err
+	}
+	return r.GetDraft(ctx, id)
+}
+func (r *InvoiceRepository) ReorderLines(ctx context.Context, id string, version int, lineIDs []string, totals InvoiceTotals) (InvoiceDraft, error) {
+	if len(lineIDs) == 0 {
+		return InvoiceDraft{}, fieldError("lines", "are required")
+	}
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return InvoiceDraft{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err = bumpDraft(tx, ctx, id, version, totals); err != nil {
+		return InvoiceDraft{}, err
+	}
+	var count int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM invoice_items WHERE invoice_id=?`, id).Scan(&count); err != nil {
+		return InvoiceDraft{}, err
+	}
+	if count != len(lineIDs) {
+		return InvoiceDraft{}, fieldError("lines", "do not match draft")
+	}
+	for i, lineID := range lineIDs {
+		result, err := tx.ExecContext(ctx, `UPDATE invoice_items SET position=? WHERE id=? AND invoice_id=?`, count+i+1, lineID, id)
+		if err != nil {
+			return InvoiceDraft{}, err
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			return InvoiceDraft{}, fieldError("lines", "do not match draft")
+		}
+	}
+	for i, lineID := range lineIDs {
+		if _, err = tx.ExecContext(ctx, `UPDATE invoice_items SET position=? WHERE id=? AND invoice_id=?`, i+1, lineID, id); err != nil {
+			return InvoiceDraft{}, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return InvoiceDraft{}, err
+	}
+	return r.GetDraft(ctx, id)
+}
+func bumpDraft(tx *sql.Tx, ctx context.Context, id string, version int, totals InvoiceTotals) error {
+	if version < 1 {
+		return fieldError("version", "is invalid")
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE invoices SET net_total_minor=?,tax_total_minor=?,gross_total_minor=?,version=version+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=? AND state='draft'`, totals.NetMinor, totals.TaxMinor, totals.GrossMinor, id, version)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+func (r *InvoiceRepository) draftMissingOrConflict(ctx context.Context, id string) error {
+	_, err := r.GetDraft(ctx, id)
+	if errors.Is(err, ErrNotFound) {
+		return ErrNotFound
+	}
+	return ErrConflict
+}
+func validInvoiceLine(line InvoiceLine) error {
+	if strings.TrimSpace(line.Title) == "" || strings.TrimSpace(line.Unit) == "" || line.QuantityScaled <= 0 || line.UnitPriceMinor < 0 || line.DiscountBasisPoints < 0 || line.DiscountBasisPoints > 10000 || line.TaxRateBasisPoints < 0 || line.TaxRateBasisPoints > 10000 || line.NetMinor < 0 || line.TaxMinor < 0 || line.GrossMinor < 0 {
+		return fieldError("line", "is invalid")
+	}
+	return nil
+}
+func nullID(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
+}
+
+type invoiceScanner interface{ Scan(...any) error }
+
+func scanInvoiceDraft(s invoiceScanner) (InvoiceDraft, error) {
+	var d InvoiceDraft
+	var issue, due, number sql.NullString
+	var snapshot string
+	err := s.Scan(&d.ID, &d.CustomerID, &number, &d.State, &d.Currency, &issue, &due, &snapshot, &d.Version, &d.NetMinor, &d.TaxMinor, &d.GrossMinor)
+	if err != nil {
+		return d, err
+	}
+	if snapshot != "" {
+		if err = json.Unmarshal([]byte(snapshot), &d.Customer); err != nil {
+			return d, fmt.Errorf("decode customer snapshot: %w", err)
+		}
+	}
+	d.Number = number.String
+	if issue.Valid {
+		d.IssueDate = parseBusinessTime(issue.String)
+	}
+	if due.Valid {
+		d.DueDate = parseBusinessTime(due.String)
+	}
+	return d, nil
+}

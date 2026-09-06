@@ -257,6 +257,7 @@ func (a *app) withPageData(r *http.Request, data pageData) pageData {
 	data.DisplayName = p.DisplayName
 	data.CSSURL = "/assets/app.css?v=" + assetVersion("app.css")
 	data.HTMXURL = "/assets/htmx.min.js?v=" + assetVersion("htmx.min.js")
+	data.InvoiceJSURL = "/assets/invoice.js?v=" + assetVersion("invoice.js")
 	return data
 }
 func (a *app) renderTemplate(w http.ResponseWriter, name string, data pageData) {

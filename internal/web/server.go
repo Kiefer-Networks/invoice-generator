@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
+	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
@@ -55,22 +56,27 @@ type app struct {
 }
 
 type pageData struct {
-	Nonce, CSRFToken, DisplayName, CSSURL, HTMXURL string
-	CompanyInput                                   store.CompanyInput
-	Customers                                      store.CustomerPage
-	Customer                                       *store.Customer
-	CustomerInput                                  store.CustomerInput
-	CustomerVersion                                int
-	CustomerAction, CustomerTitle, Search          string
-	CustomerState, NextPageURL                     string
-	Catalog                                        store.CatalogPage
-	CatalogItem                                    *store.CatalogItem
-	CatalogInput                                   store.CatalogInput
-	CatalogVersion                                 int
-	CatalogAction, CatalogTitle, CatalogState      string
-	CatalogQuery, CatalogCurrency                  string
-	Errors                                         map[string]string
-	Raw                                            map[string]string
+	Nonce, CSRFToken, DisplayName, CSSURL, HTMXURL, InvoiceJSURL string
+	CompanyInput                                                 store.CompanyInput
+	Customers                                                    store.CustomerPage
+	Customer                                                     *store.Customer
+	CustomerInput                                                store.CustomerInput
+	CustomerVersion                                              int
+	CustomerAction, CustomerTitle, Search                        string
+	CustomerState, NextPageURL                                   string
+	Catalog                                                      store.CatalogPage
+	CatalogItem                                                  *store.CatalogItem
+	CatalogInput                                                 store.CatalogInput
+	CatalogVersion                                               int
+	CatalogAction, CatalogTitle, CatalogState                    string
+	CatalogQuery, CatalogCurrency                                string
+	Invoices                                                     []store.InvoiceDraft
+	Invoice                                                      *invoicing.Draft
+	InvoiceCustomers                                             store.CustomerPage
+	InvoiceCatalog                                               store.CatalogPage
+	InvoiceAction, InvoiceQuery                                  string
+	Errors                                                       map[string]string
+	Raw                                                          map[string]string
 }
 
 func New(deps Dependencies) (http.Handler, error) {
@@ -90,7 +96,7 @@ func New(deps Dependencies) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	t, err := template.New("pages").Funcs(templateFunctions()).ParseFS(embeddedFiles, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html", "templates/catalog.html", "templates/catalog_detail.html", "templates/catalog_form.html")
+	t, err := template.New("pages").Funcs(templateFunctions()).ParseFS(embeddedFiles, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html", "templates/catalog.html", "templates/catalog_detail.html", "templates/catalog_form.html", "templates/invoices.html", "templates/invoice_editor.html", "templates/invoice_items.html")
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +126,7 @@ func templateFunctions() template.FuncMap {
 			return ""
 		},
 		"catalogMinor": formatMinor,
+		"invoiceMinor": func(value int64) string { return formatMinor(int(value)) },
 		"catalogTax":   formatTaxRate,
 		"string":       func(value int) string { return strconv.Itoa(value) },
 	}
@@ -150,6 +157,10 @@ func (a *app) routes(w http.ResponseWriter, r *http.Request) {
 		a.catalog(w, r)
 	case "/catalog/new":
 		a.catalogNew(w, r)
+	case "/invoices":
+		a.invoices(w, r)
+	case "/invoices/new":
+		a.invoiceNew(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/assets/") {
 			if r.Method != http.MethodGet {
@@ -167,6 +178,10 @@ func (a *app) routes(w http.ResponseWriter, r *http.Request) {
 			}
 			if strings.HasPrefix(r.URL.Path, "/catalog/") {
 				a.catalogRoute(w, r)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/invoices/") {
+				a.invoiceRoute(w, r)
 				return
 			}
 			http.NotFound(w, r)

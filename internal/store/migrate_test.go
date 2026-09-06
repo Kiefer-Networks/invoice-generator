@@ -168,8 +168,8 @@ func TestMigrateUpgradesOriginalSchema(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationsApplied); err != nil {
 		t.Fatal(err)
 	}
-	if migrationsApplied != 5 {
-		t.Fatalf("migration count=%d, want 5", migrationsApplied)
+	if migrationsApplied != 6 {
+		t.Fatalf("migration count=%d, want 6", migrationsApplied)
 	}
 }
 
@@ -311,8 +311,8 @@ func TestCustomerKeyRepairMigrationUpgradesRecorded003WithoutChecksumDrift(t *te
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
-	if applied != 5 {
-		t.Fatalf("migration count after idempotent repair = %d, want 5", applied)
+	if applied != 6 {
+		t.Fatalf("migration count after idempotent repair = %d, want 6", applied)
 	}
 }
 
@@ -373,8 +373,57 @@ func TestCatalogKeyMigrationUpgradesPre005DatabaseWithoutChecksumDrift(t *testin
 		t.Fatal(err)
 	}
 	var applied int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != 5 {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != 6 {
 		t.Fatalf("idempotent catalog migration count=%d, %v", applied, err)
+	}
+}
+
+func TestInvoiceDraftDiscountMigrationUpgradesPre006DatabaseWithoutChecksumDrift(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.ensureMigrationTable(ctx); err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := embeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations[:5] {
+		if _, err := s.db.ExecContext(ctx, migration.sql); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, '2026-09-06T00:00:00Z')`, migration.version, migration.name, migration.checksum); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO customers (id, number, display_name, country, preferred_language, currency) VALUES ('customer-1', 'C-001', 'Acme', 'DE', 'de', 'EUR')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO invoices (id, customer_id, state, currency) VALUES ('invoice-1', 'customer-1', 'draft', 'EUR')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO invoice_items (id, invoice_id, position, title_snapshot, unit_snapshot, quantity_scaled, net_unit_price_minor, tax_rate_scaled) VALUES ('line-1', 'invoice-1', 1, 'Advice', 'hour', 10000, 100, 1900)`); err != nil {
+		t.Fatal(err)
+	}
+	var before string
+	if err := s.db.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version=5`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var discount int
+	if err := s.db.QueryRowContext(ctx, `SELECT discount_basis_points FROM invoice_items WHERE id='line-1'`).Scan(&discount); err != nil || discount != 0 {
+		t.Fatalf("discount=%d err=%v", discount, err)
+	}
+	var after string
+	if err := s.db.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version=5`).Scan(&after); err != nil || after != before {
+		t.Fatalf("migration 005 checksum=%q err=%v", after, err)
 	}
 }
 
