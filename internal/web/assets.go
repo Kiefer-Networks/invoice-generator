@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
-	"io/fs"
 )
 
 //go:embed static/* templates/* testdata/asset-manifest.json
@@ -19,4 +18,3 @@ func assetVersion(name string) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:8])
 }
-func staticFS() (fs.FS, error) { return fs.Sub(embeddedFiles, "static") }

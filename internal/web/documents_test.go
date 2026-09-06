@@ -2,9 +2,6 @@ package web
 
 import (
 	"context"
-	"github.com/kiefer-networks/invoice-generator/internal/documents"
-	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +10,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/documents"
+	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func TestDocumentDownloadAuthorizationHeadersRangesAndIntegrity(t *testing.T) {

@@ -270,7 +270,7 @@ func (c Config) Validate() error {
 	}
 	issuer, err := parseHTTPURL(c.PocketIDIssuer)
 	if err != nil {
-		return fmt.Errorf("Pocket ID issuer: %w", err)
+		return fmt.Errorf("issuer for Pocket ID: %w", err)
 	}
 	callback, err := parseHTTPURL(c.CallbackURL)
 	if err != nil {

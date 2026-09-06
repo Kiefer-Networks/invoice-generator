@@ -127,7 +127,7 @@ func NewManager(ctx context.Context, database *store.Store, cfg Config) (*Manage
 		return nil, err
 	}
 	if cfg.ClientID == "" || clientSecret == "" {
-		return nil, errors.New("Pocket ID client credentials are required")
+		return nil, errors.New("client credentials for Pocket ID are required")
 	}
 	if len(sessionKey) != 32 || len(transactionKey) != 32 {
 		return nil, errors.New("session and transaction keys must each be 32 bytes")
@@ -230,11 +230,11 @@ func discover(ctx context.Context, client *http.Client, issuer *url.URL) (discov
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return discoveryDocument{}, fmt.Errorf("Pocket ID discovery: %w", err)
+		return discoveryDocument{}, fmt.Errorf("discovery for Pocket ID: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return discoveryDocument{}, fmt.Errorf("Pocket ID discovery status %d", resp.StatusCode)
+		return discoveryDocument{}, fmt.Errorf("discovery response from Pocket ID has status %d", resp.StatusCode)
 	}
 	if err := rejectStaleDiscovery(resp.Header, time.Now()); err != nil {
 		return discoveryDocument{}, err
@@ -244,7 +244,7 @@ func discover(ctx context.Context, client *http.Client, issuer *url.URL) (discov
 		return discoveryDocument{}, errors.New("read Pocket ID discovery document")
 	}
 	if len(body) > maxOIDCDocumentBytes {
-		return discoveryDocument{}, errors.New("Pocket ID discovery document is too large")
+		return discoveryDocument{}, errors.New("discovery document from Pocket ID is too large")
 	}
 	var doc discoveryDocument
 	if err := json.Unmarshal(body, &doc); err != nil {
@@ -271,7 +271,7 @@ func rejectStaleDiscovery(headers http.Header, now time.Time) error {
 	}
 	date, err := http.ParseTime(headers.Get("Date"))
 	if err != nil {
-		return errors.New("Pocket ID discovery cache policy has no valid date")
+		return errors.New("discovery cache policy for Pocket ID has no valid date")
 	}
 	age := now.Sub(date)
 	if ageHeader := headers.Get("Age"); ageHeader != "" {
@@ -282,27 +282,27 @@ func rejectStaleDiscovery(headers http.Header, now time.Time) error {
 		age += time.Duration(seconds) * time.Second
 	}
 	if age > time.Duration(maxAge)*time.Second {
-		return errors.New("Pocket ID discovery document is stale")
+		return errors.New("discovery document from Pocket ID is stale")
 	}
 	return nil
 }
 
 func validateDiscovery(doc discoveryDocument, issuer *url.URL) error {
 	if doc.Issuer != issuer.String() {
-		return errors.New("Pocket ID discovery issuer does not exactly match configured issuer")
+		return errors.New("discovery issuer for Pocket ID does not exactly match configured issuer")
 	}
 	for _, value := range []string{doc.AuthorizationEndpoint, doc.TokenEndpoint, doc.JWKSURI} {
 		endpoint, err := url.Parse(value)
 		if err != nil || endpoint.Scheme == "" || endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" || endpoint.Scheme != issuer.Scheme || endpoint.Host != issuer.Host {
-			return errors.New("Pocket ID discovery endpoint must be same-origin")
+			return errors.New("discovery endpoint for Pocket ID must be same-origin")
 		}
 	}
 	if len(doc.SigningAlgorithms) == 0 {
-		return errors.New("Pocket ID discovery has no signing algorithms")
+		return errors.New("discovery for Pocket ID has no signing algorithms")
 	}
 	for _, algorithm := range doc.SigningAlgorithms {
 		if !allowedSigningAlgorithm(algorithm) {
-			return errors.New("Pocket ID discovery permits an unsupported signing algorithm")
+			return errors.New("discovery for Pocket ID permits an unsupported signing algorithm")
 		}
 	}
 	return nil
@@ -322,7 +322,7 @@ func validateIssuer(raw string, development bool) (*url.URL, error) {
 		return nil, errors.New("invalid Pocket ID issuer URL")
 	}
 	if u.Scheme != "https" && !(development && u.Scheme == "http" && isLoopback(u.Hostname())) {
-		return nil, errors.New("Pocket ID issuer must use HTTPS")
+		return nil, errors.New("issuer for Pocket ID must use HTTPS")
 	}
 	return u, nil
 }
@@ -445,7 +445,7 @@ func (m *Manager) Callback(ctx context.Context, callbackURL *url.URL, cookie *ht
 		if q.Get("code") != "" {
 			return SessionResult{TransactionCookie: deleted}, errors.New("callback mixes OAuth error and code")
 		}
-		return SessionResult{TransactionCookie: deleted}, errors.New("Pocket ID authorization was denied")
+		return SessionResult{TransactionCookie: deleted}, errors.New("authorization by Pocket ID was denied")
 	}
 	state := q.Get("state")
 	code := q.Get("code")
@@ -464,11 +464,11 @@ func (m *Manager) Callback(ctx context.Context, callbackURL *url.URL, cookie *ht
 	}
 	raw, err := m.provider.Exchange(ctx, code, t.Verifier)
 	if err != nil {
-		return SessionResult{TransactionCookie: deleted}, errors.New("Pocket ID token exchange failed")
+		return SessionResult{TransactionCookie: deleted}, errors.New("token exchange with Pocket ID failed")
 	}
 	token, err := m.provider.Verify(ctx, raw)
 	if err != nil {
-		return SessionResult{TransactionCookie: deleted}, errors.New("Pocket ID id token verification failed")
+		return SessionResult{TransactionCookie: deleted}, errors.New("verification of Pocket ID id token failed")
 	}
 	identity, err := m.verifyIdentity(token, t.Nonce)
 	if err != nil {
@@ -505,14 +505,14 @@ func (m *Manager) verifyIdentity(token *oidc.IDToken, nonce string) (identityCla
 		return c, errors.New("invalid Pocket ID id token claims")
 	}
 	if c.Subject == "" || c.Nonce != nonce {
-		return c, errors.New("Pocket ID id token subject or nonce is invalid")
+		return c, errors.New("subject or nonce in Pocket ID id token is invalid")
 	}
 	if c.AuthorizedParty != "" && c.AuthorizedParty != m.clientID {
-		return c, errors.New("Pocket ID id token authorized party is invalid")
+		return c, errors.New("authorized party in Pocket ID id token is invalid")
 	}
 	now := m.now()
 	if c.IssuedAt == 0 || time.Unix(c.IssuedAt, 0).After(now.Add(allowedIssuedAtFuture)) || c.AuthenticationTime == 0 || time.Unix(c.AuthenticationTime, 0).After(now.Add(allowedIssuedAtFuture)) || time.Unix(c.AuthenticationTime, 0).Before(now.Add(-sessionLifetime)) {
-		return c, errors.New("Pocket ID id token time claims are invalid")
+		return c, errors.New("time claims in Pocket ID id token are invalid")
 	}
 	allowed := false
 	for _, group := range c.Groups {
@@ -522,7 +522,7 @@ func (m *Manager) verifyIdentity(token *oidc.IDToken, nonce string) (identityCla
 		}
 	}
 	if !allowed {
-		return c, errors.New("Pocket ID identity is not in invoice-admins")
+		return c, errors.New("identity from Pocket ID is not in invoice-admins")
 	}
 	return c, nil
 }

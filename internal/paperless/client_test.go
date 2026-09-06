@@ -2,7 +2,9 @@ package paperless
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -77,7 +79,7 @@ func TestPaperlessTimeoutRedirectAndTLS(t *testing.T) {
 	hit := false
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
 	defer target.Close()
-	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, 302) }))
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, http.StatusFound) }))
 	defer s.Close()
 	c, _ := NewClient(Config{URL: s.URL, APIKey: "secret"}, s.Client(), true)
 	if _, e := c.ResolveTags(context.Background()); e == nil || hit {
@@ -126,6 +128,45 @@ func TestPaperlessTransportBoundsAndIPPolicy(t *testing.T) {
 		if allowedIP(netip.MustParseAddr(ip), false) {
 			t.Error("unsafe destination", ip)
 		}
+	}
+}
+
+func TestPaperlessInjectedTLSDialersCannotBypassPolicy(t *testing.T) {
+	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer s.Close()
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
+			injected := s.Client()
+			tr := injected.Transport.(*http.Transport).Clone()
+			called := false
+			dial := func(_, _ string) (net.Conn, error) {
+				called = true
+				return nil, errors.New("injected TLS dialer bypassed policy")
+			}
+			if legacy {
+				//lint:ignore SA1019 Exercise legacy injected transports that must also have their TLS hook cleared.
+				tr.DialTLS = dial //nolint:staticcheck // SA1019: deliberately inject the legacy bypass regression case.
+			} else {
+				tr.DialTLSContext = func(_ context.Context, network, address string) (net.Conn, error) {
+					return dial(network, address)
+				}
+			}
+			client, err := NewClient(Config{URL: s.URL, APIKey: "secret"}, &http.Client{Transport: tr}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.http.CloseIdleConnections()
+			response, err := client.http.Get(s.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if called || response.StatusCode != http.StatusNoContent {
+				t.Fatalf("TLS hook called=%t, status=%d", called, response.StatusCode)
+			}
+		})
 	}
 }
 func TestPaperlessPollingAndMaliciousResponses(t *testing.T) {

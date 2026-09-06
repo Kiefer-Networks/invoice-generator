@@ -33,13 +33,13 @@ func reloadHandler(deps Dependencies) (http.Handler, error) {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		files, closeRoot, err := developmentFiles(deps.Config.DevAssetsDir)
 		if err != nil {
-			http.Error(w, "assets unavailable", 503)
+			http.Error(w, "assets unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		defer closeRoot()
 		handler, err := newWithFiles(deps, files)
 		if err != nil {
-			http.Error(w, "assets unavailable", 503)
+			http.Error(w, "assets unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		handler.ServeHTTP(w, r)

@@ -120,17 +120,17 @@ func (p *OIDC) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(p.codes) >= 256 {
 			p.mu.Unlock()
-			http.Error(w, "too many authorizations", 429)
+			http.Error(w, "too many authorizations", http.StatusTooManyRequests)
 			return
 		}
 		p.codes[code] = authorization{Nonce: q.Get("nonce"), Challenge: q.Get("code_challenge"), Identity: identity, Expires: time.Now().Add(2 * time.Minute)}
 		p.mu.Unlock()
 		dest, _ := url.Parse(p.callback)
 		dest.RawQuery = url.Values{"code": {code}, "state": {q.Get("state")}}.Encode()
-		http.Redirect(w, r, dest.String(), 302)
+		http.Redirect(w, r, dest.String(), http.StatusFound)
 	case "/token":
 		if r.Method != "POST" {
-			http.Error(w, "POST required", 405)
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 8192)
@@ -143,7 +143,7 @@ func (p *OIDC) serve(w http.ResponseWriter, r *http.Request) {
 			id, secret = r.Form.Get("client_id"), r.Form.Get("client_secret")
 		}
 		if id != ClientID || secret != ClientSecret || r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("redirect_uri") != p.callback {
-			http.Error(w, "invalid client", 401)
+			http.Error(w, "invalid client", http.StatusUnauthorized)
 			return
 		}
 		p.mu.Lock()
@@ -183,7 +183,7 @@ func (p *OIDC) serve(w http.ResponseWriter, r *http.Request) {
 		a, ok := p.tokens[token]
 		p.mu.Unlock()
 		if !ok || time.Now().After(a.Expires) {
-			http.Error(w, "invalid token", 401)
+			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
 		writeJSON(w, p.claims(a))

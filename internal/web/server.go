@@ -113,7 +113,7 @@ func New(deps Dependencies) (http.Handler, error) {
 
 func newWithFiles(deps Dependencies, assets fs.FS) (http.Handler, error) {
 	if deps.Auth == nil {
-		return nil, errors.New("Pocket ID manager is required")
+		return nil, errors.New("manager for Pocket ID is required")
 	}
 	if len(deps.Config.AllowedHosts) == 0 {
 		return nil, errors.New("at least one allowed host is required")

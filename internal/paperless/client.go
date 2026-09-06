@@ -27,9 +27,9 @@ const MaxDocumentSize int64 = 20 << 20
 const maxResponseSize = 1 << 20
 
 var taskPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
-var ErrRequest = errors.New("Paperless request failed")
-var ErrRejected = errors.New("Paperless upload rejected")
-var ErrResponse = errors.New("Paperless response invalid")
+var ErrRequest = errors.New("request to Paperless failed")
+var ErrRejected = errors.New("upload to Paperless rejected")
+var ErrResponse = errors.New("response from Paperless invalid")
 var ErrPending = errors.New("remote_pending")
 var ErrRemoteFailed = errors.New("remote_failed")
 var ErrAPIIncompatible = errors.New("api_incompatible")
@@ -94,13 +94,13 @@ func ValidateURL(raw string, fixture bool) error {
 		return errors.New("invalid Paperless URL")
 	}
 	if u.Scheme != "https" && !(fixture && u.Scheme == "http" && (u.Hostname() == "localhost" || isLoopback(u.Hostname()))) {
-		return errors.New("Paperless requires HTTPS")
+		return errors.New("connection to Paperless requires HTTPS")
 	}
 	if ip, e := netip.ParseAddr(u.Hostname()); e == nil && !allowedIP(ip, fixture) {
-		return errors.New("Paperless destination forbidden")
+		return errors.New("destination for Paperless forbidden")
 	}
 	if strings.EqualFold(u.Hostname(), "localhost") && !fixture {
-		return errors.New("Paperless destination forbidden")
+		return errors.New("destination for Paperless forbidden")
 	}
 	return nil
 }
@@ -148,7 +148,8 @@ func NewClient(cfg Config, injected *http.Client, fixture bool) (*Client, error)
 	tr.TLSClientConfig.ServerName = u.Hostname()
 	tr.TLSClientConfig.MinVersion = tls.VersionTLS13
 	tr.DialTLSContext = nil
-	tr.DialTLS = nil
+	//lint:ignore SA1019 Clear legacy hooks too: injected TLS dialers must not bypass the bounded dialer and TLS policy.
+	tr.DialTLS = nil //nolint:staticcheck // SA1019: clearing an inherited legacy hook is required for transport policy.
 	tr.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()

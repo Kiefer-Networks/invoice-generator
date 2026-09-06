@@ -2,9 +2,10 @@ package web
 
 import (
 	"errors"
+	"net/http"
+
 	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
-	"net/http"
 )
 
 func (a *app) invoiceFinalizationRoute(w http.ResponseWriter, r *http.Request, id, action string) {
@@ -118,7 +119,7 @@ func (a *app) renderInvoiceReview(w http.ResponseWriter, r *http.Request, id str
 			a.finalizationError(w, r, problem)
 			return
 		}
-		http.Redirect(w, r, "/invoices/"+id, 303)
+		http.Redirect(w, r, "/invoices/"+id, http.StatusSeeOther)
 		return
 	}
 	review, err := invoicing.NewFinalizationService(a.store).PrepareReview(r.Context(), id, d.Version)

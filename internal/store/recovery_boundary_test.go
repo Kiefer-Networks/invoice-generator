@@ -76,7 +76,6 @@ func TestRecoveryRejectsUntrustedParents(t *testing.T) {
 			if _, e := Backup(context.Background(), o); e != nil {
 				t.Fatal(e)
 			}
-			target := filepath.Join(t.TempDir(), "restored")
 			unsafe := t.TempDir()
 			makeRecoveryParentUntrusted(t, unsafe)
 			if kind == "database" {
@@ -97,7 +96,7 @@ func TestRecoveryRejectsUntrustedParents(t *testing.T) {
 					t.Fatal("untrusted output parent accepted")
 				}
 			} else {
-				target = filepath.Join(unsafe, "restored")
+				target := filepath.Join(unsafe, "restored")
 				if e := Restore(context.Background(), RestoreOptions{Archive: o.Output, Passphrase: o.Passphrase, TargetRoot: target, Confirm: true}); e == nil {
 					t.Fatal("untrusted restore parent accepted")
 				}

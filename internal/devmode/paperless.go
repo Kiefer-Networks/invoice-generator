@@ -44,7 +44,7 @@ func ValidPaperlessState(s string) bool {
 func (p *Paperless) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Api-Version", "10")
 	if r.Header.Get("Authorization") != "Token "+PaperlessToken {
-		http.Error(w, "invalid fixture token", 401)
+		http.Error(w, "invalid fixture token", http.StatusUnauthorized)
 		return
 	}
 	p.mu.Lock()
@@ -54,7 +54,7 @@ func (p *Paperless) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"count": 1, "results": []any{map[string]any{"id": 1, "name": r.URL.Query().Get("name__iexact")}}})
 	case "/api/documents/post_document/":
 		if r.Method != "POST" {
-			http.Error(w, "POST required", 405)
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
 			return
 		}
 		if p.state == "rejected" || (p.state == "reject-once" && !p.rejected) {

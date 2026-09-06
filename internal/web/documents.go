@@ -3,11 +3,12 @@ package web
 import (
 	"bytes"
 	"errors"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 var documentIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{20,64}$`)
@@ -25,7 +26,7 @@ func (a *app) documentRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.documents == nil || a.store == nil {
-		http.Error(w, "document service unavailable", 503)
+		http.Error(w, "document service unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	id := parts[0]
@@ -52,7 +53,7 @@ func (a *app) documentRoute(w http.ResponseWriter, r *http.Request) {
 			e = a.store.DocumentRepository().Retry(r.Context(), id)
 		}
 		if e != nil {
-			http.Error(w, "job is already queued or completed", 409)
+			http.Error(w, "job is already queued or completed", http.StatusConflict)
 			return
 		}
 		if a.wakeDocuments != nil {
@@ -63,7 +64,7 @@ func (a *app) documentRoute(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("HX-Redirect", path)
 			w.WriteHeader(200)
 		} else {
-			http.Redirect(w, r, path, 303)
+			http.Redirect(w, r, path, http.StatusSeeOther)
 		}
 		return
 	}
@@ -96,7 +97,7 @@ func (a *app) invoicePDFPreview(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	if a.documents == nil || a.store == nil {
-		http.Error(w, "document service unavailable", 503)
+		http.Error(w, "document service unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	p, _ := principalFromContext(r.Context())
@@ -110,7 +111,7 @@ func (a *app) invoicePDFPreview(w http.ResponseWriter, r *http.Request, id strin
 		if errors.Is(e, store.ErrNotFound) {
 			http.NotFound(w, r)
 		} else {
-			http.Error(w, "preview generation unavailable; retry later", 503)
+			http.Error(w, "preview generation unavailable; retry later", http.StatusServiceUnavailable)
 		}
 		return
 	}
