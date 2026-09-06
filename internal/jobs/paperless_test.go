@@ -7,8 +7,10 @@ import (
 	"github.com/kiefer-networks/invoice-generator/internal/documents"
 	"github.com/kiefer-networks/invoice-generator/internal/paperless"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,12 +78,29 @@ func TestPaperlessRestartReconcilesWithoutSecondUpload(t *testing.T) {
 				case "/api/documents/post_document/":
 					uploads++
 					if loseResponse {
-						fmt.Fprint(w, `malformed response`)
+						if e := r.ParseMultipartForm(1 << 20); e != nil {
+							t.Error(e)
+							return
+						}
+						conn, _, e := w.(http.Hijacker).Hijack()
+						if e != nil {
+							t.Error(e)
+							return
+						}
+						conn.Close() // accepted bytes, lost response after the write
 					} else {
 						fmt.Fprint(w, `"task-123"`)
 					}
 				case "/api/tasks/":
-					fmt.Fprint(w, `[{"task_id":"task-123","status":"STARTED"}]`)
+					if visible {
+						fmt.Fprint(w, `[{"task_id":"task-123","status":"SUCCESS","related_document":42}]`)
+					} else {
+						fmt.Fprint(w, `[{"task_id":"task-123","status":"STARTED"}]`)
+					}
+				case "/api/documents/42/":
+					fmt.Fprintf(w, `{"id":42,"title":%q}`, title)
+				case "/api/documents/42/download/":
+					fmt.Fprint(w, "%PDF-test")
 				default:
 					w.WriteHeader(404)
 				}
@@ -193,6 +212,10 @@ func TestPaperlessExplicitRejectionCanRetryUpload(t *testing.T) {
 			}
 		case "/api/tasks/":
 			fmt.Fprint(w, `[{"task_id":"task-123","status":"SUCCESS","related_document":"42"}]`)
+		case "/api/documents/42/":
+			fmt.Fprintf(w, `{"id":42,"title":%q}`, paperless.Title("PL-1", d.ID))
+		case "/api/documents/42/download/":
+			fmt.Fprint(w, "%PDF-test")
 		}
 	}))
 	defer remote.Close()
@@ -225,5 +248,189 @@ func TestPaperlessExplicitRejectionCanRetryUpload(t *testing.T) {
 	state, _ = s.PaperlessRepository().ForDocument(ctx, d.ID)
 	if state.State != "completed" || uploads != 2 {
 		t.Fatal(state, uploads)
+	}
+}
+
+func TestPaperlessKnownTaskAndContentRequiredForAdoption(t *testing.T) {
+	for _, mode := range []string{"wrong_bytes", "task_disagreement", "pending_task", "duplicate", "valid"} {
+		t.Run(mode, func(t *testing.T) {
+			s, st, d := paperlessFixture(t)
+			title := paperless.Title("PL-1", d.ID)
+			var calls []string
+			remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls = append(calls, r.URL.Path)
+				switch r.URL.Path {
+				case "/api/tasks/":
+					if mode == "pending_task" {
+						fmt.Fprint(w, `[{"task_id":"task-123","status":"STARTED"}]`)
+					} else {
+						fmt.Fprint(w, `[{"task_id":"task-123","status":"SUCCESS","related_document":43}]`)
+					}
+				case "/api/documents/":
+					if mode == "duplicate" {
+						fmt.Fprintf(w, `{"count":2,"results":[{"id":42,"title":%q},{"id":43,"title":%q}]}`, title, title)
+					} else {
+						fmt.Fprintf(w, `{"count":1,"results":[{"id":42,"title":%q}]}`, title)
+					}
+				case "/api/documents/42/":
+					fmt.Fprintf(w, `{"id":42,"title":%q}`, title)
+				case "/api/documents/42/download/":
+					if mode == "wrong_bytes" {
+						fmt.Fprint(w, "%PDF-evil")
+					} else {
+						fmt.Fprint(w, "%PDF-test")
+					}
+				default:
+					w.WriteHeader(404)
+				}
+			}))
+			defer remote.Close()
+			c, _ := paperless.NewClient(paperless.Config{URL: remote.URL, APIKey: "secret"}, remote.Client(), true)
+			worker := NewPaperlessWorker(s, st, func() (*paperless.Client, error) { return c, nil })
+			ctx := context.Background()
+			j, e := s.PaperlessRepository().Claim(ctx, time.Now().Add(time.Second), time.Minute)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e = s.PaperlessRepository().BeginUpload(ctx, j); e != nil {
+				t.Fatal(e)
+			}
+			if mode == "task_disagreement" || mode == "pending_task" {
+				if e = s.PaperlessRepository().SaveTask(ctx, j, "task-123"); e != nil {
+					t.Fatal(e)
+				}
+			}
+			e = worker.Process(ctx, j)
+			saved, _ := s.PaperlessRepository().ForDocument(ctx, d.ID)
+			if mode == "valid" {
+				if e != nil || saved.State != "completed" {
+					t.Fatal(saved, e)
+				}
+			} else {
+				if e == nil || saved.State == "completed" {
+					t.Fatal("unverified candidate delivered", mode, saved, e)
+				}
+			}
+			if (mode == "task_disagreement" || mode == "pending_task") && (len(calls) == 0 || calls[0] != "/api/tasks/") {
+				t.Fatal("known task not reconciled first", calls)
+			}
+		})
+	}
+}
+
+func TestPaperlessPreSendFailureAfterTagsRetriesOnce(t *testing.T) {
+	s, st, d := paperlessFixture(t)
+	tags, uploads := 0, 0
+	title := paperless.Title("PL-1", d.ID)
+	var remote *httptest.Server
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/documents/":
+			fmt.Fprint(w, `{"count":0,"results":[]}`)
+		case "/api/tags/":
+			tags++
+			if tags == 6 {
+				remote.Listener.Close()
+			}
+			fmt.Fprintf(w, `{"count":1,"results":[{"id":1,"name":%q}]}`, r.URL.Query().Get("name__iexact"))
+		case "/api/documents/post_document/":
+			uploads++
+			fmt.Fprint(w, `"task-123"`)
+		case "/api/tasks/":
+			fmt.Fprint(w, `[{"task_id":"task-123","status":"SUCCESS","related_document":42}]`)
+		case "/api/documents/42/":
+			fmt.Fprintf(w, `{"id":42,"title":%q}`, title)
+		case "/api/documents/42/download/":
+			fmt.Fprint(w, "%PDF-test")
+		default:
+			w.WriteHeader(404)
+		}
+	})
+	remote = httptest.NewServer(handler)
+	defer remote.Close()
+	address := remote.Listener.Addr().String()
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DisableKeepAlives = true
+	client, e := paperless.NewClient(paperless.Config{URL: remote.URL, APIKey: "secret"}, &http.Client{Transport: tr}, true)
+	if e != nil {
+		t.Fatal(e)
+	}
+	worker := NewPaperlessWorker(s, st, func() (*paperless.Client, error) { return client, nil })
+	ctx := context.Background()
+	now := time.Now().Add(time.Second)
+	j, e := s.PaperlessRepository().Claim(ctx, now, time.Minute)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = worker.Process(ctx, j); e == nil || e.Error() != "request_failed" {
+		t.Fatal(e)
+	}
+	saved, _ := s.PaperlessRepository().ForDocument(ctx, d.ID)
+	if saved.UploadStarted || uploads != 0 || tags != 6 {
+		t.Fatal("pre-send failure retained upload intent", saved, uploads, tags)
+	}
+	if e = s.PaperlessRepository().Fail(ctx, j, now, "request_failed", 5); e != nil {
+		t.Fatal(e)
+	}
+	ln, e := net.Listen("tcp", address)
+	if e != nil {
+		t.Fatal(e)
+	}
+	recovered := httptest.NewUnstartedServer(handler)
+	recovered.Listener.Close()
+	recovered.Listener = ln
+	recovered.Start()
+	defer recovered.Close()
+	j, e = s.PaperlessRepository().Claim(ctx, now.Add(time.Hour), time.Minute)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = worker.Process(ctx, j); e != nil {
+		t.Fatal(e)
+	}
+	saved, _ = s.PaperlessRepository().ForDocument(ctx, d.ID)
+	if saved.State != "completed" || uploads != 1 {
+		t.Fatal(saved, uploads)
+	}
+}
+
+func TestPaperlessCancelledBeforeUploadPersistsSafeRetry(t *testing.T) {
+	s, st, d := paperlessFixture(t)
+	uploads := 0
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/documents/":
+			fmt.Fprint(w, `{"count":0,"results":[]}`)
+		case "/api/tags/":
+			fmt.Fprintf(w, `{"count":1,"results":[{"id":1,"name":%q}]}`, r.URL.Query().Get("name__iexact"))
+		default:
+			uploads++
+			w.WriteHeader(500)
+		}
+	}))
+	defer remote.Close()
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DisableKeepAlives = true
+	c, _ := paperless.NewClient(paperless.Config{URL: remote.URL, APIKey: "secret"}, &http.Client{Transport: tr}, true)
+	worker := NewPaperlessWorker(s, st, func() (*paperless.Client, error) { return c, nil })
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	ctx := httptrace.WithClientTrace(parent, &httptrace.ClientTrace{GetConn: func(string) {
+		calls++
+		if calls == 8 {
+			cancel()
+		}
+	}})
+	j, e := s.PaperlessRepository().Claim(context.Background(), time.Now().Add(time.Second), time.Minute)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = worker.Process(ctx, j); e == nil {
+		t.Fatal("cancelled operation completed")
+	}
+	saved, _ := s.PaperlessRepository().ForDocument(context.Background(), d.ID)
+	if saved.UploadStarted || uploads != 0 || calls != 8 {
+		t.Fatal("cancelled proven-unsent request retained intent", saved, uploads, calls)
 	}
 }

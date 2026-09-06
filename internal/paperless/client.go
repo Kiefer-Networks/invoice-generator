@@ -3,7 +3,9 @@ package paperless
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,11 +13,13 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -28,6 +32,32 @@ var ErrRejected = errors.New("Paperless upload rejected")
 var ErrResponse = errors.New("Paperless response invalid")
 var ErrPending = errors.New("remote_pending")
 var ErrRemoteFailed = errors.New("remote_failed")
+
+type DeliveryCertainty uint8
+
+const (
+	PossiblySent DeliveryCertainty = iota
+	NotSent
+	Rejected
+)
+
+// SubmissionError contains only safe local errors, never transport URLs or
+// upstream text. NotSent requires evidence that no connection was assigned and
+// no request write or body read occurred. Other transport errors stay ambiguous.
+type SubmissionError struct {
+	Certainty DeliveryCertainty
+	cause     error
+}
+
+func (e *SubmissionError) Error() string { return e.cause.Error() }
+func (e *SubmissionError) Unwrap() error { return e.cause }
+
+type observedBody struct {
+	io.ReadCloser
+	read *atomic.Bool
+}
+
+func (b *observedBody) Read(p []byte) (int, error) { b.read.Store(true); return b.ReadCloser.Read(p) }
 
 // DefaultTags returns a fresh list so configuration cannot change automatic tags.
 func DefaultTags() []string {
@@ -145,12 +175,40 @@ func NewClient(cfg Config, injected *http.Client, fixture bool) (*Client, error)
 	}
 	return &Client{cfg: cfg, http: &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
-func (c *Client) request(ctx context.Context, method, path, contentType string, body io.Reader, out any) error {
+func (c *Client) request(ctx context.Context, method, path, contentType string, body io.Reader, out any) (err error) {
+	upload := method == "POST" && path == "/api/documents/post_document/"
+	var connected, wrote, read atomic.Bool
+	if upload {
+		ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+			GotConn:      func(httptrace.GotConnInfo) { connected.Store(true) },
+			WroteHeaders: func() { wrote.Store(true) },
+			WroteRequest: func(httptrace.WroteRequestInfo) { wrote.Store(true) },
+		})
+		defer func() {
+			if err == nil {
+				return
+			}
+			certainty := PossiblySent
+			if !connected.Load() && !wrote.Load() && !read.Load() {
+				certainty = NotSent
+			}
+			if errors.Is(err, ErrRejected) {
+				certainty = Rejected
+			}
+			err = &SubmissionError{Certainty: certainty, cause: err}
+		}()
+	}
 	req, e := http.NewRequestWithContext(ctx, method, apiURL(c.cfg.URL, path), body)
 	if e != nil {
 		return ErrRequest
 	}
 	setAuth(req, c.cfg.APIKey)
+	if upload {
+		req.GetBody = nil // never transparently replay a consumption request
+		if req.Body != nil {
+			req.Body = &observedBody{req.Body, &read}
+		}
+	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
@@ -228,31 +286,31 @@ func (c *Client) Submit(ctx context.Context, r io.Reader, size int64, title stri
 }
 func (c *Client) submit(ctx context.Context, r io.Reader, size int64, title string, ids []int, requireTask bool) (string, error) {
 	if size <= 0 || size > MaxDocumentSize || len(title) > 512 || len(ids) > 64 {
-		return "", ErrRequest
+		return "", &SubmissionError{Certainty: NotSent, cause: ErrRequest}
 	}
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	part, e := mw.CreateFormFile("document", "invoice.pdf")
 	if e != nil {
-		return "", ErrRequest
+		return "", &SubmissionError{Certainty: NotSent, cause: ErrRequest}
 	}
 	n, e := io.Copy(part, io.LimitReader(r, size+1))
 	if e != nil || n != size {
-		return "", ErrRequest
+		return "", &SubmissionError{Certainty: NotSent, cause: ErrRequest}
 	}
 	if e = mw.WriteField("title", title); e != nil {
-		return "", ErrRequest
+		return "", &SubmissionError{Certainty: NotSent, cause: ErrRequest}
 	}
 	for _, id := range ids {
 		if id <= 0 {
-			return "", ErrRequest
+			return "", &SubmissionError{Certainty: NotSent, cause: ErrRequest}
 		}
 		if e = mw.WriteField("tags", strconv.Itoa(id)); e != nil {
-			return "", ErrRequest
+			return "", &SubmissionError{Certainty: NotSent, cause: ErrRequest}
 		}
 	}
 	if e = mw.Close(); e != nil {
-		return "", ErrRequest
+		return "", &SubmissionError{Certainty: NotSent, cause: ErrRequest}
 	}
 	var task string
 	var out any = &task
@@ -263,7 +321,7 @@ func (c *Client) submit(ctx context.Context, r io.Reader, size int64, title stri
 		return "", e
 	}
 	if requireTask && (!taskPattern.MatchString(task) || strings.Contains(task, c.cfg.APIKey)) {
-		return "", ErrResponse
+		return "", &SubmissionError{Certainty: PossiblySent, cause: ErrResponse}
 	}
 	return task, nil
 }
@@ -280,14 +338,12 @@ func (c *Client) FindDocument(ctx context.Context, title string) (int64, error) 
 	}
 	var id int64
 	for _, d := range list.Results {
-		if d.Title == title {
-			if d.ID <= 0 || id != 0 {
-				return 0, ErrResponse
-			}
-			id = d.ID
+		if d.Title != title || d.ID <= 0 || id != 0 {
+			return 0, ErrResponse
 		}
+		id = d.ID
 	}
-	if list.Count > len(list.Results) {
+	if list.Count != len(list.Results) {
 		return 0, ErrResponse
 	}
 	return id, nil
@@ -325,4 +381,43 @@ func (c *Client) Poll(ctx context.Context, task string) (int64, error) {
 }
 func Title(number, documentID string) string {
 	return fmt.Sprintf("Invoice %s [invoice-generator:%s]", number, documentID)
+}
+
+// VerifyDocument binds adoption to both remote identity and the exact immutable
+// original bytes. Paperless may generate a different archive PDF; request the
+// original and hash a bounded stream instead of trusting its mutable title.
+func (c *Client) VerifyDocument(ctx context.Context, id int64, title, sum string, size int64) error {
+	if id <= 0 || size <= 0 || size > MaxDocumentSize || len(sum) != 64 {
+		return ErrResponse
+	}
+	var doc struct {
+		ID    int64  `json:"id"`
+		Title string `json:"title"`
+	}
+	path := "/api/documents/" + strconv.FormatInt(id, 10) + "/"
+	if e := c.request(ctx, "GET", path, "", nil, &doc); e != nil {
+		return e
+	}
+	if doc.ID != id || doc.Title != title {
+		return ErrResponse
+	}
+	req, e := http.NewRequestWithContext(ctx, "GET", apiURL(c.cfg.URL, path+"download/?original=true"), nil)
+	if e != nil {
+		return ErrRequest
+	}
+	setAuth(req, c.cfg.APIKey)
+	resp, e := c.http.Do(req)
+	if e != nil {
+		return ErrRequest
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || (resp.ContentLength >= 0 && resp.ContentLength != size) {
+		return ErrResponse
+	}
+	hash := sha256.New()
+	n, e := io.Copy(hash, io.LimitReader(resp.Body, size+1))
+	if e != nil || n != size || hex.EncodeToString(hash.Sum(nil)) != sum {
+		return ErrResponse
+	}
+	return nil
 }

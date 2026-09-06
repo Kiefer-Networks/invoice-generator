@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -266,5 +267,115 @@ func TestPaperlessExpiredFinalLeaseBecomesManuallyRetryable(t *testing.T) {
 	}
 	if e = r.Retry(ctx, d.ID); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestPaperlessRepairMigrationMakesExhaustedJobsRetryable(t *testing.T) {
+	for _, state := range []string{"queued", "leased"} {
+		for _, attempts := range []int{5, 8} {
+			t.Run(fmt.Sprintf("%s_%d", state, attempts), func(t *testing.T) {
+				ctx := context.Background()
+				s, e := Open(ctx, filepath.Join(t.TempDir(), "repair.db"))
+				if e != nil {
+					t.Fatal(e)
+				}
+				defer s.Close()
+				if e = s.ensureMigrationTable(ctx); e != nil {
+					t.Fatal(e)
+				}
+				ms, _ := embeddedMigrations()
+				for _, m := range ms {
+					if m.version <= 11 {
+						if e = s.applyMigration(ctx, m); e != nil {
+							t.Fatal(e)
+						}
+					}
+				}
+				_, e = s.db.Exec(`INSERT INTO customers(id,number,display_name) VALUES('pl','pl','Buyer'); INSERT INTO invoices(id,customer_id,state,currency,number,company_snapshot,customer_snapshot,payment_snapshot,locale_snapshot,tax_snapshot,note_snapshot,frozen_snapshot) VALUES('pl','pl','finalized','EUR','PL-1','{}','{}','{}','{}','{}','{}','{}'); INSERT INTO documents(id,invoice_id,kind,storage_key,media_type,size_bytes,checksum_sha256,generator_version,status) VALUES('doc','pl','invoice_pdf','key','application/pdf',4,printf('%064d',0),'test','ready')`)
+				if e != nil {
+					t.Fatal(e)
+				}
+				_, e = s.db.Exec(`UPDATE paperless_jobs SET state=?,attempts=?,lease_token='old',lease_expires_at=?,remote_task_id='task-123',remote_document_id=42,upload_started=1 WHERE document_id='doc'`, state, attempts, time.Now().Add(time.Hour).Unix())
+				if e != nil {
+					t.Fatal(e)
+				}
+				var before string
+				if e = s.db.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=11`).Scan(&before); e != nil {
+					t.Fatal(e)
+				}
+				if e = s.Migrate(ctx); e != nil {
+					t.Fatal(e)
+				}
+				if e = s.Migrate(ctx); e != nil {
+					t.Fatal(e)
+				}
+				got, e := s.PaperlessRepository().ForDocument(ctx, "doc")
+				if e != nil || got.State != "failed" || got.RemoteTaskID != "task-123" || got.RemoteDocumentID != 42 || !got.UploadStarted {
+					t.Fatal("exhausted historical job stuck", got, e)
+				}
+				var after string
+				s.db.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=11`).Scan(&after)
+				if before != after {
+					t.Fatal("011 checksum changed")
+				}
+				if e = s.PaperlessRepository().Retry(ctx, "doc"); e != nil {
+					t.Fatal(e)
+				}
+				j, e := s.PaperlessRepository().Claim(ctx, time.Now().Add(time.Second), time.Minute)
+				if e != nil || j.Attempts != 1 || j.RemoteTaskID != "task-123" {
+					t.Fatal(j, e)
+				}
+			})
+		}
+	}
+}
+
+func TestPaperlessExhaustedQueuedJobCannotRemainStuck(t *testing.T) {
+	s, d := paperlessReady(t)
+	ctx := context.Background()
+	_, e := s.db.Exec(`UPDATE paperless_jobs SET attempts=5 WHERE document_id=?`, d.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.PaperlessRepository().Claim(ctx, time.Now().Add(time.Second), time.Minute); !errors.Is(e, ErrNotFound) {
+		t.Fatal(e)
+	}
+	j, e := s.PaperlessRepository().ForDocument(ctx, d.ID)
+	if e != nil || j.State != "failed" {
+		t.Fatal(j, e)
+	}
+}
+
+func TestPaperlessRepairInvalidHistoricalJobStaysTerminal(t *testing.T) {
+	ctx := context.Background()
+	s, e := Open(ctx, filepath.Join(t.TempDir(), "invalid-job.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	if e = s.ensureMigrationTable(ctx); e != nil {
+		t.Fatal(e)
+	}
+	ms, _ := embeddedMigrations()
+	for _, m := range ms {
+		if m.version <= 10 {
+			if e = s.applyMigration(ctx, m); e != nil {
+				t.Fatal(e)
+			}
+		}
+	}
+	_, e = s.db.Exec(`INSERT INTO customers(id,number,display_name) VALUES('pl','pl','Buyer'); INSERT INTO invoices(id,customer_id,state,currency) VALUES('pl','pl','draft','EUR'); INSERT INTO documents(id,invoice_id,kind,storage_key,media_type,size_bytes,checksum_sha256,generator_version,status) VALUES('doc','pl','invoice_pdf','key','application/pdf',0,printf('%064d',0),'test','pending'); INSERT INTO paperless_jobs(id,document_id,state,next_attempt_at) VALUES('job','doc','queued','2026-09-06T10:00:00Z')`)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = s.Migrate(ctx); e != nil {
+		t.Fatal(e)
+	}
+	var state string
+	if e = s.db.QueryRow(`SELECT state FROM paperless_jobs WHERE id='job'`).Scan(&state); e != nil || state != "failed" {
+		t.Fatal(state, e)
+	}
+	if e = s.PaperlessRepository().Retry(ctx, "doc"); !errors.Is(e, ErrConflict) {
+		t.Fatal("invalid historical job requeued", e)
 	}
 }

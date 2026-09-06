@@ -74,17 +74,20 @@ func (w *PaperlessWorker) Process(ctx context.Context, j store.PaperlessJob) err
 		return e
 	}
 	title := paperless.Title(j.InvoiceNumber, j.DocumentID)
+	if j.RemoteTaskID != "" {
+		id, e := client.Poll(ctx, j.RemoteTaskID)
+		if e != nil {
+			return e
+		}
+		return w.verifyDelivery(ctx, client, j, d, title, id)
+	}
 	id, e := client.FindDocument(ctx, title)
 	if e != nil {
 		return errors.New("request_failed")
 	}
 	if id > 0 {
-		return repo.Complete(ctx, j, id)
-	}
-	if j.RemoteTaskID != "" {
-		id, e = client.Poll(ctx, j.RemoteTaskID)
-		if e != nil {
-			return e
+		if e = client.VerifyDocument(ctx, id, title, d.SHA256, d.Size); e != nil {
+			return errors.New("delivery_uncertain")
 		}
 		return repo.Complete(ctx, j, id)
 	}
@@ -104,8 +107,11 @@ func (w *PaperlessWorker) Process(ctx context.Context, j store.PaperlessJob) err
 		return e
 	}
 	task, e := client.Submit(ctx, f, d.Size, title, tags)
-	if errors.Is(e, paperless.ErrRejected) {
-		if e = repo.RejectUpload(ctx, j); e != nil {
+	var failure *paperless.SubmissionError
+	if errors.As(e, &failure) && (failure.Certainty == paperless.Rejected || failure.Certainty == paperless.NotSent) {
+		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		if e = repo.RejectUpload(cleanup, j); e != nil {
 			return e
 		}
 		return errors.New("request_failed")
@@ -120,5 +126,16 @@ func (w *PaperlessWorker) Process(ctx context.Context, j store.PaperlessJob) err
 	if e != nil {
 		return e
 	}
-	return repo.Complete(ctx, j, id)
+	return w.verifyDelivery(ctx, client, j, d, title, id)
+}
+
+func (w *PaperlessWorker) verifyDelivery(ctx context.Context, client *paperless.Client, j store.PaperlessJob, d store.Document, title string, id int64) error {
+	candidate, e := client.FindDocument(ctx, title)
+	if e != nil || (candidate != 0 && candidate != id) {
+		return errors.New("delivery_uncertain")
+	}
+	if e = client.VerifyDocument(ctx, id, title, d.SHA256, d.Size); e != nil {
+		return errors.New("delivery_uncertain")
+	}
+	return w.db.PaperlessRepository().Complete(ctx, j, id)
 }

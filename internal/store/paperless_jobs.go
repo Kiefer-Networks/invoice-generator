@@ -33,7 +33,7 @@ func (r *PaperlessRepository) ForDocument(ctx context.Context, id string) (Paper
 }
 func (r *PaperlessRepository) Claim(ctx context.Context, now time.Time, lease time.Duration) (j PaperlessJob, err error) {
 	err = r.store.InvoiceRepository().immediate(ctx, func(c *sql.Conn) error {
-		_, e := c.ExecContext(ctx, `UPDATE paperless_jobs SET state='failed',lease_token='',lease_expires_at=0,last_error_code='lease_expired',last_error_summary='Delivery interrupted; retry to reconcile.' WHERE attempts>=5 AND state='leased' AND CAST(lease_expires_at AS INTEGER)<=?`, now.Unix())
+		_, e := c.ExecContext(ctx, `UPDATE paperless_jobs SET state='failed',lease_token='',lease_expires_at=0,last_error_code='lease_expired',last_error_summary='Delivery interrupted; retry to reconcile.' WHERE attempts>=5 AND (state='queued' OR (state='leased' AND CAST(lease_expires_at AS INTEGER)<=?))`, now.Unix())
 		if e != nil {
 			return e
 		}
@@ -132,7 +132,7 @@ func (r *PaperlessRepository) Fail(ctx context.Context, j PaperlessJob, now time
 }
 func (r *PaperlessRepository) Retry(ctx context.Context, id string) error {
 	return r.store.InvoiceRepository().immediate(ctx, func(c *sql.Conn) error {
-		res, e := c.ExecContext(ctx, `UPDATE paperless_jobs SET state='queued',attempts=0,next_attempt_at=?,lease_token='',lease_expires_at=0,last_error_code='',last_error_summary='' WHERE document_id=? AND state='failed'`, time.Now().Unix(), id)
+		res, e := c.ExecContext(ctx, `UPDATE paperless_jobs SET state='queued',attempts=0,next_attempt_at=?,lease_token='',lease_expires_at=0,last_error_code='',last_error_summary='' WHERE document_id=? AND state='failed' AND EXISTS(SELECT 1 FROM documents d JOIN invoices i ON i.id=d.invoice_id WHERE d.id=paperless_jobs.document_id AND d.status='ready' AND d.kind='invoice_pdf' AND i.state<>'draft' AND i.frozen_snapshot IS NOT NULL)`, time.Now().Unix(), id)
 		if e != nil {
 			return e
 		}
@@ -150,7 +150,8 @@ func (r *PaperlessRepository) Retry(ctx context.Context, id string) error {
 	})
 }
 
-// RejectUpload may only be used for a definitive pre-consumption HTTP rejection.
+// RejectUpload resets intent only for a definitive pre-consumption rejection or
+// a transport failure proven not to have sent any request bytes.
 func (r *PaperlessRepository) RejectUpload(ctx context.Context, j PaperlessJob) error {
 	return r.mutate(ctx, j, `upload_started=0`)
 }
