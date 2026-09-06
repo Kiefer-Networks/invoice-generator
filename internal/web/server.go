@@ -46,13 +46,23 @@ type Dependencies struct {
 }
 type app struct {
 	auth      Authenticator
+	store     *store.Store
 	config    Config
 	logger    *slog.Logger
 	templates *template.Template
 	static    http.Handler
 }
 
-type pageData struct{ Nonce, CSRFToken, DisplayName, CSSURL, HTMXURL string }
+type pageData struct {
+	Nonce, CSRFToken, DisplayName, CSSURL, HTMXURL string
+	CompanyInput                                   store.CompanyInput
+	Customers                                      store.CustomerPage
+	Customer                                       *store.Customer
+	CustomerInput                                  store.CustomerInput
+	CustomerVersion                                int
+	CustomerAction, CustomerTitle, Search          string
+	Errors                                         map[string]string
+}
 
 func New(deps Dependencies) (http.Handler, error) {
 	if deps.Auth == nil {
@@ -71,7 +81,7 @@ func New(deps Dependencies) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	t, err := template.ParseFS(embeddedFiles, "templates/layout.html", "templates/login.html")
+	t, err := template.ParseFS(embeddedFiles, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html")
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +89,7 @@ func New(deps Dependencies) (http.Handler, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	a := &app{auth: deps.Auth, config: deps.Config, logger: logger, templates: t, static: http.StripPrefix("/assets/", http.FileServer(http.FS(files)))}
+	a := &app{auth: deps.Auth, store: deps.Store, config: deps.Config, logger: logger, templates: t, static: http.StripPrefix("/assets/", http.FileServer(http.FS(files)))}
 	return a.chain(http.HandlerFunc(a.routes)), nil
 }
 
@@ -98,6 +108,12 @@ func (a *app) routes(w http.ResponseWriter, r *http.Request) {
 		a.callback(w, r)
 	case "/auth/logout":
 		a.logout(w, r)
+	case "/settings/company":
+		a.company(w, r)
+	case "/customers":
+		a.customers(w, r)
+	case "/customers/new":
+		a.customerNew(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/assets/") {
 			if r.Method != http.MethodGet {
@@ -109,6 +125,10 @@ func (a *app) routes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.Path != "/" {
+			if strings.HasPrefix(r.URL.Path, "/customers/") {
+				a.customerRoute(w, r)
+				return
+			}
 			http.NotFound(w, r)
 			return
 		}
