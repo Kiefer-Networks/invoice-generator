@@ -26,7 +26,7 @@ CREATE TABLE companies (
     active INTEGER NOT NULL DEFAULT 1 CHECK (active = 1),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-) STRICT;
+);
 
 CREATE TABLE customers (
     id TEXT PRIMARY KEY CHECK (id <> ''),
@@ -49,7 +49,7 @@ CREATE TABLE customers (
     version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-) STRICT;
+);
 CREATE INDEX customers_active_number_idx ON customers(number) WHERE active = 1;
 CREATE INDEX customers_active_display_name_idx ON customers(display_name) WHERE active = 1;
 
@@ -66,7 +66,7 @@ CREATE TABLE catalog_items (
     version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-) STRICT;
+);
 CREATE INDEX catalog_items_active_number_idx ON catalog_items(number) WHERE active = 1;
 CREATE INDEX catalog_items_active_title_idx ON catalog_items(title) WHERE active = 1;
 
@@ -95,7 +95,7 @@ CREATE TABLE invoices (
     finalized_at TEXT,
     CHECK ((state = 'draft' AND number IS NULL) OR (state <> 'draft' AND number IS NOT NULL)),
     CHECK (state = 'draft' OR (company_snapshot IS NOT NULL AND customer_snapshot IS NOT NULL AND payment_snapshot IS NOT NULL AND locale_snapshot IS NOT NULL AND tax_snapshot IS NOT NULL AND note_snapshot IS NOT NULL))
-) STRICT;
+);
 CREATE INDEX invoices_customer_idx ON invoices(customer_id);
 CREATE INDEX invoices_open_state_idx ON invoices(state) WHERE state IN ('draft', 'finalized', 'overdue');
 
@@ -116,7 +116,7 @@ CREATE TABLE invoice_items (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (invoice_id, position)
-) STRICT;
+);
 
 CREATE TRIGGER invoice_items_insert_only_for_drafts
 BEFORE INSERT ON invoice_items
@@ -127,9 +127,7 @@ END;
 
 CREATE TRIGGER invoice_items_update_only_for_drafts
 BEFORE UPDATE ON invoice_items
-WHEN NEW.invoice_id <> OLD.invoice_id
-  OR (SELECT state FROM invoices WHERE id = OLD.invoice_id) <> 'draft'
-  OR (SELECT state FROM invoices WHERE id = NEW.invoice_id) <> 'draft'
+WHEN (SELECT state FROM invoices WHERE id = OLD.invoice_id) <> 'draft'
 BEGIN
     SELECT RAISE(ABORT, 'invoice items are immutable after finalization');
 END;
@@ -161,7 +159,7 @@ CREATE TABLE documents (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (invoice_id, kind)
-) STRICT;
+);
 CREATE INDEX documents_invoice_status_idx ON documents(invoice_id, status);
 
 CREATE TABLE paperless_jobs (
@@ -176,7 +174,7 @@ CREATE TABLE paperless_jobs (
     remote_task_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-) STRICT;
+);
 CREATE INDEX paperless_jobs_claim_idx ON paperless_jobs(next_attempt_at) WHERE state = 'queued';
 
 CREATE TABLE oidc_users (
@@ -191,7 +189,7 @@ CREATE TABLE oidc_users (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (issuer, subject)
-) STRICT;
+);
 
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY CHECK (id <> ''),
@@ -202,7 +200,7 @@ CREATE TABLE sessions (
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     last_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-) STRICT;
+);
 CREATE INDEX sessions_expiry_idx ON sessions(expires_at);
 
 CREATE TABLE audit_events (
@@ -215,5 +213,5 @@ CREATE TABLE audit_events (
     request_id TEXT NOT NULL DEFAULT '',
     change_summary TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-) STRICT;
+);
 CREATE INDEX audit_events_target_idx ON audit_events(target_type, target_id, created_at);

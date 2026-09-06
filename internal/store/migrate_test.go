@@ -136,6 +136,42 @@ func TestMigrateRejectsNameDrift(t *testing.T) {
 	}
 }
 
+func TestMigrateUpgradesOriginalSchema(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.ensureMigrationTable(ctx); err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := embeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := migrations[0]
+	if _, err := s.db.ExecContext(ctx, initial.sql); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, '2026-09-06T00:00:00Z')`, initial.version, initial.name, initial.checksum); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatalf("upgrade original schema: %v", err)
+	}
+	var migrationsApplied int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationsApplied); err != nil {
+		t.Fatal(err)
+	}
+	if migrationsApplied != 2 {
+		t.Fatalf("migration count=%d, want 2", migrationsApplied)
+	}
+}
+
 func openMigratedStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "app.db"))
