@@ -216,6 +216,9 @@ func normalizeCatalog(in CatalogInput) (CatalogInput, error) {
 	return in, nil
 }
 func catalogDBError(err error) error {
+	if strings.Contains(err.Error(), "unsupported currency exponent") {
+		return fieldError("currency", "company currency must be EUR, USD, GBP, or CHF before editing catalog prices")
+	}
 	if strings.Contains(strings.ToLower(err.Error()), "unique constraint failed: catalog_items.number") {
 		return fmt.Errorf("catalog item number: %w", ErrDuplicate)
 	}

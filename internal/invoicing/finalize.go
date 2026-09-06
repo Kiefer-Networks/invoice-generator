@@ -14,7 +14,10 @@ import (
 
 // Snapshot is a detached value decoded from immutable persisted JSON. Exact
 // totals and per-line tax/discount data are authoritative for document output.
+type CorrectionReference struct{ OriginalID, OriginalNumber string }
 type Snapshot struct {
+	Kind            string
+	Correction      CorrectionReference
 	Draft           Draft
 	Company         store.CompanyInput
 	Language, Notes string
@@ -31,8 +34,38 @@ type FinalizationService struct{ store *store.Store }
 func NewFinalizationService(s *store.Store) *FinalizationService {
 	return &FinalizationService{store: s}
 }
+
+type Review struct {
+	Key      string
+	Snapshot Snapshot
+}
+
+func (s *FinalizationService) PrepareReview(ctx context.Context, id string, version int) (Review, error) {
+	p, err := s.store.InvoiceRepository().PrepareReview(ctx, id, version)
+	if err != nil {
+		return Review{}, err
+	}
+	d, err := toDraft(p.Draft)
+	if err != nil {
+		return Review{}, err
+	}
+	return Review{Key: p.Key, Snapshot: invoiceSnapshot(d, p.Company.CompanyInput)}, nil
+}
 func (s *FinalizationService) Prepare(ctx context.Context, id string, version int) (string, error) {
-	return s.store.InvoiceRepository().PrepareFinalization(ctx, id, version)
+	r, err := s.PrepareReview(ctx, id, version)
+	return r.Key, err
+}
+func invoiceSnapshot(d Draft, c store.CompanyInput) Snapshot {
+	language := d.Customer.PreferredLanguage
+	if language == "" {
+		language = c.DefaultLanguage
+	}
+	out := Snapshot{Draft: d, Company: c, Language: language, Notes: c.StandardNotes, TaxGroups: d.TaxGroups, Kind: "invoice"}
+	if d.CorrectionOf != "" {
+		out.Kind = "correction"
+		out.Correction = CorrectionReference{OriginalID: d.CorrectionOf, OriginalNumber: d.CorrectionOfNumber}
+	}
+	return out
 }
 func (s *FinalizationService) Get(ctx context.Context, id string) (FinalizedInvoice, error) {
 	f, err := s.store.InvoiceRepository().GetFinalized(ctx, id)
@@ -68,11 +101,7 @@ func (s *FinalizationService) Finalize(ctx context.Context, id, key string) (Fin
 			draft.Lines[i].GrossMinor = totals.Lines[i].GrossMinor
 			d.Lines[i] = toStoreLine(draft.Lines[i])
 		}
-		language := draft.Customer.PreferredLanguage
-		if language == "" {
-			language = c.DefaultLanguage
-		}
-		snapshot := Snapshot{Draft: draft, Company: c.CompanyInput, Language: language, Notes: c.StandardNotes, TaxGroups: totals.TaxGroups}
+		snapshot := invoiceSnapshot(draft, c.CompanyInput)
 		encoded, err := json.Marshal(snapshot)
 		return string(encoded), store.InvoiceTotals{NetMinor: totals.NetMinor, TaxMinor: totals.TaxMinor, GrossMinor: totals.GrossMinor}, d.Lines, err
 	})
@@ -82,6 +111,10 @@ func (s *FinalizationService) Finalize(ctx context.Context, id, key string) (Fin
 	return decodeFinalized(f)
 }
 func ValidateFinalization(d Draft, c store.CompanyInput) error {
+	date, err := time.Parse("2006-01-02", d.ServiceDate)
+	if err != nil || date.Format("2006-01-02") != d.ServiceDate {
+		return &store.ValidationError{Field: "service_date", Message: "a valid service or delivery date is required before finalization"}
+	}
 	if err := store.ValidateInvoiceParties(c, d.Customer); err != nil {
 		return err
 	}
@@ -107,7 +140,7 @@ func ValidateFinalization(d Draft, c store.CompanyInput) error {
 			return &store.ValidationError{Field: "lines", Message: "title and unit are required"}
 		}
 	}
-	_, err := Calculate(linesForDraft(d.Lines))
+	_, err = Calculate(linesForDraft(d.Lines))
 	return err
 }
 
@@ -116,6 +149,17 @@ func ValidateFinalization(d Draft, c store.CompanyInput) error {
 func (s Snapshot) RenderData() *render.TplData {
 	p := PreviewData(s.Draft, s.Company)
 	p.InvNumber = s.Draft.Number
+	p.ServiceDate = s.Draft.ServiceDate
+	p.CustDisplayName = s.Draft.Customer.DisplayName
+	if s.Draft.Customer.LegalName != "" {
+		p.CustName = s.Draft.Customer.LegalName
+	}
+	p.CustContact = s.Draft.Customer.ContactName
+	p.CustEmail = s.Draft.Customer.Email
+	p.CustVATID = s.Draft.Customer.VATIdentifier
+	p.DocumentKind = s.Kind
+	p.CorrectionOf = s.Correction.OriginalID
+	p.CorrectionOfNumber = s.Correction.OriginalNumber
 	p.Notes = s.Notes
 	p.CompanyContact = s.Company.ContactName
 	p.TaxID = s.Company.VATIdentifier
@@ -129,6 +173,9 @@ func (s Snapshot) RenderData() *render.TplData {
 	p.BankIBAN = s.Company.IBAN
 	p.BankBIC = s.Company.BIC
 	p.Title = "Invoice"
+	if s.Kind == "correction" {
+		p.Title = "Correction invoice"
+	}
 	p.Status = "FINALIZED"
 	p.StatusClass = "finalized"
 	return p
@@ -143,8 +190,8 @@ func (s Snapshot) Config() (config.Config, error) {
 	if name == "" {
 		name = s.Draft.Customer.DisplayName
 	}
-	c.Customer = config.Customer{Name: name, Contact: s.Draft.Customer.ContactName, Email: s.Draft.Customer.Email, Address: strings.TrimSpace(s.Draft.Customer.AddressLine1 + "\n" + s.Draft.Customer.AddressLine2), ZIP: s.Draft.Customer.PostalCode, City: s.Draft.Customer.City, Country: s.Draft.Customer.Country, VatID: s.Draft.Customer.VATIdentifier}
-	c.Invoice = config.InvInfo{Number: s.Draft.Number, Date: s.Draft.IssueDate.Format("2006-01-02"), DueDate: s.Draft.DueDate.Format("2006-01-02"), Status: "finalized"}
+	c.Customer = config.Customer{DisplayName: s.Draft.Customer.DisplayName, Name: name, Contact: s.Draft.Customer.ContactName, Email: s.Draft.Customer.Email, Address: strings.TrimSpace(s.Draft.Customer.AddressLine1 + "\n" + s.Draft.Customer.AddressLine2), ZIP: s.Draft.Customer.PostalCode, City: s.Draft.Customer.City, Country: s.Draft.Customer.Country, VatID: s.Draft.Customer.VATIdentifier}
+	c.Invoice = config.InvInfo{ServiceDate: s.Draft.ServiceDate, Kind: s.Kind, CorrectionOf: s.Correction.OriginalID, CorrectionOfNumber: s.Correction.OriginalNumber, Number: s.Draft.Number, Date: s.Draft.IssueDate.Format("2006-01-02"), DueDate: s.Draft.DueDate.Format("2006-01-02"), Status: "finalized"}
 	var rate int64
 	if len(s.Draft.Lines) > 0 {
 		rate = s.Draft.Lines[0].TaxRateBasisPoints

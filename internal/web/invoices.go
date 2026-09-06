@@ -83,6 +83,10 @@ func (a *app) invoiceRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
+	if len(parts) == 2 && parts[1] == "service-date" {
+		a.invoiceServiceDate(w, r, id)
+		return
+	}
 	if len(parts) == 2 {
 		switch parts[1] {
 		case "review", "finalize", "paid", "cancel", "correction":
@@ -182,6 +186,9 @@ func (a *app) invoiceDetail(w http.ResponseWriter, r *http.Request, id string) {
 	if f, err := invoicing.NewFinalizationService(a.store).Get(r.Context(), id); err == nil {
 		a.renderFinalInvoice(w, r, f, "", nil)
 		return
+	} else if errors.Is(err, store.ErrLegacyInvoice) {
+		a.finalizationError(w, r, err)
+		return
 	} else if !errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "unable to load invoice", 500)
 		return
@@ -213,6 +220,9 @@ func (a *app) invoiceDetail(w http.ResponseWriter, r *http.Request, id string) {
 func (a *app) invoicePreview(w http.ResponseWriter, r *http.Request, id string) {
 	if f, err := invoicing.NewFinalizationService(a.store).Get(r.Context(), id); err == nil {
 		a.renderFinalInvoice(w, r, f, "", nil)
+		return
+	} else if errors.Is(err, store.ErrLegacyInvoice) {
+		a.finalizationError(w, r, err)
 		return
 	} else if !errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "unable to load invoice", 500)
@@ -495,6 +505,8 @@ func (a *app) invoicePickerData(r *http.Request, data pageData) (pageData, error
 	}
 	if data.Raw != nil {
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/service-date"):
+			data.InvoiceServiceDateRaw = data.Raw
 		case strings.HasSuffix(r.URL.Path, "/new"), strings.HasSuffix(r.URL.Path, "/customer"):
 			data.InvoiceSelectedCustomer = data.Raw["customer_id"]
 		case strings.HasSuffix(r.URL.Path, "/items/catalog"):
@@ -600,4 +612,25 @@ func invoiceQuerySuffix(q url.Values) string {
 		return ""
 	}
 	return "?" + values.Encode()
+}
+
+func (a *app) invoiceServiceDate(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if err := a.validateInvoiceNavigation(r); err != nil {
+		http.Error(w, "invalid invoice query", 400)
+		return
+	}
+	version, err := formInt(r, "version")
+	var d invoicing.Draft
+	if err == nil {
+		d, err = a.invoiceService().SetServiceDate(r.Context(), id, version, r.Form.Get("service_date"))
+	}
+	if err != nil {
+		a.renderInvoiceError(w, r, id, err)
+		return
+	}
+	a.invoiceSaved(w, r, d)
 }

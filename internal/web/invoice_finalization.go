@@ -5,7 +5,6 @@ import (
 	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"net/http"
-	"time"
 )
 
 func (a *app) invoiceFinalizationRoute(w http.ResponseWriter, r *http.Request, id, action string) {
@@ -87,6 +86,10 @@ func (a *app) invoiceFinalizationRoute(w http.ResponseWriter, r *http.Request, i
 func (a *app) finalizationError(w http.ResponseWriter, r *http.Request, err error) {
 	code := 500
 	message := "unable to update invoice"
+	if errors.Is(err, store.ErrLegacyInvoice) {
+		code = 409
+		message = "Historical invoice has no complete document snapshot. Its original records remain unchanged; document output is unavailable."
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		code = 404
 		message = "invoice not found"
@@ -115,18 +118,19 @@ func (a *app) renderInvoiceReview(w http.ResponseWriter, r *http.Request, id str
 		http.Redirect(w, r, "/invoices/"+id, 303)
 		return
 	}
-	company, err := a.store.CompanyRepository().Get(r.Context())
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
+	review, err := invoicing.NewFinalizationService(a.store).PrepareReview(r.Context(), id, d.Version)
+	if err != nil {
 		a.finalizationError(w, r, err)
 		return
 	}
-	now := time.Now().UTC()
-	d.DueDate = time.Date(now.Year(), now.Month(), now.Day()+d.Customer.PaymentTermsDays, 0, 0, 0, 0, time.UTC)
-	data := pageData{Invoice: &d, CompanyInput: company.CompanyInput, InvoicePreview: (invoicing.Snapshot{Draft: d, Company: company.CompanyInput, Notes: company.StandardNotes}).RenderData(), InvoiceQuery: invoiceQuerySuffix(r.URL.Query()), Errors: map[string]string{}}
-	readiness := invoicing.ValidateFinalization(d, company.CompanyInput)
+	d = review.Snapshot.Draft
+	data := pageData{Invoice: &d, CompanyInput: review.Snapshot.Company, InvoicePreview: review.Snapshot.RenderData(), InvoiceQuery: invoiceQuerySuffix(r.URL.Query()), Errors: map[string]string{}}
+	readiness := invoicing.ValidateFinalization(d, review.Snapshot.Company)
 	data.FinalizationReady = readiness == nil
 	if readiness != nil {
 		data.Errors["readiness"] = readiness.Error()
+	} else {
+		data.FinalizationKey = review.Key
 	}
 	if problem != nil {
 		if errors.Is(problem, store.ErrConflict) {
@@ -135,13 +139,7 @@ func (a *app) renderInvoiceReview(w http.ResponseWriter, r *http.Request, id str
 			data.Errors["submission"] = problem.Error()
 		}
 	}
-	if data.FinalizationReady {
-		data.FinalizationKey, err = invoicing.NewFinalizationService(a.store).Prepare(r.Context(), id, d.Version)
-		if err != nil {
-			a.finalizationError(w, r, err)
-			return
-		}
-	}
+
 	data = a.withPageData(r, data)
 	if isHTMX(r) {
 		w.Header().Set("HX-Retarget", "#main")

@@ -2,6 +2,8 @@ package invoicing
 
 import (
 	"bytes"
+	"github.com/kiefer-networks/invoice-generator/internal/config"
+	"github.com/kiefer-networks/invoice-generator/internal/locale"
 	"github.com/kiefer-networks/invoice-generator/internal/render"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"html/template"
@@ -41,5 +43,33 @@ func TestDraftPreviewKeepsMinorUnitsBeyondFloatPrecision(t *testing.T) {
 	p := PreviewData(Draft{NetMinor: 9007199254740993, GrossMinor: 9007199254740993}, store.CompanyInput{})
 	if p.Subtotal != "90071992547409.93" || p.GrossTotal != "90071992547409.93" {
 		t.Fatalf("render boundary lost cents: %#v", p)
+	}
+}
+func TestFinalizedDefaultRendererIncludesCorrectionRecipientAndServiceDate(t *testing.T) {
+	s := Snapshot{Kind: "correction", Correction: CorrectionReference{OriginalID: "original-id", OriginalNumber: "INV-2026-1"}, Draft: Draft{ServiceDate: "2026-08-31", Customer: store.CustomerInput{DisplayName: "Buyer Alias", LegalName: "Buyer Legal GmbH", ContactName: "Pat", Email: "buyer@example.test", VATIdentifier: "DE123", AddressLine1: "Buyer Street", City: "Berlin", Country: "DE"}}, Company: store.CompanyInput{LegalName: "Issuer"}}
+	p := s.RenderData()
+	tmpl, err := template.New("default").Parse(render.DefaultTemplate())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b bytes.Buffer
+	if err = tmpl.Execute(&b, p); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"INV-2026-1", "Correction", "2026-08-31", "Buyer Alias", "Buyer Legal GmbH", "Pat", "buyer@example.test", "DE123", "Buyer Street"} {
+		if !strings.Contains(b.String(), value) {
+			t.Errorf("default renderer missing %s", value)
+		}
+	}
+}
+func TestCorrectionConfigRendererRetainsDocumentSemantics(t *testing.T) {
+	snap := Snapshot{Kind: "correction", Correction: CorrectionReference{OriginalID: "old-id", OriginalNumber: "INV-2026-1"}, Language: "en", Draft: Draft{ServiceDate: "2026-08-31", Customer: store.CustomerInput{DisplayName: "Alias", LegalName: "Legal Buyer", ContactName: "Contact", Email: "buyer@example.test", VATIdentifier: "VAT-ID"}}}
+	cfg, err := snap.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := render.PrepareTplData(&cfg, locale.Get("en"), config.DocInvoice)
+	if data.CustDisplayName != "Alias" || data.CustEmail != "buyer@example.test" || !strings.Contains(data.Title, "Correction") || data.ServiceDate != "2026-08-31" || data.CorrectionOfNumber != "INV-2026-1" {
+		t.Fatalf("legacy correction renderer=%+v", data)
 	}
 }

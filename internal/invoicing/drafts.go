@@ -11,13 +11,14 @@ import (
 
 // Draft is the editable invoice view. All totals are calculated server side.
 type Draft struct {
-	ID, CustomerID, Number, Currency string
-	Customer                         store.CustomerInput
-	IssueDate, DueDate               time.Time
-	Version                          int
-	Lines                            []DraftLine
-	NetMinor, TaxMinor, GrossMinor   int64
-	TaxGroups                        []TaxGroup
+	ServiceDate, CorrectionOf, CorrectionOfNumber string
+	ID, CustomerID, Number, Currency              string
+	Customer                                      store.CustomerInput
+	IssueDate, DueDate                            time.Time
+	Version                                       int
+	Lines                                         []DraftLine
+	NetMinor, TaxMinor, GrossMinor                int64
+	TaxGroups                                     []TaxGroup
 }
 type DraftLine struct {
 	ID, CatalogItemID, Title, Description, Unit string
@@ -85,7 +86,7 @@ func (s *DraftService) Update(ctx context.Context, id string, version int, custo
 	if err != nil {
 		return Draft{}, err
 	}
-	updated, err := s.store.InvoiceRepository().UpdateDraft(ctx, id, version, store.InvoiceDraftInput{CustomerID: customer.ID, Currency: customer.Currency, Customer: customer.CustomerInput, DueDate: due}, store.InvoiceTotals{NetMinor: totals.NetMinor, TaxMinor: totals.TaxMinor, GrossMinor: totals.GrossMinor})
+	updated, err := s.store.InvoiceRepository().UpdateDraft(ctx, id, version, store.InvoiceDraftInput{CustomerID: customer.ID, Currency: customer.Currency, Customer: customer.CustomerInput, DueDate: due, ServiceDate: current.ServiceDate}, store.InvoiceTotals{NetMinor: totals.NetMinor, TaxMinor: totals.TaxMinor, GrossMinor: totals.GrossMinor})
 	if err != nil {
 		return Draft{}, err
 	}
@@ -249,5 +250,13 @@ func toDraft(input store.InvoiceDraft) (Draft, error) {
 	if err != nil {
 		return Draft{}, fmt.Errorf("calculate invoice draft: %w", err)
 	}
-	return Draft{ID: input.ID, CustomerID: input.CustomerID, Number: input.Number, Currency: input.Currency, Customer: input.Customer, IssueDate: input.IssueDate, DueDate: input.DueDate, Version: input.Version, Lines: lines, NetMinor: totals.NetMinor, TaxMinor: totals.TaxMinor, GrossMinor: totals.GrossMinor, TaxGroups: totals.TaxGroups}, nil
+	return Draft{ServiceDate: input.ServiceDate, CorrectionOf: input.CorrectionOf, CorrectionOfNumber: input.CorrectionOfNumber, ID: input.ID, CustomerID: input.CustomerID, Number: input.Number, Currency: input.Currency, Customer: input.Customer, IssueDate: input.IssueDate, DueDate: input.DueDate, Version: input.Version, Lines: lines, NetMinor: totals.NetMinor, TaxMinor: totals.TaxMinor, GrossMinor: totals.GrossMinor, TaxGroups: totals.TaxGroups}, nil
+}
+
+func (s *DraftService) SetServiceDate(ctx context.Context, id string, version int, date string) (Draft, error) {
+	d, err := s.store.InvoiceRepository().SetServiceDate(ctx, id, version, date)
+	if err != nil {
+		return Draft{}, err
+	}
+	return toDraft(d)
 }

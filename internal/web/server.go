@@ -86,7 +86,7 @@ type pageData struct {
 	InvoiceCustomerNextURL, InvoiceCatalogNextURL                      string
 	InvoicePickerPath, InvoiceSelectedCustomer, InvoiceSelectedCatalog string
 	InvoiceNavigation                                                  url.Values
-	InvoiceManualRaw, InvoiceCatalogRaw                                map[string]string
+	InvoiceServiceDateRaw, InvoiceManualRaw, InvoiceCatalogRaw         map[string]string
 	Errors                                                             map[string]string
 	Raw                                                                map[string]string
 }

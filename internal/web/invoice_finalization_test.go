@@ -29,6 +29,10 @@ func finalWebDraft(t *testing.T, s *store.Store) invoicing.Draft {
 	if err != nil {
 		t.Fatal(err)
 	}
+	d, err = invoicing.NewDraftService(s).SetServiceDate(ctx, d.ID, d.Version, "2026-08-31")
+	if err != nil {
+		t.Fatal(err)
+	}
 	return d
 }
 func reviewKey(t *testing.T, body string) string {

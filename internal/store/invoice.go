@@ -22,14 +22,16 @@ type InvoiceLine struct {
 }
 
 type InvoiceDraft struct {
-	ID, CustomerID, Number, State, Currency string
-	Customer                                CustomerInput
-	IssueDate, DueDate                      time.Time
-	Version                                 int
-	Lines                                   []InvoiceLine
-	NetMinor, TaxMinor, GrossMinor          int64
+	ServiceDate, CorrectionOf, CorrectionOfNumber string
+	ID, CustomerID, Number, State, Currency       string
+	Customer                                      CustomerInput
+	IssueDate, DueDate                            time.Time
+	Version                                       int
+	Lines                                         []InvoiceLine
+	NetMinor, TaxMinor, GrossMinor                int64
 }
 type InvoiceDraftInput struct {
+	ServiceDate          string
 	CustomerID, Currency string
 	Customer             CustomerInput
 	DueDate              time.Time
@@ -43,13 +45,20 @@ type InvoicePage struct {
 	NextCursor string
 }
 type InvoiceRepository struct {
-	store     *Store
-	afterBump func() error
+	store           *Store
+	afterBump       func() error
+	afterReviewRead func()
 }
 
 func (s *Store) InvoiceRepository() *InvoiceRepository { return &InvoiceRepository{store: s} }
 
 func (r *InvoiceRepository) CreateDraft(ctx context.Context, input InvoiceDraftInput) (InvoiceDraft, error) {
+	if err := currencyCode(strings.ToUpper(strings.TrimSpace(input.Currency))); err != nil {
+		return InvoiceDraft{}, err
+	}
+	if err := validServiceDate(input.ServiceDate, false); err != nil {
+		return InvoiceDraft{}, err
+	}
 	if strings.TrimSpace(input.CustomerID) == "" || strings.TrimSpace(input.Currency) == "" || input.DueDate.IsZero() {
 		return InvoiceDraft{}, fieldError("draft", "is incomplete")
 	}
@@ -66,7 +75,7 @@ func (r *InvoiceRepository) CreateDraft(ctx context.Context, input InvoiceDraftI
 		return InvoiceDraft{}, fmt.Errorf("begin invoice draft: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	_, err = tx.ExecContext(ctx, `INSERT INTO invoices (id, customer_id, state, currency, due_date, customer_snapshot, version) VALUES (?, ?, 'draft', ?, ?, ?, 1)`, id, input.CustomerID, strings.ToUpper(strings.TrimSpace(input.Currency)), input.DueDate.UTC().Format(time.RFC3339Nano), string(snapshot))
+	_, err = tx.ExecContext(ctx, `INSERT INTO invoices (id, customer_id, state, currency, due_date, customer_snapshot, version, service_date) VALUES (?, ?, 'draft', ?, ?, ?, 1, ?)`, id, input.CustomerID, strings.ToUpper(strings.TrimSpace(input.Currency)), input.DueDate.UTC().Format(time.RFC3339Nano), string(snapshot), input.ServiceDate)
 	if err != nil {
 		return InvoiceDraft{}, fmt.Errorf("create invoice draft: %w", err)
 	}
@@ -97,7 +106,7 @@ type invoiceReader interface {
 }
 
 func readInvoice(ctx context.Context, tx invoiceReader, id string) (InvoiceDraft, error) {
-	draft, err := scanInvoiceDraft(tx.QueryRowContext(ctx, `SELECT id, customer_id, number, state, currency, issue_date, due_date, customer_snapshot, version, net_total_minor, tax_total_minor, gross_total_minor FROM invoices WHERE id=?`, id))
+	draft, err := scanInvoiceDraft(tx.QueryRowContext(ctx, `SELECT id, customer_id, number, state, currency, issue_date, due_date, customer_snapshot, version, net_total_minor, tax_total_minor, gross_total_minor, service_date, COALESCE(correction_of_invoice_id,''), COALESCE((SELECT original.number FROM invoices original WHERE original.id=invoices.correction_of_invoice_id),'') FROM invoices WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return InvoiceDraft{}, ErrNotFound
 	}
@@ -155,7 +164,7 @@ func (r *InvoiceRepository) ListDraftPage(ctx context.Context, options InvoiceLi
 		args = append(args, "%"+escapeLike(search)+"%", "%"+escapeLike(search)+"%")
 	}
 	args = append(args, limit+1, offset)
-	rows, err := r.store.db.QueryContext(ctx, `SELECT id, customer_id, number, state, currency, issue_date, due_date, customer_snapshot, version, net_total_minor, tax_total_minor, gross_total_minor FROM invoices WHERE `+where+` ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ?`, args...)
+	rows, err := r.store.db.QueryContext(ctx, `SELECT id, customer_id, number, state, currency, issue_date, due_date, customer_snapshot, version, net_total_minor, tax_total_minor, gross_total_minor, service_date, COALESCE(correction_of_invoice_id,''), COALESCE((SELECT original.number FROM invoices original WHERE original.id=invoices.correction_of_invoice_id),'') FROM invoices WHERE `+where+` ORDER BY updated_at DESC,id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return InvoicePage{}, fmt.Errorf("list invoice drafts: %w", err)
 	}
@@ -179,6 +188,12 @@ func (r *InvoiceRepository) ListDraftPage(ctx context.Context, options InvoiceLi
 	return page, nil
 }
 func (r *InvoiceRepository) UpdateDraft(ctx context.Context, id string, version int, input InvoiceDraftInput, totals InvoiceTotals) (InvoiceDraft, error) {
+	if err := currencyCode(strings.ToUpper(strings.TrimSpace(input.Currency))); err != nil {
+		return InvoiceDraft{}, err
+	}
+	if err := validServiceDate(input.ServiceDate, false); err != nil {
+		return InvoiceDraft{}, err
+	}
 	if version < 1 || strings.TrimSpace(input.CustomerID) == "" || strings.TrimSpace(input.Currency) == "" || input.DueDate.IsZero() {
 		return InvoiceDraft{}, fieldError("draft", "is invalid")
 	}
@@ -186,7 +201,7 @@ func (r *InvoiceRepository) UpdateDraft(ctx context.Context, id string, version 
 	if err != nil {
 		return InvoiceDraft{}, err
 	}
-	result, err := r.store.db.ExecContext(ctx, `UPDATE invoices SET customer_id=?, currency=?, due_date=?, customer_snapshot=?, net_total_minor=?, tax_total_minor=?, gross_total_minor=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=? AND state='draft'`, input.CustomerID, strings.ToUpper(strings.TrimSpace(input.Currency)), input.DueDate.UTC().Format(time.RFC3339Nano), string(snapshot), totals.NetMinor, totals.TaxMinor, totals.GrossMinor, id, version)
+	result, err := r.store.db.ExecContext(ctx, `UPDATE invoices SET customer_id=?, currency=?, due_date=?, service_date=?, customer_snapshot=?, net_total_minor=?, tax_total_minor=?, gross_total_minor=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=? AND state='draft'`, input.CustomerID, strings.ToUpper(strings.TrimSpace(input.Currency)), input.DueDate.UTC().Format(time.RFC3339Nano), input.ServiceDate, string(snapshot), totals.NetMinor, totals.TaxMinor, totals.GrossMinor, id, version)
 	if err != nil {
 		return InvoiceDraft{}, fmt.Errorf("update invoice draft: %w", err)
 	}
@@ -388,7 +403,7 @@ func scanInvoiceDraft(s invoiceScanner) (InvoiceDraft, error) {
 	var d InvoiceDraft
 	var issue, due, number sql.NullString
 	var snapshot string
-	err := s.Scan(&d.ID, &d.CustomerID, &number, &d.State, &d.Currency, &issue, &due, &snapshot, &d.Version, &d.NetMinor, &d.TaxMinor, &d.GrossMinor)
+	err := s.Scan(&d.ID, &d.CustomerID, &number, &d.State, &d.Currency, &issue, &due, &snapshot, &d.Version, &d.NetMinor, &d.TaxMinor, &d.GrossMinor, &d.ServiceDate, &d.CorrectionOf, &d.CorrectionOfNumber)
 	if err != nil {
 		return d, err
 	}
@@ -405,4 +420,29 @@ func scanInvoiceDraft(s invoiceScanner) (InvoiceDraft, error) {
 		d.DueDate = parseBusinessTime(due.String)
 	}
 	return d, nil
+}
+
+func validServiceDate(value string, required bool) error {
+	if value == "" && !required {
+		return nil
+	}
+	date, err := time.Parse("2006-01-02", value)
+	if err != nil || date.Format("2006-01-02") != value {
+		return fieldError("service_date", "must be a valid service or delivery date (YYYY-MM-DD)")
+	}
+	return nil
+}
+func (r *InvoiceRepository) SetServiceDate(ctx context.Context, id string, version int, date string) (InvoiceDraft, error) {
+	if err := validServiceDate(date, true); err != nil {
+		return InvoiceDraft{}, err
+	}
+	result, err := r.store.db.ExecContext(ctx, `UPDATE invoices SET service_date=?,version=version+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=? AND state='draft'`, date, id, version)
+	if err != nil {
+		return InvoiceDraft{}, err
+	}
+	n, _ := result.RowsAffected()
+	if n != 1 {
+		return InvoiceDraft{}, ErrConflict
+	}
+	return r.GetDraft(ctx, id)
 }

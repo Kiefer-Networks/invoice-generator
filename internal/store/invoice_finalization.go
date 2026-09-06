@@ -35,32 +35,67 @@ func (r *InvoiceRepository) immediate(ctx context.Context, fn func(*sql.Conn) er
 	_, err = conn.ExecContext(ctx, "COMMIT")
 	return err
 }
-func (r *InvoiceRepository) PrepareFinalization(ctx context.Context, id string, version int) (string, error) {
-	key, err := newBusinessID()
-	if err != nil {
-		return "", err
-	}
-	company, err := r.store.CompanyRepository().Get(ctx)
-	if err != nil {
-		return "", err
-	}
-	companyJSON, _ := json.Marshal(company.CompanyInput)
-	result, err := r.store.db.ExecContext(ctx, `INSERT INTO invoice_finalization_keys(key,invoice_id,draft_version,company_snapshot) SELECT ?,id,version,? FROM invoices WHERE id=? AND version=? AND state='draft'`, key, string(companyJSON), id, version)
-	if err != nil {
-		return "", err
-	}
-	n, _ := result.RowsAffected()
-	if n != 1 {
-		return "", ErrConflict
-	}
-	return key, nil
+
+// PreparedInvoice is the single consistent view bound to a confirmation key.
+type PreparedInvoice struct {
+	Key        string
+	Draft      InvoiceDraft
+	Company    Company
+	ReviewedAt time.Time
 }
+
+func (r *InvoiceRepository) PrepareReview(ctx context.Context, id string, version int) (PreparedInvoice, error) {
+	return r.prepareReview(ctx, id, version, time.Now().UTC())
+}
+func (r *InvoiceRepository) prepareReview(ctx context.Context, id string, version int, reviewedAt time.Time) (PreparedInvoice, error) {
+	var out PreparedInvoice
+	err := r.immediate(ctx, func(conn *sql.Conn) error {
+		d, err := readInvoice(ctx, conn, id)
+		if err != nil {
+			return err
+		}
+		if d.State != "draft" || d.Version != version {
+			return ErrConflict
+		}
+		company, err := scanCompany(conn.QueryRowContext(ctx, `SELECT id, legal_name, contact_name, email, phone, address_line1, address_line2, postal_code, city, country, tax_number, vat_identifier, bank_name, iban, bic, logo_key, brand_color, default_language, currency, payment_terms_days, invoice_prefix, next_invoice_sequence, standard_notes, created_at, updated_at FROM companies WHERE singleton=1 AND active=1`))
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if r.afterReviewRead != nil {
+			r.afterReviewRead()
+		}
+		key, err := newBusinessID()
+		if err != nil {
+			return err
+		}
+		encoded, _ := json.Marshal(company.CompanyInput)
+		_, err = conn.ExecContext(ctx, `INSERT INTO invoice_finalization_keys(key,invoice_id,draft_version,company_snapshot,reviewed_at) VALUES(?,?,?,?,?)`, key, id, version, string(encoded), reviewedAt.Format(time.RFC3339Nano))
+		if err != nil {
+			return err
+		}
+		d.IssueDate = reviewedAt
+		d.DueDate = time.Date(reviewedAt.Year(), reviewedAt.Month(), reviewedAt.Day()+d.Customer.PaymentTermsDays, 0, 0, 0, 0, time.UTC)
+		out = PreparedInvoice{Key: key, Draft: d, Company: company, ReviewedAt: reviewedAt}
+		return nil
+	})
+	return out, err
+}
+func (r *InvoiceRepository) PrepareFinalization(ctx context.Context, id string, version int) (string, error) {
+	p, err := r.PrepareReview(ctx, id, version)
+	return p.Key, err
+}
+
+var ErrLegacyInvoice = errors.New("historical invoice has no complete immutable document snapshot")
+
 func readFrozen(ctx context.Context, q invoiceReader, id string) (FrozenInvoice, error) {
 	var f FrozenInvoice
 	var paid sql.NullString
-	err := q.QueryRowContext(ctx, `SELECT id,number,state,COALESCE(correction_of_invoice_id,''),frozen_snapshot,invoice_sequence,cancellation_reason,paid_at FROM invoices WHERE id=? AND frozen_snapshot IS NOT NULL`, id).Scan(&f.ID, &f.Number, &f.State, &f.CorrectionOf, &f.Snapshot, &f.Sequence, &f.CancellationReason, &paid)
+	err := q.QueryRowContext(ctx, `SELECT id,number,state,COALESCE(correction_of_invoice_id,''),COALESCE(frozen_snapshot,''),COALESCE(invoice_sequence,0),cancellation_reason,paid_at FROM invoices WHERE id=? AND state<>'draft'`, id).Scan(&f.ID, &f.Number, &f.State, &f.CorrectionOf, &f.Snapshot, &f.Sequence, &f.CancellationReason, &paid)
 	if errors.Is(err, sql.ErrNoRows) {
 		return f, ErrNotFound
+	}
+	if err == nil && f.Snapshot == "" {
+		return f, ErrLegacyInvoice
 	}
 	if paid.Valid {
 		f.PaidAt = parseBusinessTime(paid.String)
@@ -93,8 +128,8 @@ func (r *InvoiceRepository) Finalize(ctx context.Context, id, key string, build 
 			return err
 		}
 		var version int
-		var reviewedCompany string
-		if err = conn.QueryRowContext(ctx, `SELECT draft_version,company_snapshot FROM invoice_finalization_keys WHERE key=? AND invoice_id=?`, key, id).Scan(&version, &reviewedCompany); errors.Is(err, sql.ErrNoRows) {
+		var reviewedCompany, reviewedDate string
+		if err = conn.QueryRowContext(ctx, `SELECT draft_version,company_snapshot,reviewed_at FROM invoice_finalization_keys WHERE key=? AND invoice_id=?`, key, id).Scan(&version, &reviewedCompany, &reviewedDate); errors.Is(err, sql.ErrNoRows) {
 			return ErrConflict
 		} else if err != nil {
 			return err
@@ -117,7 +152,11 @@ func (r *InvoiceRepository) Finalize(ctx context.Context, id, key string, build 
 		if string(companyJSON) != reviewedCompany {
 			return ErrConflict
 		}
-		now := time.Now().UTC()
+		now, err := time.Parse(time.RFC3339Nano, reviewedDate)
+		if err != nil {
+			return ErrConflict
+		}
+		finalizedAt := time.Now().UTC()
 		number := fmt.Sprintf("%s-%d-%d", c.InvoicePrefix, now.Year(), c.NextInvoiceSequence)
 		snapshot, totals, lines, err := build(d, c, number, now)
 		if err != nil {
@@ -135,7 +174,7 @@ func (r *InvoiceRepository) Finalize(ctx context.Context, id, key string, build 
 			return err
 		}
 		due := time.Date(now.Year(), now.Month(), now.Day()+d.Customer.PaymentTermsDays, 0, 0, 0, 0, time.UTC)
-		_, err = conn.ExecContext(ctx, `UPDATE invoices SET state='finalized',number=?,invoice_sequence=?,issue_date=?,due_date=?,company_snapshot=?,customer_snapshot=?,payment_snapshot=?,locale_snapshot=?,tax_snapshot=?,note_snapshot=?,frozen_snapshot=?,finalization_key=?,net_total_minor=?,tax_total_minor=?,gross_total_minor=?,finalized_at=?,version=version+1,updated_at=? WHERE id=? AND state='draft' AND version=?`, number, c.NextInvoiceSequence, now.Format(time.RFC3339Nano), due.Format(time.RFC3339Nano), string(company), string(customer), string(company), string(frozen["Language"]), string(frozen["TaxGroups"]), string(frozen["Notes"]), snapshot, key, totals.NetMinor, totals.TaxMinor, totals.GrossMinor, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), id, version)
+		_, err = conn.ExecContext(ctx, `UPDATE invoices SET state='finalized',number=?,invoice_sequence=?,issue_date=?,due_date=?,company_snapshot=?,customer_snapshot=?,payment_snapshot=?,locale_snapshot=?,tax_snapshot=?,note_snapshot=?,frozen_snapshot=?,finalization_key=?,net_total_minor=?,tax_total_minor=?,gross_total_minor=?,finalized_at=?,version=version+1,updated_at=? WHERE id=? AND state='draft' AND version=?`, number, c.NextInvoiceSequence, now.Format(time.RFC3339Nano), due.Format(time.RFC3339Nano), string(company), string(customer), string(company), string(frozen["Language"]), string(frozen["TaxGroups"]), string(frozen["Notes"]), snapshot, key, totals.NetMinor, totals.TaxMinor, totals.GrossMinor, finalizedAt.Format(time.RFC3339Nano), finalizedAt.Format(time.RFC3339Nano), id, version)
 		if err != nil {
 			return err
 		}
@@ -249,7 +288,7 @@ func (r *InvoiceRepository) CreateCorrection(ctx context.Context, id string) (In
 			return err
 		}
 		// Copy the historical customer and lines, including archived catalog references.
-		_, err = conn.ExecContext(ctx, `INSERT INTO invoices(id,customer_id,correction_of_invoice_id,state,currency,due_date,customer_snapshot,net_total_minor,tax_total_minor,gross_total_minor) SELECT ?,customer_id,id,'draft',currency,?,customer_snapshot,net_total_minor,tax_total_minor,gross_total_minor FROM invoices WHERE id=?`, newID, time.Now().UTC().AddDate(0, 0, original.Customer.PaymentTermsDays).Format(time.RFC3339Nano), id)
+		_, err = conn.ExecContext(ctx, `INSERT INTO invoices(id,customer_id,correction_of_invoice_id,state,currency,due_date,service_date,customer_snapshot,net_total_minor,tax_total_minor,gross_total_minor) SELECT ?,customer_id,id,'draft',currency,?,service_date,customer_snapshot,net_total_minor,tax_total_minor,gross_total_minor FROM invoices WHERE id=?`, newID, time.Now().UTC().AddDate(0, 0, original.Customer.PaymentTermsDays).Format(time.RFC3339Nano), id)
 		if err != nil {
 			return err
 		}

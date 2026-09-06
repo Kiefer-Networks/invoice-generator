@@ -61,6 +61,7 @@ type BankInfo struct {
 }
 
 type Customer struct {
+	DisplayName string `yaml:"display_name" toml:"display_name"`
 	Name        string `yaml:"name" toml:"name"`
 	Contact     string `yaml:"contact" toml:"contact"`
 	Email       string `yaml:"email" toml:"email"`
@@ -73,10 +74,14 @@ type Customer struct {
 }
 
 type InvInfo struct {
-	Number  any    `yaml:"number" toml:"number"`
-	Date    string `yaml:"date" toml:"date"`
-	DueDate string `yaml:"due_date" toml:"due_date"`
-	Status  string `yaml:"status" toml:"status"`
+	ServiceDate        string `yaml:"service_date" toml:"service_date"`
+	Kind               string `yaml:"kind" toml:"kind"`
+	CorrectionOf       string `yaml:"correction_of" toml:"correction_of"`
+	CorrectionOfNumber string `yaml:"correction_of_number" toml:"correction_of_number"`
+	Number             any    `yaml:"number" toml:"number"`
+	Date               string `yaml:"date" toml:"date"`
+	DueDate            string `yaml:"due_date" toml:"due_date"`
+	Status             string `yaml:"status" toml:"status"`
 	// ValidUntil is used for quotes ("Angebot") instead of DueDate — the
 	// offer's expiry date rather than a payment due date.
 	ValidUntil string `yaml:"valid_until" toml:"valid_until"`

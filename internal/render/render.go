@@ -37,6 +37,8 @@ const chromeTimeout = 60 * time.Second
 
 // TplData holds pre-formatted values for the HTML template.
 type TplData struct {
+	ServiceDate, DocumentKind, CorrectionOf, CorrectionOfNumber string
+	CustDisplayName, CustContact, CustEmail, CustVATID          string
 	// Currency and TaxGroups allow integer-domain document adapters to retain
 	// exact preformatted totals, including invoices with multiple VAT rates.
 	Currency  string
@@ -126,6 +128,9 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 	// equivalents. The template only ever reads lb.DueDate/DueDate, so
 	// substituting these values is enough — no template changes needed.
 	title := lb.InvoiceTitle
+	if cfg.Invoice.Kind == "correction" {
+		title = "Correction invoice"
+	}
 	dueDateValue := cfg.Invoice.DueDate
 	if docType == config.DocQuote {
 		title = lb.QuoteTitle
@@ -236,12 +241,14 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 		CompanyPhone:     cfg.Company.Phone,
 		TaxID:            taxID,
 
+		ServiceDate: cfg.Invoice.ServiceDate, DocumentKind: cfg.Invoice.Kind, CorrectionOf: cfg.Invoice.CorrectionOf, CorrectionOfNumber: cfg.Invoice.CorrectionOfNumber,
 		InvNumber:   fmt.Sprintf("%v", cfg.Invoice.Number),
 		InvDate:     loc.FormatDate(cfg.Invoice.Date),
 		DueDate:     loc.FormatDate(dueDateValue),
 		Status:      cfg.Invoice.Status,
 		StatusClass: statusClass,
 
+		CustDisplayName: cfg.Customer.DisplayName, CustEmail: cfg.Customer.Email,
 		CustName:  cfg.Customer.Name,
 		CustLines: custLines,
 		Rows:      rows,
