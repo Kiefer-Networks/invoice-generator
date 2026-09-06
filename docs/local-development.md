@@ -54,3 +54,8 @@ On hosts with CGO and a supported C toolchain, additionally run
 
 The complete container/CI entry point belongs to the subsequent deployment
 task; these scripts intentionally cover the local test stages only.
+
+Templates and static assets are embedded at build time. Restart `go run` after
+editing them. Development-only template/static reload and exclusion of development
+fixtures from the production binary are deferred to Task 12; production does not
+load templates or assets from writable development paths.

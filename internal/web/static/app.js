@@ -3,6 +3,9 @@
   const focusSummary = () => document.getElementById("validation-summary")?.focus();
   document.addEventListener("DOMContentLoaded", focusSummary);
   document.addEventListener("htmx:afterSwap", focusSummary);
+  document.addEventListener("htmx:afterRequest", event => {
+    if (event.detail.successful) document.getElementById("request-feedback")?.remove();
+  });
   const showFailure = message => {
     let summary = document.getElementById("request-feedback");
     if (!summary) {

@@ -2,7 +2,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 echo Format
-mapfile -d '' files < <(git ls-files -z --cached --others --exclude-standard -- '*.go')
+source_list=$(mktemp)
+trap 'rm -f "$source_list"' EXIT
+if ! git ls-files -z --cached --others --exclude-standard -- '*.go' > "$source_list"; then
+  echo 'Cannot enumerate Go sources' >&2
+  exit 1
+fi
+mapfile -d '' files < "$source_list"
 unformatted=$(gofmt -l "${files[@]}")
 if [[ -n "$unformatted" ]]; then
   echo "Run gofmt on: $unformatted" >&2

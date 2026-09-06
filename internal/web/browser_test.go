@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/kb"
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
 	"github.com/kiefer-networks/invoice-generator/internal/devmode"
 	"github.com/kiefer-networks/invoice-generator/internal/documents"
@@ -23,7 +28,7 @@ import (
 	"github.com/kiefer-networks/invoice-generator/internal/web"
 )
 
-func browserFixture(t *testing.T) (*httptest.Server, *store.Store) {
+func browserFixture(t *testing.T) (*httptest.Server, *store.Store, *devmode.Paperless) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -51,7 +56,7 @@ func browserFixture(t *testing.T) (*httptest.Server, *store.Store) {
 		t.Fatal(e)
 	}
 	t.Cleanup(provider.Close)
-	remote, e := devmode.StartPaperless("accepted")
+	remote, e := devmode.StartPaperless("reject-once")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -67,12 +72,34 @@ func browserFixture(t *testing.T) (*httptest.Server, *store.Store) {
 	t.Cleanup(func() { storage.Close() })
 	svc := documents.New(db, storage)
 	runner := jobs.New(db.DocumentRepository(), svc.Generate)
-	if e = runner.Start(ctx); e != nil {
-		t.Fatal(e)
-	}
 	worker := jobs.NewPaperlessWorker(db, storage, func() (*paperless.Client, error) {
 		return paperless.NewClient(paperless.Config{URL: remote.URL, APIKey: devmode.PaperlessToken}, nil, true)
 	})
+	// Exercise the last automatic attempt without waiting through production backoff.
+	// The real worker must classify the fake's definitive rejection before a user retries.
+	if _, e = db.DB().ExecContext(ctx, `UPDATE paperless_jobs SET state='queued',attempts=4,next_attempt_at=0 WHERE document_id='dev-document-finalized-0001'`); e != nil {
+		t.Fatal(e)
+	}
+	repo := db.PaperlessRepository()
+	j, e := repo.Claim(ctx, time.Now(), 5*time.Minute)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = worker.Process(ctx, j); e == nil || e.Error() != "request_failed" {
+		t.Fatalf("reject-once classification: %v", e)
+	}
+	if e = repo.Fail(ctx, j, time.Now(), e.Error(), 5); e != nil {
+		t.Fatal(e)
+	}
+	j, e = repo.ForDocument(ctx, j.DocumentID)
+	if e != nil || j.State != "failed" || j.ErrorCode != "request_failed" || j.UploadStarted || j.RemoteTaskID != "" || j.RemoteDocumentID != 0 {
+		t.Fatalf("definitive rejection was not safely retryable: %+v %v", j, e)
+	}
+	assertRemoteDocumentCount(t, remote, 0)
+	t.Log("reject-once: real worker classified request_failed; upload intent cleared; terminal failed; zero remote invoice documents")
+	if e = runner.Start(ctx); e != nil {
+		t.Fatal(e)
+	}
 	done := make(chan struct{})
 	go func() { defer close(done); worker.Run(ctx) }()
 	t.Cleanup(func() {
@@ -89,7 +116,26 @@ func browserFixture(t *testing.T) (*httptest.Server, *store.Store) {
 		t.Fatal(e)
 	}
 	server.Config.Handler = handler
-	return server, db
+	return server, db, remote
+}
+
+func assertRemoteDocumentCount(t *testing.T, remote *devmode.Paperless, want int) {
+	t.Helper()
+	title := paperless.Title("DEV-2026-0001", "dev-document-finalized-0001")
+	req, e := http.NewRequest(http.MethodGet, remote.URL+"/api/documents/?title__iexact="+url.QueryEscape(title), nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	req.Header.Set("Authorization", "Token "+devmode.PaperlessToken)
+	res, e := remote.Client().Do(req)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer res.Body.Close()
+	var result struct{ Count int }
+	if e = json.NewDecoder(res.Body).Decode(&result); e != nil || res.StatusCode != 200 || result.Count != want {
+		t.Fatalf("remote invoice document count: got %d want %d, status %d, %v", result.Count, want, res.StatusCode, e)
+	}
 }
 
 func TestBrowserWorkflow(t *testing.T) {
@@ -97,7 +143,7 @@ func TestBrowserWorkflow(t *testing.T) {
 	if chrome == "" {
 		t.Fatal("Chrome is required for browser workflow; set INVOICE_CHROME")
 	}
-	server, db := browserFixture(t)
+	server, db, remote := browserFixture(t)
 	alloc, stop := chromedp.NewExecAllocator(context.Background(), append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(chrome), chromedp.NoSandbox)...)
 	defer stop()
 	ctx, close := chromedp.NewContext(alloc)
@@ -122,6 +168,8 @@ func TestBrowserWorkflow(t *testing.T) {
 		t.Fatal("dashboard has no working create invoice link")
 	}
 	browserWorkflow(t, ctx, server.URL, db)
+	assertRemoteDocumentCount(t, remote, 1)
+	t.Log("protected manual retry delivered the rejected invoice exactly once")
 }
 
 type browserUI struct {
@@ -170,6 +218,25 @@ func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.S
 	ui := browserUI{t, ctx}
 	ui.run("failed Paperless fixture", chromedp.Navigate(base+"/invoices/dev-invoice-finalized-0001"))
 	ui.waitText("Paperless: failed")
+	var retryURL string
+	ui.run("retry form action", chromedp.AttributeValue(`//form[button[normalize-space(.)='Retry Paperless delivery']]`, "action", &retryURL, nil, chromedp.BySearch))
+	anonymous := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	res, e := anonymous.Post(base+retryURL, "application/x-www-form-urlencoded", nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusSeeOther && res.StatusCode != http.StatusFound {
+		t.Fatalf("anonymous retry was not redirected to authentication: %d", res.StatusCode)
+	}
+	ui.run("invalid retry CSRF", chromedp.Evaluate(`document.querySelector('form[action$="/paperless-retry"] input[name="csrf_token"]').value='invalid-test-token'`, nil))
+	ui.click("Retry Paperless delivery")
+	ui.waitText("Request rejected. Reload this page and try again.")
+	j, e := db.PaperlessRepository().ForDocument(ctx, "dev-document-finalized-0001")
+	if e != nil || j.State != "failed" || j.Attempts != 5 {
+		t.Fatalf("protected retry mutated the job: %+v %v", j, e)
+	}
+	ui.run("return to retry form", chromedp.Navigate(base+"/invoices/dev-invoice-finalized-0001"))
 	var previewStatus int
 	ui.run("fixture PDF preview", chromedp.Evaluate(`(async()=>{const a=Array.from(document.querySelectorAll('a')).find(a=>a.textContent==='Preview PDF');return (await fetch(a.href)).status})()`, &previewStatus, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 		return p.WithAwaitPromise(true).WithReturnByValue(true)
@@ -192,9 +259,38 @@ func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.S
 	}
 	ui.click("Settings")
 	ui.fill("Legal name", "Browser Example GmbH")
+	ui.run("disconnect before save", network.Enable(), network.SetBlockedURLs().WithURLPatterns([]*network.BlockPattern{{URLPattern: base + "/settings/company", Block: true}}))
 	ui.click("Save company profile")
+	ui.waitText("Connection unavailable. Your entries are still here; please try again.")
+	var retained bool
+	ui.run("failed request preserves inputs and focuses feedback", chromedp.Evaluate(`document.querySelector('input[name="legal_name"]').value==='Browser Example GmbH' && document.activeElement.id==='request-feedback'`, &retained))
+	if !retained {
+		t.Fatal("network failure lost inputs or accessible feedback focus")
+	}
+	ui.run("restore connection", network.SetBlockedURLs())
+	ui.click("Save company profile")
+	var staleFeedback bool
+	ui.run("successful retry clears network error", chromedp.Evaluate(`!!document.getElementById('request-feedback')`, &staleFeedback))
+	if staleFeedback {
+		t.Fatal("successful HTMX retry leaves stale network error visible")
+	}
+	if company, e := db.CompanyRepository().Get(ctx); e != nil || company.LegalName != "Browser Example GmbH" {
+		t.Fatalf("successful retry did not persist company input: %v", e)
+	}
+	t.Log("browser network failure retained form input and focused alert; successful HTMX retry removed stale feedback")
 	ui.click("Customers")
 	ui.click("New customer")
+	ui.run("focus first customer field", chromedp.Focus(`input[name="number"]`, chromedp.ByQuery), chromedp.KeyEvent(kb.Tab))
+	var nextField string
+	ui.run("keyboard forward focus", chromedp.Evaluate(`document.activeElement.name`, &nextField))
+	if nextField != "display_name" {
+		t.Fatalf("Tab from customer number focused %q", nextField)
+	}
+	ui.run("keyboard reverse focus", chromedp.KeyEvent(kb.Tab, chromedp.KeyModifiers(input.ModifierShift)), chromedp.Evaluate(`document.activeElement.name`, &nextField))
+	if nextField != "number" {
+		t.Fatalf("Shift+Tab from display name focused %q", nextField)
+	}
+	t.Log("keyboard Tab and Shift+Tab traverse customer fields in order")
 	for _, field := range [][2]string{{"Customer number", "BROWSER-001"}, {"Display name", "Browser customer"}, {"Address line 1", "Example road 1"}, {"Postal code", "10115"}, {"City", "Berlin"}, {"Currency", "XXX"}} {
 		ui.fill(field[0], field[1])
 	}
@@ -205,6 +301,16 @@ func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.S
 	if !focused {
 		t.Fatal("validation summary did not receive keyboard focus after HTMX error")
 	}
+	if response, e := chromedp.RunResponse(ctx, chromedp.Evaluate(`document.querySelector('form[action="/customers/new"]').submit()`, nil)); e != nil || response.Status != http.StatusBadRequest {
+		t.Fatalf("native form validation response: %+v %v", response, e)
+	}
+	ui.waitText("must be EUR")
+	var fullPageFallback bool
+	ui.run("full-page validation preserves fields and focuses summary", chromedp.Evaluate(`document.activeElement.id==='validation-summary' && document.querySelector('input[name="currency"]').value==='XXX' && document.querySelector('input[name="display_name"]').value==='Browser customer' && !!document.querySelector('aside[aria-label="Primary navigation"]')`, &fullPageFallback))
+	if !fullPageFallback {
+		t.Fatal("full-page validation lost page shell, submitted values, or keyboard focus")
+	}
+	t.Log("native full-page POST returned 400 with page shell, retained invalid values, and focused validation summary")
 	ui.fill("Currency", "EUR")
 	ui.click("Save customer")
 	ui.waitText("Edit customer")
