@@ -83,6 +83,7 @@ func (a *app) invoiceRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
+
 	if len(parts) == 2 && parts[1] == "service-date" {
 		a.invoiceServiceDate(w, r, id)
 		return
@@ -111,7 +112,11 @@ func (a *app) invoiceRoute(w http.ResponseWriter, r *http.Request) {
 			methodNotAllowed(w, http.MethodGet)
 			return
 		}
-		a.invoicePreview(w, r, id)
+		if a.documents != nil && !isHTMX(r) {
+			a.invoicePDFPreview(w, r, id)
+		} else {
+			a.invoicePreview(w, r, id)
+		}
 		return
 	}
 	if len(parts) == 3 && parts[1] == "items" {

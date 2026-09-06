@@ -1,0 +1,94 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"github.com/kiefer-networks/invoice-generator/internal/documents"
+	"github.com/kiefer-networks/invoice-generator/internal/jobs"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
+	"time"
+)
+
+func validateDocumentRoot(path string) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return errors.New("an absolute document root is required")
+	}
+	info, e := os.Lstat(path)
+	if os.IsNotExist(e) {
+		return nil
+	}
+	if e != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("document root must be a real directory")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
+		return errors.New("document root permissions must be owner-only")
+	}
+	return nil
+}
+func startDocuments(ctx context.Context, db *store.Store, cfg Config) (*documents.Service, func(), func(context.Context) error, error) {
+	root := cfg.DocumentRoot
+	if root == "" && cfg.Development {
+		var e error
+		root, e = filepath.Abs(filepath.Join(filepath.Dir(cfg.Database), "documents"))
+		if e != nil {
+			return nil, nil, nil, e
+		}
+	}
+	if e := validateDocumentRoot(root); e != nil {
+		return nil, nil, nil, e
+	}
+	storage, e := documents.NewStorage(root, 20<<20)
+	if e != nil {
+		return nil, nil, nil, e
+	}
+	svc := documents.New(db, storage)
+	if e = svc.Recover(ctx); e != nil {
+		storage.Close()
+		return nil, nil, nil, e
+	}
+	runner := jobs.New(db.DocumentRepository(), svc.Generate)
+	if e = runner.Start(ctx); e != nil {
+		storage.Close()
+		return nil, nil, nil, e
+	}
+	var once sync.Once
+	var closeErr error
+	stop := func(ctx context.Context) error {
+		if e := runner.Stop(ctx); e != nil {
+			return e
+		}
+		once.Do(func() { closeErr = storage.Close() })
+		return closeErr
+	}
+	return svc, runner.Wake, stop, nil
+}
+
+// serveHTTP joins shutdown before document storage and SQLite are closed.
+func serveHTTP(ctx context.Context, server *http.Server, listen func() error) error {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			drain, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if e := server.Shutdown(drain); e != nil {
+				_ = server.Close()
+			}
+		case <-stop:
+		}
+	}()
+	e := listen()
+	close(stop)
+	<-done
+	if errors.Is(e, http.ErrServerClosed) {
+		return nil
+	}
+	return e
+}

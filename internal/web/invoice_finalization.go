@@ -75,6 +75,9 @@ func (a *app) invoiceFinalizationRoute(w http.ResponseWriter, r *http.Request, i
 		a.finalizationError(w, r, err)
 		return
 	}
+	if action == "finalize" && a.wakeDocuments != nil {
+		a.wakeDocuments()
+	}
 	path := "/invoices/" + id + invoiceQuerySuffix(r.URL.Query())
 	if isHTMX(r) {
 		w.Header().Set("HX-Redirect", path)
@@ -164,6 +167,10 @@ func (a *app) renderFinalInvoice(w http.ResponseWriter, r *http.Request, f invoi
 		return
 	}
 	data := a.withPageData(r, pageData{Finalized: &f, Invoice: &f.Snapshot.Draft, InvoicePreview: f.Snapshot.RenderData(), InvoiceConfirmation: confirmation, InvoiceReason: r.Form.Get("reason"), InvoiceQuery: invoiceQuerySuffix(r.URL.Query())})
+	data.DocumentsEnabled = a.documents != nil
+	if doc, e := a.store.DocumentRepository().ForInvoice(r.Context(), f.ID); e == nil {
+		data.Document = &doc
+	}
 	if problem != nil {
 		data.Errors = map[string]string{"reason": problem.Error()}
 	}

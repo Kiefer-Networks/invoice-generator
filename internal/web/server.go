@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
+	"github.com/kiefer-networks/invoice-generator/internal/documents"
 	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
 	"github.com/kiefer-networks/invoice-generator/internal/render"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
@@ -42,21 +43,27 @@ type Config struct {
 	BodyLimit      int64
 }
 type Dependencies struct {
-	Auth   Authenticator
-	Store  *store.Store
-	Config Config
-	Logger *slog.Logger
+	Documents     *documents.Service
+	WakeDocuments func()
+	Auth          Authenticator
+	Store         *store.Store
+	Config        Config
+	Logger        *slog.Logger
 }
 type app struct {
-	auth      Authenticator
-	store     *store.Store
-	config    Config
-	logger    *slog.Logger
-	templates *template.Template
-	static    http.Handler
+	documents     *documents.Service
+	wakeDocuments func()
+	auth          Authenticator
+	store         *store.Store
+	config        Config
+	logger        *slog.Logger
+	templates     *template.Template
+	static        http.Handler
 }
 
 type pageData struct {
+	Document                                                           *store.Document
+	DocumentsEnabled                                                   bool
 	Finalized                                                          *invoicing.FinalizedInvoice
 	FinalizationKey, InvoiceConfirmation, InvoiceReason                string
 	InvoiceState                                                       string
@@ -116,7 +123,7 @@ func New(deps Dependencies) (http.Handler, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	a := &app{auth: deps.Auth, store: deps.Store, config: deps.Config, logger: logger, templates: t, static: http.StripPrefix("/assets/", http.FileServer(http.FS(files)))}
+	a := &app{documents: deps.Documents, wakeDocuments: deps.WakeDocuments, auth: deps.Auth, store: deps.Store, config: deps.Config, logger: logger, templates: t, static: http.StripPrefix("/assets/", http.FileServer(http.FS(files)))}
 	return a.chain(http.HandlerFunc(a.routes)), nil
 }
 
@@ -191,6 +198,10 @@ func (a *app) routes(w http.ResponseWriter, r *http.Request) {
 			}
 			if strings.HasPrefix(r.URL.Path, "/catalog/") {
 				a.catalogRoute(w, r)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/documents/") {
+				a.documentRoute(w, r)
 				return
 			}
 			if strings.HasPrefix(r.URL.Path, "/invoices/") {

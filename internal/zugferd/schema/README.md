@@ -1,0 +1,7 @@
+# CII schema validation
+
+The four unmodified UNECE D16B uncoupled CII schemas come from the European Commission ConnectingEurope [validation-1.3.16 release](https://github.com/ConnectingEurope/eInvoicing-EN16931/releases/tag/validation-1.3.16), published 2026-04-10. `manifest.json` pins each source and SHA-256; `LICENSE.txt` preserves the upstream EUPL-1.2 license. Embedded schema copyright notices are retained.
+
+`Validate.java` is local integration code, not an upstream schema. The server requires a Java 17+ **JDK** with source-file launch support. Java is invoked directly (no shell), with 128 MiB maximum heap and a 30-second context deadline. It parses invoice XML with DOCTYPE and external entities disabled, validates against only the embedded schema, and blocks schema/network resolution from instance documents. The four trusted schema imports resolve within the private staging directory. Java absence or failed validation prevents publication and leaves the job retryable.
+
+This validates the actual UNECE D16B XSD grammar and data types. It does not run EN16931 Schematron/business-rule validation or assert PDF/A-3 certification. The generator uses the EN16931 context identifier and preserves stored integer totals. Invoices with unusual tax/rounding semantics may require additional normative business-rule checking before external submission. The snapshot currently has rates but no VAT exemption/reverse-charge category/reason fields; zero rates map to Z (zero rated), and must not be interpreted as tax-exemption support.

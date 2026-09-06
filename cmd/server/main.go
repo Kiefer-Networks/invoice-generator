@@ -14,8 +14,10 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
@@ -28,6 +30,7 @@ const defaultBodyLimit int64 = 1 << 20
 // Config contains the deployment boundary for the HTTP service. Secrets are
 // represented only by file paths so they cannot accidentally reach logs.
 type Config struct {
+	DocumentRoot                                         string
 	Listen, Database                                     string
 	AllowedHosts                                         []string
 	TrustedProxies                                       []netip.Prefix
@@ -80,6 +83,7 @@ func ParseConfig(args []string, getenv func(string) string) (Config, error) {
 	fs.SetOutput(os.Stderr)
 	listen := fs.String("listen", value("INVOICE_LISTEN", ""), "listener address")
 	database := fs.String("database", value("INVOICE_DATABASE", ""), "SQLite database")
+	documentRoot := fs.String("document-root", value("INVOICE_DOCUMENT_ROOT", ""), "absolute protected document storage root")
 	hosts := fs.String("allowed-hosts", value("INVOICE_ALLOWED_HOSTS", ""), "comma-separated hosts")
 	proxies := fs.String("trusted-proxies", value("INVOICE_TRUSTED_PROXIES", ""), "comma-separated proxy CIDRs")
 	cert := fs.String("tls-cert", value("INVOICE_TLS_CERT", ""), "TLS certificate file")
@@ -100,11 +104,16 @@ func ParseConfig(args []string, getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg := Config{Listen: *listen, Database: *database, AllowedHosts: splitCSV(*hosts), TrustedProxies: trusted, TLSCertFile: *cert, TLSKeyFile: *key, Development: *dev, BodyLimit: defaultBodyLimit, PocketIDIssuer: *issuer, PocketIDClientID: *clientID, ClientSecretFile: *clientSecret, SessionKeyFile: *sessionKey, TransactionKeyFile: *transactionKey, CallbackURL: *callback, RequiredGroup: *group, PaperlessURL: *paperless}
+	cfg := Config{DocumentRoot: *documentRoot, Listen: *listen, Database: *database, AllowedHosts: splitCSV(*hosts), TrustedProxies: trusted, TLSCertFile: *cert, TLSKeyFile: *key, Development: *dev, BodyLimit: defaultBodyLimit, PocketIDIssuer: *issuer, PocketIDClientID: *clientID, ClientSecretFile: *clientSecret, SessionKeyFile: *sessionKey, TransactionKeyFile: *transactionKey, CallbackURL: *callback, RequiredGroup: *group, PaperlessURL: *paperless}
 	return cfg, cfg.Validate()
 }
 
 func (c Config) Validate() error {
+	if !c.Development || c.DocumentRoot != "" {
+		if e := validateDocumentRoot(c.DocumentRoot); e != nil {
+			return e
+		}
+	}
 	if c.Listen == "" || c.Database == "" || c.PocketIDClientID == "" {
 		return errors.New("listener, database, and Pocket ID client ID are required")
 	}
@@ -268,7 +277,8 @@ func parsePrefixes(raw string) ([]netip.Prefix, error) {
 }
 
 func serve(cfg Config) error {
-	ctx := context.Background()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 	database, err := store.Open(ctx, cfg.Database)
 	if err != nil {
 		return err
@@ -281,15 +291,27 @@ func serve(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	handler, err := web.New(web.Dependencies{Auth: manager, Store: database, Config: web.Config{AllowedHosts: cfg.AllowedHosts, TrustedProxies: cfg.TrustedProxies, Development: cfg.Development, BodyLimit: cfg.BodyLimit}})
+	documentService, wakeDocuments, stopDocuments, err := startDocuments(ctx, database, cfg)
 	if err != nil {
 		return err
 	}
-	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13}}
-	if cfg.TLSCertFile != "" {
-		return server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = stopDocuments(cleanup)
+	}()
+	handler, err := web.New(web.Dependencies{Documents: documentService, WakeDocuments: wakeDocuments, Auth: manager, Store: database, Config: web.Config{AllowedHosts: cfg.AllowedHosts, TrustedProxies: cfg.TrustedProxies, Development: cfg.Development, BodyLimit: cfg.BodyLimit}})
+	if err != nil {
+		return err
 	}
-	return server.ListenAndServe()
+	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13}}
+	server.BaseContext = func(net.Listener) context.Context { return ctx }
+	return serveHTTP(ctx, server, func() error {
+		if cfg.TLSCertFile != "" {
+			return server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
+		}
+		return server.ListenAndServe()
+	})
 }
 
 func newAuthManager(ctx context.Context, database *store.Store, cfg Config, client *http.Client) (*auth.Manager, error) {

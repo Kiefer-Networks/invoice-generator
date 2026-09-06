@@ -76,7 +76,8 @@ func TestRevokeAllSessions(t *testing.T) {
 func testConfig(t *testing.T) Config {
 	t.Helper()
 	return Config{
-		Listen: "127.0.0.1:8443", AllowedHosts: []string{"app.example.test"},
+		DocumentRoot: filepath.Join(t.TempDir(), "documents"),
+		Listen:       "127.0.0.1:8443", AllowedHosts: []string{"app.example.test"},
 		TLSCertFile: "cert.pem", TLSKeyFile: "key.pem", Database: filepath.Join(t.TempDir(), "app.db"),
 		PocketIDIssuer: "https://id.example.test", PocketIDClientID: "invoice-generator",
 		ClientSecretFile: writeSecret(t, "client-secret"), SessionKeyFile: writeSecret(t, encodedKey("0123456789abcdefghijklmnopqrstuv")),

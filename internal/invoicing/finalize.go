@@ -162,6 +162,7 @@ func (s Snapshot) RenderData() *render.TplData {
 	p.CorrectionOfNumber = s.Correction.OriginalNumber
 	p.Notes = s.Notes
 	p.CompanyContact = s.Company.ContactName
+	p.CompanyTaxNumber = s.Company.TaxNumber
 	p.TaxID = s.Company.VATIdentifier
 	if p.TaxID == "" {
 		p.TaxID = s.Company.TaxNumber
