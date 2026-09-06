@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
+	"github.com/kiefer-networks/invoice-generator/internal/devmode"
 	"github.com/kiefer-networks/invoice-generator/internal/paperless"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"github.com/kiefer-networks/invoice-generator/internal/web"
@@ -33,6 +34,8 @@ const defaultBodyLimit int64 = 1 << 20
 // Config contains the deployment boundary for the HTTP service. Secrets are
 // represented only by file paths so they cannot accidentally reach logs.
 type Config struct {
+	DevRoot, DevPaperlessState                           string
+	devPaperless                                         *devmode.Paperless
 	DocumentRoot                                         string
 	Listen, Database                                     string
 	AllowedHosts                                         []string
@@ -173,6 +176,14 @@ func runRecoveryCommand(ctx context.Context, args []string, out io.Writer) error
 
 // ParseConfig reads non-secret configuration from flags and environment.
 func ParseConfig(args []string, getenv func(string) string) (Config, error) {
+	for _, arg := range args {
+		if arg == "-dev" || arg == "--dev" || arg == "-dev=true" || arg == "--dev=true" {
+			return parseDevelopment(args, getenv)
+		}
+	}
+	if strings.TrimSpace(getenv("INVOICE_DEVELOPMENT")) != "" {
+		return Config{}, errors.New("development requires explicit -dev; environment activation is forbidden")
+	}
 	value := func(name, fallback string) string {
 		if v := strings.TrimSpace(getenv(name)); v != "" {
 			return v
@@ -188,7 +199,7 @@ func ParseConfig(args []string, getenv func(string) string) (Config, error) {
 	proxies := fs.String("trusted-proxies", value("INVOICE_TRUSTED_PROXIES", ""), "comma-separated proxy CIDRs")
 	cert := fs.String("tls-cert", value("INVOICE_TLS_CERT", ""), "TLS certificate file")
 	key := fs.String("tls-key", value("INVOICE_TLS_KEY", ""), "TLS key file")
-	dev := fs.Bool("dev", value("INVOICE_DEVELOPMENT", "") == "1", "development mode")
+	dev := fs.Bool("dev", false, "development mode")
 	issuer := fs.String("pocket-id-issuer", value("INVOICE_POCKET_ID_ISSUER", ""), "Pocket ID issuer")
 	clientID := fs.String("pocket-id-client-id", value("INVOICE_POCKET_ID_CLIENT_ID", ""), "Pocket ID client ID")
 	clientSecret := fs.String("pocket-id-client-secret-file", value("INVOICE_POCKET_ID_CLIENT_SECRET_FILE", ""), "Pocket ID client secret file")
@@ -210,6 +221,9 @@ func ParseConfig(args []string, getenv func(string) string) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if c.Development {
+		return validateDevelopment(c)
+	}
 	if c.Development && c.PaperlessTokenFile != "" {
 		return errors.New("development cannot use a Paperless token file")
 	}
@@ -393,6 +407,29 @@ func parsePrefixes(raw string) ([]netip.Prefix, error) {
 func serve(cfg Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer cancel()
+	if cfg.Development {
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		secrets, err := devmode.PrepareRoot(cfg.DevRoot)
+		if err != nil {
+			return err
+		}
+		provider, err := devmode.StartOIDC(cfg.CallbackURL)
+		if err != nil {
+			return err
+		}
+		defer provider.Close()
+		remote, err := devmode.StartPaperless(cfg.DevPaperlessState)
+		if err != nil {
+			return err
+		}
+		defer remote.Close()
+		cfg.PocketIDIssuer, cfg.PocketIDClientID = provider.URL, devmode.ClientID
+		cfg.ClientSecretFile, cfg.SessionKeyFile, cfg.TransactionKeyFile = secrets.Client, secrets.Session, secrets.Transaction
+		cfg.devPaperless = remote
+		fmt.Fprintln(os.Stdout, "LOCAL DEVELOPMENT — synthetic data only — http://"+cfg.Listen)
+	}
 	database, release, err := store.OpenService(ctx, cfg.Database)
 	if err != nil {
 		return err
@@ -401,6 +438,11 @@ func serve(cfg Config) error {
 	defer database.Close()
 	if err := database.Migrate(ctx); err != nil {
 		return err
+	}
+	if cfg.Development {
+		if err := devmode.Seed(ctx, database); err != nil {
+			return err
+		}
 	}
 	manager, err := newAuthManager(ctx, database, cfg, nil)
 	if err != nil {

@@ -165,7 +165,7 @@ func (a *app) session(next http.Handler) http.Handler {
 	})
 }
 func publicPath(path string) bool {
-	return path == "/_health" || strings.HasPrefix(path, "/assets/") || path == "/auth/login" || path == "/auth/callback"
+	return path == "/_health" || strings.HasPrefix(path, "/assets/") || path == "/auth/login" || path == "/auth/callback" || path == "/auth/signed-out"
 }
 func normalizeProxy(r *http.Request, trusted []netip.Prefix) (*http.Request, error) {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

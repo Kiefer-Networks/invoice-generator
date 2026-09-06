@@ -202,9 +202,14 @@ func customerInputFromRequest(r *http.Request) (store.CustomerInput, error) {
 }
 func (a *app) customerSaved(w http.ResponseWriter, r *http.Request, c store.Customer) {
 	if isHTMX(r) {
+		data, err := a.customerListViewData(r, pageData{Customer: &c})
+		if err != nil {
+			http.Error(w, "customer list is unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		w.Header().Set("HX-Retarget", "#customer-detail")
 		w.Header().Set("HX-Push-Url", "/customers/"+c.ID)
-		a.renderTemplate(w, "customerDetail", a.withPageData(r, pageData{Customer: &c}))
+		a.renderTemplate(w, "customerSaved", a.withPageData(r, data))
 		return
 	}
 	http.Redirect(w, r, "/customers/"+c.ID, http.StatusSeeOther)
@@ -250,6 +255,7 @@ func errorFields(err error) map[string]string {
 	return result
 }
 func (a *app) withPageData(r *http.Request, data pageData) pageData {
+	data.Development = a.config.Development
 	p, _ := principalFromContext(r.Context())
 	csrf, _ := a.auth.CSRFToken(cookie(r, "invoice_session"))
 	data.Nonce = nonceFromContext(r.Context())
@@ -258,6 +264,7 @@ func (a *app) withPageData(r *http.Request, data pageData) pageData {
 	data.CSSURL = "/assets/app.css?v=" + assetVersion("app.css")
 	data.HTMXURL = "/assets/htmx.min.js?v=" + assetVersion("htmx.min.js")
 	data.InvoiceJSURL = "/assets/invoice.js?v=" + assetVersion("invoice.js")
+	data.AppJSURL = "/assets/app.js?v=" + assetVersion("app.js")
 	return data
 }
 func (a *app) renderTemplate(w http.ResponseWriter, name string, data pageData) {

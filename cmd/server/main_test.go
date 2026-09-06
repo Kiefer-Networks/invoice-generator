@@ -17,6 +17,38 @@ import (
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
+func TestDevExplicitAndIsolated(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "dev")
+	cfg, e := ParseConfig([]string{"-dev", "-dev-root", root}, func(string) string { return "" })
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !cfg.Development || cfg.Database != filepath.Join(root, "development.sqlite") {
+		t.Fatalf("isolated config: %+v", cfg)
+	}
+	for _, args := range [][]string{{"-listen", "0.0.0.0:8080"}, {"-database", filepath.Join(t.TempDir(), "prod.sqlite")}, {"-session-key-file", "production-secret"}, {"-pocket-id-issuer", "https://id.example.com"}, {"-paperless-url", "https://paperless.example.com"}} {
+		if _, e = ParseConfig(append([]string{"-dev", "-dev-root", root}, args...), func(string) string { return "" }); e == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+	if _, e = ParseConfig([]string{"-dev", "-dev-root", root}, func(k string) string {
+		if k == "INVOICE_DATABASE" {
+			return "prod.sqlite"
+		}
+		return ""
+	}); e == nil {
+		t.Fatal("inherited production database")
+	}
+	if _, e = ParseConfig(nil, func(k string) string {
+		if k == "INVOICE_DEVELOPMENT" {
+			return "1"
+		}
+		return ""
+	}); e == nil {
+		t.Fatal("development enabled by environment")
+	}
+}
+
 func TestRecoveryCommandsRoundtripAndIntegrity(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

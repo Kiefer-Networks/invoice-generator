@@ -63,6 +63,8 @@ type app struct {
 }
 
 type pageData struct {
+	Development                                                        bool
+	AppJSURL                                                           string
 	Document                                                           *store.Document
 	PaperlessJob                                                       *store.PaperlessJob
 	DocumentsEnabled                                                   bool
@@ -166,6 +168,12 @@ func (a *app) routes(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "ok")
 	case "/auth/login":
 		a.login(w, r)
+	case "/auth/signed-out":
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w, http.MethodGet)
+			return
+		}
+		a.renderTemplate(w, "login", pageData{Development: a.config.Development})
 	case "/auth/callback":
 		a.callback(w, r)
 	case "/auth/logout":
@@ -279,7 +287,9 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 	deleted := &http.Cookie{Name: "invoice_session", Value: "", Path: "/", MaxAge: -1}
 	a.protectCookie(deleted, http.SameSiteStrictMode)
 	http.SetCookie(w, deleted)
-	http.Redirect(w, r, "/auth/login", http.StatusSeeOther)
+	// End the form redirect on this origin. A redirect through the external
+	// provider is blocked by form-action 'self' in conforming browsers.
+	http.Redirect(w, r, "/auth/signed-out", http.StatusSeeOther)
 }
 func (a *app) home(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFromContext(r.Context())
@@ -289,7 +299,8 @@ func (a *app) home(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign-in required", http.StatusUnauthorized)
 		return
 	}
-	d := pageData{Nonce: nonceFromContext(r.Context()), CSRFToken: csrf, DisplayName: p.DisplayName, CSSURL: "/assets/app.css?v=" + assetVersion("app.css"), HTMXURL: "/assets/htmx.min.js?v=" + assetVersion("htmx.min.js")}
+	d := pageData{Development: a.config.Development, Nonce: nonceFromContext(r.Context()), CSRFToken: csrf, DisplayName: p.DisplayName, CSSURL: "/assets/app.css?v=" + assetVersion("app.css"), HTMXURL: "/assets/htmx.min.js?v=" + assetVersion("htmx.min.js")}
+	d.AppJSURL = "/assets/app.js?v=" + assetVersion("app.js")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.Header.Get("HX-Request") == "true" {
 		if err := a.templates.ExecuteTemplate(w, "shell", d); err != nil {

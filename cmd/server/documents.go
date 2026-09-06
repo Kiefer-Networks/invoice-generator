@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/kiefer-networks/invoice-generator/internal/devmode"
 	"github.com/kiefer-networks/invoice-generator/internal/documents"
 	"github.com/kiefer-networks/invoice-generator/internal/jobs"
 	"github.com/kiefer-networks/invoice-generator/internal/paperless"
@@ -59,6 +60,9 @@ func startDocumentsWithStorage(ctx context.Context, db *store.Store, cfg Config,
 		return nil, nil, nil, e
 	}
 	paperlessWorker := jobs.NewPaperlessWorker(db, storage, func() (*paperless.Client, error) {
+		if cfg.Development && cfg.devPaperless != nil {
+			return paperless.NewClient(paperless.Config{URL: cfg.devPaperless.URL, APIKey: devmode.PaperlessToken}, &http.Client{Timeout: time.Second}, true)
+		}
 		if cfg.Development || cfg.PaperlessURL == "" {
 			return nil, errors.New("configuration_missing")
 		}
