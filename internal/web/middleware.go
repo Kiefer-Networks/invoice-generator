@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 
@@ -18,6 +20,8 @@ type contextKey uint8
 const (
 	nonceKey contextKey = iota
 	principalKey
+	requestIDKey
+	trustedPeerKey
 )
 
 func nonceFromContext(ctx context.Context) string {
@@ -30,7 +34,7 @@ func principalFromContext(ctx context.Context) (auth.Principal, bool) {
 }
 
 func (a *app) chain(next http.Handler) http.Handler {
-	return a.recover(a.correlation(a.proxy(a.host(a.limit(a.security(a.log(a.session(next))))))))
+	return a.recover(a.correlation(a.proxy(a.transport(a.host(a.limit(a.security(a.log(a.session(next)))))))))
 }
 func (a *app) recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -46,12 +50,31 @@ func (a *app) correlation(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := randomNonce()
 		w.Header().Set("X-Request-ID", id)
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), contextKey(99), id)))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey, id)))
 	})
 }
 func (a *app) proxy(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, normalizeProxy(r, a.config.TrustedProxies))
+		normalized, err := normalizeProxy(r, a.config.TrustedProxies)
+		if err != nil {
+			http.Error(w, "invalid forwarded headers", http.StatusBadRequest)
+			return
+		}
+		next.ServeHTTP(w, normalized)
+	})
+}
+func (a *app) transport(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a.config.Development || r.TLS != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		trusted, _ := r.Context().Value(trustedPeerKey).(bool)
+		if trusted && strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "HTTPS is required", http.StatusUpgradeRequired)
 	})
 }
 func (a *app) host(next http.Handler) http.Handler {
@@ -98,7 +121,8 @@ func (a *app) log(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		next.ServeHTTP(w, r)
-		a.logger.LogAttrs(r.Context(), slog.LevelInfo, "request", slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Duration("duration", time.Since(started)))
+		id, _ := r.Context().Value(requestIDKey).(string)
+		a.logger.LogAttrs(r.Context(), slog.LevelInfo, "request", slog.String("request_id", id), slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Duration("duration", time.Since(started)))
 	})
 }
 func (a *app) session(next http.Handler) http.Handler {
@@ -110,11 +134,12 @@ func (a *app) session(next http.Handler) http.Handler {
 		session := cookie(r, "invoice_session")
 		principal, err := a.auth.Authenticate(r.Context(), session)
 		if err != nil {
-			http.Redirect(w, r, "/auth/login?return_to="+r.URL.RequestURI(), http.StatusFound)
+			http.Redirect(w, r, "/auth/login?return_to="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
-			if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+			mediaType, _, parseErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if parseErr != nil || mediaType != "application/x-www-form-urlencoded" {
 				http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
 				return
 			}
@@ -142,7 +167,7 @@ func (a *app) session(next http.Handler) http.Handler {
 func publicPath(path string) bool {
 	return path == "/_health" || strings.HasPrefix(path, "/assets/") || path == "/auth/login" || path == "/auth/callback"
 }
-func normalizeProxy(r *http.Request, trusted []netip.Prefix) *http.Request {
+func normalizeProxy(r *http.Request, trusted []netip.Prefix) (*http.Request, error) {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
@@ -158,15 +183,35 @@ func normalizeProxy(r *http.Request, trusted []netip.Prefix) *http.Request {
 		}
 	}
 	if !allowed {
-		return r
+		return r, nil
 	}
 	copy := r.Clone(r.Context())
-	value := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
-	if _, err := netip.ParseAddr(value); err == nil {
-		copy.RemoteAddr = value
+	copy = copy.WithContext(context.WithValue(copy.Context(), trustedPeerKey, true))
+	chain := r.Header.Get("X-Forwarded-For")
+	if chain == "" {
+		return copy, nil
 	}
-	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-		copy.URL.Scheme = "https"
+	parts := strings.Split(chain, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		value := strings.TrimSpace(parts[i])
+		if value == "" {
+			return nil, errors.New("empty forwarded address")
+		}
+		address, err := netip.ParseAddr(value)
+		if err != nil {
+			return nil, errors.New("invalid forwarded address")
+		}
+		hopTrusted := false
+		for _, prefix := range trusted {
+			if prefix.Contains(address) {
+				hopTrusted = true
+				break
+			}
+		}
+		if !hopTrusted {
+			copy.RemoteAddr = address.String()
+			return copy, nil
+		}
 	}
-	return copy
+	return nil, errors.New("forwarded chain has no client address")
 }

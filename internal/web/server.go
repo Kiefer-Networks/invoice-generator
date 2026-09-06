@@ -112,6 +112,10 @@ func (a *app) routes(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w, http.MethodGet)
+			return
+		}
 		a.home(w, r)
 	}
 }

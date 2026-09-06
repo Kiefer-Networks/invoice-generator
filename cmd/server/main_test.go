@@ -2,15 +2,47 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
+
+func TestProductionManagerUsesProtectedFileConfiguration(t *testing.T) {
+	var issuer string
+	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q,"id_token_signing_alg_values_supported":["RS256"]}`, issuer, issuer+"/authorize", issuer+"/token", issuer+"/jwks")
+	}))
+	defer provider.Close()
+	issuer = provider.URL
+	cfg := testConfig(t)
+	cfg.PocketIDIssuer = issuer
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(context.Background(), cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newAuthManager(context.Background(), db, cfg, provider.Client()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestRevokeAllSessions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "app.db")
@@ -46,11 +78,13 @@ func testConfig(t *testing.T) Config {
 		Listen: "127.0.0.1:8443", AllowedHosts: []string{"app.example.test"},
 		TLSCertFile: "cert.pem", TLSKeyFile: "key.pem", Database: filepath.Join(t.TempDir(), "app.db"),
 		PocketIDIssuer: "https://id.example.test", PocketIDClientID: "invoice-generator",
-		ClientSecretFile: writeSecret(t, "client-secret"), SessionKeyFile: writeSecret(t, "0123456789abcdefghijklmnopqrstuv"),
-		TransactionKeyFile: writeSecret(t, "zyxwvutsrqponmlkjihgfedcba987654"), CallbackURL: "https://app.example.test/auth/callback",
+		ClientSecretFile: writeSecret(t, "client-secret"), SessionKeyFile: writeSecret(t, encodedKey("0123456789abcdefghijklmnopqrstuv")),
+		TransactionKeyFile: writeSecret(t, encodedKey("zyxwvutsrqponmlkjihgfedcba987654")), CallbackURL: "https://app.example.test/auth/callback",
 		RequiredGroup: "invoice-admins", BodyLimit: 1 << 20,
 	}
 }
+
+func encodedKey(value string) string { return base64.RawStdEncoding.EncodeToString([]byte(value)) }
 
 func writeSecret(t *testing.T, value string) string { return writeSecretMode(t, value, 0600) }
 func writeSecretMode(t *testing.T, value string, mode os.FileMode) string {
@@ -70,8 +104,7 @@ func TestConfigRejectsUnsafeSettings(t *testing.T) {
 		mutate func(*Config)
 	}{
 		{"missing client secret", func(c *Config) { c.ClientSecretFile = "" }},
-		{"short session key", func(c *Config) { c.SessionKeyFile = writeSecret(t, "short") }},
-		{"default session key", func(c *Config) { c.SessionKeyFile = writeSecret(t, strings.Repeat("x", 32)) }},
+		{"invalid callback path", func(c *Config) { c.CallbackURL = "https://app.example.test/not-callback" }},
 		{"http issuer", func(c *Config) { c.PocketIDIssuer = "http://id.example.test" }},
 		{"invalid callback", func(c *Config) { c.CallbackURL = "https://other.example.test/callback#fragment" }},
 		{"callback host not allowed", func(c *Config) { c.CallbackURL = "https://other.example.test/auth/callback" }},
@@ -120,13 +153,15 @@ func TestConfigRejectsUnsafeDevelopmentSettings(t *testing.T) {
 	}
 }
 
-func TestConfigRejectsWorldReadableSecretOnUnix(t *testing.T) {
+func TestConfigRejectsBroadSecretModesOnUnix(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows has no POSIX secret mode bits")
 	}
-	cfg := testConfig(t)
-	cfg.SessionKeyFile = writeSecretMode(t, strings.Repeat("s", 32), 0644)
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate accepted a world-readable secret")
+	for _, mode := range []os.FileMode{0640, 0660} {
+		cfg := testConfig(t)
+		cfg.SessionKeyFile = writeSecretMode(t, encodedKey("0123456789abcdefghijklmnopqrstuv"), mode)
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("Validate accepted mode %04o", mode)
+		}
 	}
 }

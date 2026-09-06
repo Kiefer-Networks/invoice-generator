@@ -26,6 +26,14 @@ func TestOIDCDiscoveryRejectsHTTPIssuerOutsideDevelopment(t *testing.T) {
 	}
 }
 
+func TestNewManagerRequiresExactCallbackPath(t *testing.T) {
+	provider := newTestProvider(t)
+	_, err := NewManager(context.Background(), nil, Config{IssuerURL: provider.server.URL, ClientID: "invoice-generator", ClientSecret: "secret", RedirectURL: "https://app.example.test/not-callback", Development: true, SessionKey: strings.Repeat("s", 32), TransactionKey: strings.Repeat("t", 32), HTTPClient: provider.server.Client()})
+	if err == nil {
+		t.Fatal("NewManager accepted a callback outside /auth/callback")
+	}
+}
+
 func TestOIDCDiscoveryRejectsMismatchedAndUnsafeMetadata(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -165,49 +164,30 @@ func (c Config) Validate() error {
 			return errors.New("production needs TLS or an explicitly trusted TLS proxy")
 		}
 	}
-	_, session, transaction, err := c.readSecrets()
-	if err != nil {
-		return err
+	if callback.Path != "/auth/callback" || callback.RawQuery != "" {
+		return errors.New("callback URL must be the exact /auth/callback endpoint")
 	}
-	if len(session) != 32 || len(transaction) != 32 {
-		return errors.New("session and transaction keys must be exactly 32 bytes")
-	}
-	if bytes.Equal(session, transaction) || defaultKey(session) || defaultKey(transaction) {
-		return errors.New("application keys must be distinct non-default values")
+	for _, secret := range []struct{ path, label string }{{c.ClientSecretFile, "Pocket ID client secret"}, {c.SessionKeyFile, "session key"}, {c.TransactionKeyFile, "transaction key"}} {
+		if err := protectedSecretFile(secret.path, secret.label); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (c Config) readSecrets() (string, []byte, []byte, error) {
-	client, err := readSecret(c.ClientSecretFile)
-	if err != nil || strings.TrimSpace(string(client)) == "" {
-		return "", nil, nil, errors.New("Pocket ID client secret file is required")
-	}
-	session, err := readSecret(c.SessionKeyFile)
-	if err != nil {
-		return "", nil, nil, errors.New("session key file is required")
-	}
-	transaction, err := readSecret(c.TransactionKeyFile)
-	if err != nil {
-		return "", nil, nil, errors.New("transaction key file is required")
-	}
-	return strings.TrimSpace(string(client)), bytes.TrimSpace(session), bytes.TrimSpace(transaction), nil
-}
-
-func readSecret(path string) ([]byte, error) {
+func protectedSecretFile(path, label string) error {
 	if path == "" {
-		return nil, errors.New("missing secret file")
+		return fmt.Errorf("%s file is required", label)
 	}
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
-		return nil, errors.New("invalid secret file")
+		return fmt.Errorf("invalid %s file", label)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&007 != 0 {
-		return nil, errors.New("secret file is accessible by group or others")
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%s file permissions are too broad", label)
 	}
-	return os.ReadFile(path)
+	return nil
 }
-func defaultKey(key []byte) bool { return len(key) == 0 || bytes.Count(key, key[:1]) == len(key) }
 func parseHTTPURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.Fragment != "" {
@@ -265,11 +245,7 @@ func serve(cfg Config) error {
 	if err := database.Migrate(ctx); err != nil {
 		return err
 	}
-	clientSecret, sessionKey, transactionKey, err := cfg.readSecrets()
-	if err != nil {
-		return err
-	}
-	manager, err := auth.NewManager(ctx, database, auth.Config{IssuerURL: cfg.PocketIDIssuer, ClientID: cfg.PocketIDClientID, ClientSecret: clientSecret, RedirectURL: cfg.CallbackURL, SessionKey: string(sessionKey), TransactionKey: string(transactionKey), RequiredGroup: cfg.RequiredGroup, Development: cfg.Development})
+	manager, err := newAuthManager(ctx, database, cfg, nil)
 	if err != nil {
 		return err
 	}
@@ -282,6 +258,10 @@ func serve(cfg Config) error {
 		return server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)
 	}
 	return server.ListenAndServe()
+}
+
+func newAuthManager(ctx context.Context, database *store.Store, cfg Config, client *http.Client) (*auth.Manager, error) {
+	return auth.NewManager(ctx, database, auth.Config{IssuerURL: cfg.PocketIDIssuer, ClientID: cfg.PocketIDClientID, ClientSecretFile: cfg.ClientSecretFile, RedirectURL: cfg.CallbackURL, SessionKeyFile: cfg.SessionKeyFile, TransactionKeyFile: cfg.TransactionKeyFile, RequiredGroup: cfg.RequiredGroup, Development: cfg.Development, HTTPClient: client})
 }
 
 func revokeAllSessions(ctx context.Context, path string) error {

@@ -1,0 +1,8 @@
+HTMX 2.0.4
+Source: https://github.com/bigskysoftware/htmx/releases/tag/v2.0.4
+License: Zero-Clause BSD (0BSD)
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES.

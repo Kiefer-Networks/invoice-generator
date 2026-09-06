@@ -334,6 +334,9 @@ func validateRedirect(raw string, development bool) (*url.URL, error) {
 	if u.Scheme != "https" && !(development && u.Scheme == "http" && isLoopback(u.Hostname())) {
 		return nil, errors.New("callback URL must use HTTPS")
 	}
+	if u.Path != "/auth/callback" || u.RawQuery != "" {
+		return nil, errors.New("callback URL must be the exact /auth/callback endpoint")
+	}
 	return u, nil
 }
 func isLoopback(host string) bool {
