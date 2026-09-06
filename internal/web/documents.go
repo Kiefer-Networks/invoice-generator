@@ -20,7 +20,7 @@ func documentHeaders(w http.ResponseWriter, disposition string) {
 }
 func (a *app) documentRoute(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/documents/"), "/")
-	if len(parts) != 2 || !documentIDPattern.MatchString(parts[0]) || (parts[1] != "download" && parts[1] != "retry") {
+	if len(parts) != 2 || !documentIDPattern.MatchString(parts[0]) || (parts[1] != "download" && parts[1] != "retry" && parts[1] != "paperless-retry") {
 		http.NotFound(w, r)
 		return
 	}
@@ -29,7 +29,7 @@ func (a *app) documentRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
-	if parts[1] == "retry" {
+	if parts[1] == "retry" || parts[1] == "paperless-retry" {
 		if r.Method != "POST" {
 			methodNotAllowed(w, "POST")
 			return
@@ -45,8 +45,14 @@ func (a *app) documentRoute(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		if e = a.store.DocumentRepository().Retry(r.Context(), id); e != nil {
-			http.Error(w, "document is already queued or ready", 409)
+		if parts[1] == "paperless-retry" {
+			requestID, _ := r.Context().Value(requestIDKey).(string)
+			e = a.store.PaperlessRepository().Retry(store.WithInvoiceAudit(r.Context(), p.Subject, requestID), id)
+		} else {
+			e = a.store.DocumentRepository().Retry(r.Context(), id)
+		}
+		if e != nil {
+			http.Error(w, "job is already queued or completed", 409)
 			return
 		}
 		if a.wakeDocuments != nil {

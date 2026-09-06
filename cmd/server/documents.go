@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/kiefer-networks/invoice-generator/internal/documents"
 	"github.com/kiefer-networks/invoice-generator/internal/jobs"
+	"github.com/kiefer-networks/invoice-generator/internal/paperless"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"net/http"
 	"os"
@@ -57,16 +58,39 @@ func startDocumentsWithStorage(ctx context.Context, db *store.Store, cfg Config,
 		storage.Close()
 		return nil, nil, nil, e
 	}
+	paperlessWorker := jobs.NewPaperlessWorker(db, storage, func() (*paperless.Client, error) {
+		if cfg.Development || cfg.PaperlessURL == "" {
+			return nil, errors.New("configuration_missing")
+		}
+		token, e := paperless.ReadToken(cfg.PaperlessTokenFile)
+		if e != nil {
+			return nil, e
+		}
+		c, e := paperless.NewClient(paperless.Config{URL: cfg.PaperlessURL, APIKey: token}, nil, false)
+		if e != nil {
+			return nil, errors.New("configuration_invalid")
+		}
+		return c, nil
+	})
+	paperlessCtx, cancelPaperless := context.WithCancel(ctx)
+	paperlessDone := make(chan struct{})
+	go func() { defer close(paperlessDone); paperlessWorker.Run(paperlessCtx) }()
 	var once sync.Once
 	var closeErr error
 	stop := func(ctx context.Context) error {
+		cancelPaperless()
+		select {
+		case <-paperlessDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		if e := runner.Stop(ctx); e != nil {
 			return e
 		}
 		once.Do(func() { closeErr = storage.Close() })
 		return closeErr
 	}
-	return svc, runner.Wake, stop, nil
+	return svc, func() { runner.Wake(); paperlessWorker.Wake() }, stop, nil
 }
 
 // serveHTTP joins shutdown before document storage and SQLite are closed.

@@ -64,6 +64,7 @@ type app struct {
 
 type pageData struct {
 	Document                                                           *store.Document
+	PaperlessJob                                                       *store.PaperlessJob
 	DocumentsEnabled                                                   bool
 	Finalized                                                          *invoicing.FinalizedInvoice
 	FinalizationKey, InvoiceConfirmation, InvoiceReason                string

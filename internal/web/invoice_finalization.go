@@ -170,6 +170,9 @@ func (a *app) renderFinalInvoice(w http.ResponseWriter, r *http.Request, f invoi
 	data.DocumentsEnabled = a.documents != nil
 	if doc, e := a.store.DocumentRepository().ForInvoice(r.Context(), f.ID); e == nil {
 		data.Document = &doc
+		if job, e := a.store.PaperlessRepository().ForDocument(r.Context(), doc.ID); e == nil {
+			data.PaperlessJob = &job
+		}
 	}
 	if problem != nil {
 		data.Errors = map[string]string{"reason": problem.Error()}

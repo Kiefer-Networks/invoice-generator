@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
+	"github.com/kiefer-networks/invoice-generator/internal/paperless"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"github.com/kiefer-networks/invoice-generator/internal/web"
 )
@@ -39,6 +40,7 @@ type Config struct {
 	BodyLimit                                            int64
 	PocketIDIssuer, PocketIDClientID, CallbackURL        string
 	ClientSecretFile, SessionKeyFile, TransactionKeyFile string
+	PaperlessTokenFile                                   string
 	RequiredGroup, PaperlessURL                          string
 }
 
@@ -97,6 +99,7 @@ func ParseConfig(args []string, getenv func(string) string) (Config, error) {
 	callback := fs.String("callback-url", value("INVOICE_CALLBACK_URL", ""), "fixed Pocket ID callback URL")
 	group := fs.String("required-group", value("INVOICE_REQUIRED_GROUP", "invoice-admins"), "required Pocket ID group")
 	paperless := fs.String("paperless-url", value("INVOICE_PAPERLESS_URL", ""), "Paperless URL")
+	paperlessToken := fs.String("paperless-token-file", value("INVOICE_PAPERLESS_TOKEN_FILE", ""), "protected mounted Paperless API token file")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
@@ -104,11 +107,24 @@ func ParseConfig(args []string, getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg := Config{DocumentRoot: *documentRoot, Listen: *listen, Database: *database, AllowedHosts: splitCSV(*hosts), TrustedProxies: trusted, TLSCertFile: *cert, TLSKeyFile: *key, Development: *dev, BodyLimit: defaultBodyLimit, PocketIDIssuer: *issuer, PocketIDClientID: *clientID, ClientSecretFile: *clientSecret, SessionKeyFile: *sessionKey, TransactionKeyFile: *transactionKey, CallbackURL: *callback, RequiredGroup: *group, PaperlessURL: *paperless}
+	cfg := Config{DocumentRoot: *documentRoot, Listen: *listen, Database: *database, AllowedHosts: splitCSV(*hosts), TrustedProxies: trusted, TLSCertFile: *cert, TLSKeyFile: *key, Development: *dev, BodyLimit: defaultBodyLimit, PocketIDIssuer: *issuer, PocketIDClientID: *clientID, ClientSecretFile: *clientSecret, SessionKeyFile: *sessionKey, TransactionKeyFile: *transactionKey, CallbackURL: *callback, RequiredGroup: *group, PaperlessURL: *paperless, PaperlessTokenFile: *paperlessToken}
 	return cfg, cfg.Validate()
 }
 
 func (c Config) Validate() error {
+	if c.Development && c.PaperlessTokenFile != "" {
+		return errors.New("development cannot use a Paperless token file")
+	}
+	if c.PaperlessURL != "" {
+		if e := paperless.ValidateURL(c.PaperlessURL, false); e != nil {
+			return e
+		}
+	}
+	if c.PaperlessTokenFile != "" {
+		if _, e := paperless.ReadToken(c.PaperlessTokenFile); e != nil && e.Error() != "configuration_missing" {
+			return e
+		}
+	}
 	if !c.Development || c.DocumentRoot != "" {
 		if e := validateDocumentRoot(c.DocumentRoot); e != nil {
 			return e
