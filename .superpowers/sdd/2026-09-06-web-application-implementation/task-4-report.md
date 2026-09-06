@@ -172,3 +172,42 @@ The race command was attempted and remains unavailable only because this Windows
 ```text
 go: -race requires cgo; enable cgo by setting CGO_ENABLED=1
 ```
+
+## Fix round 3: recorded migration 003 repair
+
+### RED evidence
+
+`TestCustomerKeyRepairMigrationUpgradesRecorded003WithoutChecksumDrift` first seeded a populated database with migrations 001, 002, and 003 already recorded, then inserted accented customers with one stale and one empty normalized-key pair. The initial focused run failed because only three migrations were embedded:
+
+```text
+repair migration is missing
+```
+
+That reproduces the upgrade boundary: a recorded migration 003 is correctly skipped, so changing its former backfill hook cannot repair databases that already applied it.
+
+### Fixes and migration coordination
+
+- Added immutable migration 004, `repair_customer_normalized_keys`; migration 003 SQL and its recorded checksum remain unchanged.
+- Migration 004 executes the existing Unicode key backfill through the same dedicated connection and `BEGIN IMMEDIATE` transaction used by the migration runner. It recomputes every pre-existing customer key before recording version 004, so a concurrent SQLite writer cannot overwrite a newer customer edit with a stale key snapshot.
+- Clean installations safely apply both migrations: 003 adds the key columns and performs its initial backfill; 004 repeats the idempotent repair under the same writer coordination.
+- The runtime `CustomerRepository.List` remains read-only and does not scan or rewrite customer rows.
+
+### GREEN and verification
+
+The regression now proves a database already recorded through 003 repairs empty and stale keys, returns accented search results in deterministic cursor order, preserves the version-003 checksum through migration validation, records exactly four migrations, and remains idempotent on a second `Migrate` call.
+
+Passed:
+
+```text
+go test ./internal/store -run 'TestMigrateUpgradesOriginalSchema|TestCustomerKeyRepairMigrationUpgradesRecorded003WithoutChecksumDrift|TestCustomerKeyMigrationBackfillsPopulatedDatabaseUnderWriterLock' -v
+go test ./internal/store ./internal/web -run 'Company|Customer|Migrate' -v
+go test ./...
+go vet ./...
+git diff --check
+```
+
+The focused and full race command was attempted; it remains unavailable only because this Windows toolchain reports:
+
+```text
+go: -race requires cgo; enable cgo by setting CGO_ENABLED=1
+```

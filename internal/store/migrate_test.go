@@ -168,8 +168,8 @@ func TestMigrateUpgradesOriginalSchema(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationsApplied); err != nil {
 		t.Fatal(err)
 	}
-	if migrationsApplied != 3 {
-		t.Fatalf("migration count=%d, want 3", migrationsApplied)
+	if migrationsApplied != 4 {
+		t.Fatalf("migration count=%d, want 4", migrationsApplied)
 	}
 }
 
@@ -227,6 +227,92 @@ func TestCustomerKeyMigrationBackfillsPopulatedDatabaseUnderWriterLock(t *testin
 	wantSearch, wantSort := customerKeys(CustomerInput{Number: "C-001", DisplayName: "Éclair Studio"})
 	if searchKey != wantSearch || sortKey != wantSort {
 		t.Fatalf("backfilled keys = %q, %q; want %q, %q", searchKey, sortKey, wantSearch, wantSort)
+	}
+}
+
+func TestCustomerKeyRepairMigrationUpgradesRecorded003WithoutChecksumDrift(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.ensureMigrationTable(ctx); err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := embeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrations) < 4 {
+		t.Fatalf("repair migration is missing: %#v", migrations)
+	}
+	for _, item := range migrations[:3] {
+		if _, err := s.db.ExecContext(ctx, item.sql); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, '2026-09-06T00:00:00Z')`, item.version, item.name, item.checksum); err != nil {
+			t.Fatal(err)
+		}
+	}
+	customers := []struct{ id, number, name, searchKey, sortKey string }{
+		{"legacy-eclair", "C-001", "Éclair Studio", "stale", "stale"},
+		{"legacy-ecole", "C-002", "École Conseil", "", ""},
+	}
+	for _, customer := range customers {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO customers (id, number, display_name, country, preferred_language, currency, search_key, sort_key) VALUES (?, ?, ?, 'DE', 'de', 'EUR', ?, ?)`, customer.id, customer.number, customer.name, customer.searchKey, customer.sortKey); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var beforeChecksum string
+	if err := s.db.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version=3`).Scan(&beforeChecksum); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, customer := range customers {
+		var searchKey, sortKey string
+		if err := s.db.QueryRowContext(ctx, `SELECT search_key, sort_key FROM customers WHERE id=?`, customer.id).Scan(&searchKey, &sortKey); err != nil {
+			t.Fatal(err)
+		}
+		wantSearch, wantSort := customerKeys(CustomerInput{Number: customer.number, DisplayName: customer.name})
+		if searchKey != wantSearch || sortKey != wantSort {
+			t.Fatalf("%s keys = %q, %q; want %q, %q", customer.id, searchKey, sortKey, wantSearch, wantSort)
+		}
+	}
+	page, err := s.CustomerRepository().List(ctx, CustomerListOptions{Search: "é", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Customers) != 1 || page.Customers[0].ID != "legacy-eclair" || page.NextCursor == "" {
+		t.Fatalf("repaired first page = %#v", page)
+	}
+	page, err = s.CustomerRepository().List(ctx, CustomerListOptions{Search: "é", Limit: 1, Cursor: page.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Customers) != 1 || page.Customers[0].ID != "legacy-ecole" || page.NextCursor != "" {
+		t.Fatalf("repaired second page = %#v", page)
+	}
+	var afterChecksum string
+	if err := s.db.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version=3`).Scan(&afterChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if afterChecksum != beforeChecksum {
+		t.Fatalf("migration 003 checksum changed from %q to %q", beforeChecksum, afterChecksum)
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var applied int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied != 4 {
+		t.Fatalf("migration count after idempotent repair = %d, want 4", applied)
 	}
 }
 

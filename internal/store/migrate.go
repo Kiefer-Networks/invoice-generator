@@ -140,7 +140,7 @@ func (s *Store) applyMigration(ctx context.Context, migration migration) (err er
 		if _, err = conn.ExecContext(ctx, migration.sql); err != nil {
 			return fmt.Errorf("apply migration %03d: %w", migration.version, err)
 		}
-		if migration.version == 3 {
+		if migration.version == 3 || migration.version == 4 {
 			if err = backfillCustomerKeysOnConn(ctx, conn); err != nil {
 				return fmt.Errorf("backfill migration %03d: %w", migration.version, err)
 			}
