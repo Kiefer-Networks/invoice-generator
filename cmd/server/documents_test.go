@@ -43,7 +43,7 @@ func TestDocumentLifecycleStartRecoveryStop(t *testing.T) {
 		t.Fatal(e)
 	}
 	cfg := testConfig(t)
-	cfg.DocumentRoot = filepath.Join(t.TempDir(), "docs")
+	cfg.DocumentRoot = t.TempDir()
 	svc, wake, stop, e := startDocuments(ctx, db, cfg)
 	if e != nil {
 		t.Fatal(e)

@@ -15,13 +15,10 @@ import (
 )
 
 func validateDocumentRoot(path string) error {
-	if path == "" || !filepath.IsAbs(path) {
-		return errors.New("an absolute document root is required")
+	if e := documents.ValidateRoot(path); e != nil {
+		return e
 	}
 	info, e := os.Lstat(path)
-	if os.IsNotExist(e) {
-		return nil
-	}
 	if e != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("document root must be a real directory")
 	}
@@ -31,6 +28,10 @@ func validateDocumentRoot(path string) error {
 	return nil
 }
 func startDocuments(ctx context.Context, db *store.Store, cfg Config) (*documents.Service, func(), func(context.Context) error, error) {
+	return startDocumentsWithStorage(ctx, db, cfg, documents.NewStorage)
+}
+
+func startDocumentsWithStorage(ctx context.Context, db *store.Store, cfg Config, openStorage func(string, int64) (*documents.Storage, error)) (*documents.Service, func(), func(context.Context) error, error) {
 	root := cfg.DocumentRoot
 	if root == "" && cfg.Development {
 		var e error
@@ -42,7 +43,7 @@ func startDocuments(ctx context.Context, db *store.Store, cfg Config) (*document
 	if e := validateDocumentRoot(root); e != nil {
 		return nil, nil, nil, e
 	}
-	storage, e := documents.NewStorage(root, 20<<20)
+	storage, e := openStorage(root, 20<<20)
 	if e != nil {
 		return nil, nil, nil, e
 	}

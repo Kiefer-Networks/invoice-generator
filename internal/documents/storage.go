@@ -9,7 +9,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -32,18 +31,7 @@ func NewStorage(path string, max int64) (*Storage, error) {
 	if max <= 0 {
 		return nil, errors.New("positive document limit required")
 	}
-	abs, e := filepath.Abs(path)
-	if e != nil {
-		return nil, e
-	}
-	if e = os.MkdirAll(abs, 0700); e != nil {
-		return nil, e
-	}
-	info, e := os.Lstat(abs)
-	if e != nil || info.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("invalid document root")
-	}
-	root, e := os.OpenRoot(abs)
+	root, e := openProvisionedRoot(path)
 	if e != nil {
 		return nil, e
 	}

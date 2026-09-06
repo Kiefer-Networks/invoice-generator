@@ -83,7 +83,7 @@ func ParseConfig(args []string, getenv func(string) string) (Config, error) {
 	fs.SetOutput(os.Stderr)
 	listen := fs.String("listen", value("INVOICE_LISTEN", ""), "listener address")
 	database := fs.String("database", value("INVOICE_DATABASE", ""), "SQLite database")
-	documentRoot := fs.String("document-root", value("INVOICE_DOCUMENT_ROOT", ""), "absolute protected document storage root")
+	documentRoot := fs.String("document-root", value("INVOICE_DOCUMENT_ROOT", ""), "absolute, durably pre-provisioned protected document storage root")
 	hosts := fs.String("allowed-hosts", value("INVOICE_ALLOWED_HOSTS", ""), "comma-separated hosts")
 	proxies := fs.String("trusted-proxies", value("INVOICE_TRUSTED_PROXIES", ""), "comma-separated proxy CIDRs")
 	cert := fs.String("tls-cert", value("INVOICE_TLS_CERT", ""), "TLS certificate file")
