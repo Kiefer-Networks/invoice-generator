@@ -68,6 +68,7 @@ type pageData struct {
 	CatalogInput                                   store.CatalogInput
 	CatalogVersion                                 int
 	CatalogAction, CatalogTitle, CatalogState      string
+	CatalogQuery, CatalogCurrency                  string
 	Errors                                         map[string]string
 	Raw                                            map[string]string
 }
@@ -118,7 +119,9 @@ func templateFunctions() template.FuncMap {
 			}
 			return ""
 		},
-		"string": func(value int) string { return strconv.Itoa(value) },
+		"catalogMinor": formatMinor,
+		"catalogTax":   formatTaxRate,
+		"string":       func(value int) string { return strconv.Itoa(value) },
 	}
 }
 

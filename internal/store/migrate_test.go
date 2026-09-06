@@ -316,6 +316,68 @@ func TestCustomerKeyRepairMigrationUpgradesRecorded003WithoutChecksumDrift(t *te
 	}
 }
 
+func TestCatalogKeyMigrationUpgradesPre005DatabaseWithoutChecksumDrift(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.ensureMigrationTable(ctx); err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := embeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrations) < 5 {
+		t.Fatalf("catalog migration is missing: %#v", migrations)
+	}
+	for _, migration := range migrations[:4] {
+		if _, err := s.db.ExecContext(ctx, migration.sql); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, '2026-09-06T00:00:00Z')`, migration.version, migration.name, migration.checksum); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []struct{ id, number, title string }{{"legacy-eclair", "G-001", "Éclair service"}, {"legacy-ecole", "G-002", "École service"}} {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO catalog_items (id, number, kind, title, unit, net_unit_price_minor, tax_rate_scaled) VALUES (?, ?, 'service', ?, 'hour', 1250, 1900)`, item.id, item.number, item.title); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var beforeChecksum string
+	if err := s.db.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version=4`).Scan(&beforeChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.CatalogRepository().List(ctx, CatalogListOptions{Search: "é", Limit: 1})
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != "legacy-eclair" || page.NextCursor == "" {
+		t.Fatalf("first upgraded catalog page=%#v, %v", page, err)
+	}
+	page, err = s.CatalogRepository().List(ctx, CatalogListOptions{Search: "é", Limit: 1, Cursor: page.NextCursor})
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != "legacy-ecole" || page.NextCursor != "" {
+		t.Fatalf("second upgraded catalog page=%#v, %v", page, err)
+	}
+	var afterChecksum string
+	if err := s.db.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version=4`).Scan(&afterChecksum); err != nil {
+		t.Fatal(err)
+	}
+	if afterChecksum != beforeChecksum {
+		t.Fatalf("migration 004 checksum changed from %q to %q", beforeChecksum, afterChecksum)
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var applied int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != 5 {
+		t.Fatalf("idempotent catalog migration count=%d, %v", applied, err)
+	}
+}
+
 func openMigratedStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "app.db"))

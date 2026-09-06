@@ -208,10 +208,10 @@ func normalizeCatalog(in CatalogInput) (CatalogInput, error) {
 		return in, err
 	}
 	if in.UnitPriceMinor < 0 {
-		return in, fieldError("unit_price_minor", "must not be negative")
+		return in, fieldError("unit_price", "must not be negative")
 	}
 	if in.TaxRateBasisPoints < 0 || in.TaxRateBasisPoints > 10000 {
-		return in, fieldError("tax_rate_basis_points", "must be between 0 and 10000")
+		return in, fieldError("tax_rate", "must be between 0 and 10000")
 	}
 	return in, nil
 }
