@@ -638,7 +638,7 @@ func (m *Manager) openTransaction(cookie *http.Cookie) (transaction, error) {
 		return transaction{}, errors.New("missing authorization transaction")
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(cookie.Value)
-	if err != nil || len(raw) < m.transactionAEAD.NonceSize() {
+	if err != nil || base64.RawURLEncoding.EncodeToString(raw) != cookie.Value || len(raw) < m.transactionAEAD.NonceSize() {
 		return transaction{}, errors.New("invalid authorization transaction")
 	}
 	plain, err := m.transactionAEAD.Open(nil, raw[:m.transactionAEAD.NonceSize()], raw[m.transactionAEAD.NonceSize():], nil)

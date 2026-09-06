@@ -70,7 +70,12 @@ func TestAuthorizationTransactionRejectsTamperingAndReplayBeforeExchange(t *test
 	callback, _ := url.Parse("https://app.example.test/auth/callback?code=code-1&state=" + state)
 
 	tampered := *cookie
-	tampered.Value = cookie.Value[:len(cookie.Value)-1] + "A"
+	rawCookie, err := base64.RawURLEncoding.DecodeString(cookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawCookie[len(rawCookie)-1] ^= 1
+	tampered.Value = base64.RawURLEncoding.EncodeToString(rawCookie)
 	if _, err := manager.Callback(context.Background(), callback, &tampered); err == nil {
 		t.Fatal("tampered transaction cookie was accepted")
 	}
@@ -87,6 +92,61 @@ func TestAuthorizationTransactionRejectsTamperingAndReplayBeforeExchange(t *test
 	if provider.exchanges() != 1 {
 		t.Fatalf("token exchanges=%d, want 1", provider.exchanges())
 	}
+}
+
+func TestAuthorizationTransactionRejectsNonCanonicalCookieWithoutConsumingTransaction(t *testing.T) {
+	t.Parallel()
+	provider := newTestProvider(t)
+	manager := newTestManager(t, provider, testStore(t))
+	now := time.Now().UTC().Truncate(time.Second).Add(123456789 * time.Nanosecond)
+	manager.now = func() time.Time { return now }
+	redirect, cookie, err := manager.Begin("/invoices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(redirect)
+	provider.setNonce(u.Query().Get("nonce"))
+	callback, _ := url.Parse("https://app.example.test/auth/callback?code=code-1&state=" + u.Query().Get("state"))
+
+	nonCanonical := *cookie
+	nonCanonical.Value = alternateRawURLSpelling(t, cookie.Value)
+	if _, err := manager.Callback(context.Background(), callback, &nonCanonical); err == nil {
+		t.Fatal("noncanonical transaction cookie was accepted")
+	}
+	if provider.exchanges() != 0 {
+		t.Fatal("noncanonical transaction cookie reached token endpoint")
+	}
+	if _, err := manager.Callback(context.Background(), callback, cookie); err != nil {
+		t.Fatalf("canonical transaction cookie was consumed by rejected alias: %v", err)
+	}
+	if provider.exchanges() != 1 {
+		t.Fatalf("token exchanges=%d, want 1", provider.exchanges())
+	}
+}
+
+func alternateRawURLSpelling(t *testing.T, value string) string {
+	t.Helper()
+	if remainder := len(value) % 4; remainder != 2 && remainder != 3 {
+		t.Fatalf("test transaction cookie has no unused base64 bits: encoded length %% 4 = %d", remainder)
+	}
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	index := strings.IndexByte(alphabet, value[len(value)-1])
+	if index < 0 {
+		t.Fatal("test transaction cookie is not raw URL base64")
+	}
+	alternate := value[:len(value)-1] + string(alphabet[index^1])
+	originalBytes, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alternateBytes, err := base64.RawURLEncoding.DecodeString(alternate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alternate == value || string(alternateBytes) != string(originalBytes) {
+		t.Fatal("alternate spelling does not decode to the original transaction bytes")
+	}
+	return alternate
 }
 
 func TestAuthorizationTransactionRejectsDuplicateStateAndOAuthError(t *testing.T) {
