@@ -105,11 +105,11 @@ func (s *Store) applyMigration(ctx context.Context, migration migration) (err er
 	}
 	defer func() { _ = conn.Close() }()
 
-	var checksum string
-	err = conn.QueryRowContext(ctx, "SELECT checksum FROM schema_migrations WHERE version = ?", migration.version).Scan(&checksum)
+	var name, checksum string
+	err = conn.QueryRowContext(ctx, "SELECT name, checksum FROM schema_migrations WHERE version = ?", migration.version).Scan(&name, &checksum)
 	switch {
 	case err == nil:
-		if checksum != migration.checksum {
+		if name != migration.name || checksum != migration.checksum {
 			return fmt.Errorf("migration %03d checksum drift", migration.version)
 		}
 		return nil

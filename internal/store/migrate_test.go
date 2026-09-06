@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -80,6 +81,61 @@ func TestSchemaConstraints(t *testing.T) {
 	mustReject(t, s.db, ctx, `INSERT INTO invoice_items (id, invoice_id, position, title_snapshot, quantity_scaled, net_unit_price_minor, tax_rate_scaled) VALUES ('item-final', 'invoice-number', 1, 'Immutable item', 1000, 100, 1900)`)
 }
 
+func TestSchemaRejectsInvoiceItemReassignmentToFinalizedInvoice(t *testing.T) {
+	t.Parallel()
+
+	s := openMigratedStore(t)
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO customers (id, number, display_name) VALUES ('customer-reassign', 'C-REASSIGN', 'Customer')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO invoices (id, customer_id, state, currency) VALUES ('invoice-draft', 'customer-reassign', 'draft', 'EUR')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO invoices (id, customer_id, state, number, currency, company_snapshot, customer_snapshot, payment_snapshot, locale_snapshot, tax_snapshot, note_snapshot) VALUES ('invoice-finalized', 'customer-reassign', 'finalized', 'F-REASSIGN', 'EUR', '{}', '{}', '{}', '{}', '{}', '{}')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO invoice_items (id, invoice_id, position, title_snapshot, quantity_scaled, net_unit_price_minor, tax_rate_scaled) VALUES ('item-reassign', 'invoice-draft', 1, 'Draft item', 1000, 100, 1900)`); err != nil {
+		t.Fatal(err)
+	}
+
+	mustReject(t, s.db, ctx, `UPDATE invoice_items SET invoice_id = 'invoice-finalized' WHERE id = 'item-reassign'`)
+}
+
+func TestSchemaRejectsFractionalScaledAndMoneyValues(t *testing.T) {
+	t.Parallel()
+
+	s := openMigratedStore(t)
+	ctx := context.Background()
+	for _, column := range []string{"net_unit_price_minor", "tax_rate_scaled"} {
+		mustReject(t, s.db, ctx, fmt.Sprintf(`INSERT INTO catalog_items (id, number, title, kind, net_unit_price_minor, tax_rate_scaled) VALUES ('catalog-%[1]s', 'C-%[1]s', 'Catalog item', 'service', %[2]s, %[3]s)`, column, fractionalOrInteger(column, "net_unit_price_minor", "100"), fractionalOrInteger(column, "tax_rate_scaled", "1900")))
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO customers (id, number, display_name) VALUES ('customer-fractional', 'C-FRACTIONAL', 'Customer')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"net_total_minor", "tax_total_minor", "gross_total_minor"} {
+		mustReject(t, s.db, ctx, fmt.Sprintf(`INSERT INTO invoices (id, customer_id, state, number, currency, company_snapshot, customer_snapshot, payment_snapshot, locale_snapshot, tax_snapshot, note_snapshot, %[1]s) VALUES ('invoice-%[1]s', 'customer-fractional', 'finalized', 'F-%[1]s', 'EUR', '{}', '{}', '{}', '{}', '{}', '{}', 1.5)`, column))
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO invoices (id, customer_id, state, currency) VALUES ('invoice-item-fractional', 'customer-fractional', 'draft', 'EUR')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"quantity_scaled", "net_unit_price_minor", "tax_rate_scaled", "net_total_minor", "tax_total_minor", "gross_total_minor"} {
+		mustReject(t, s.db, ctx, fmt.Sprintf(`INSERT INTO invoice_items (id, invoice_id, position, title_snapshot, quantity_scaled, net_unit_price_minor, tax_rate_scaled, net_total_minor, tax_total_minor, gross_total_minor) VALUES ('item-%[1]s', 'invoice-item-fractional', 1, 'Item', %[2]s, %[3]s, %[4]s, %[5]s, %[6]s, %[7]s)`, column, fractionalOrInteger(column, "quantity_scaled", "1000"), fractionalOrInteger(column, "net_unit_price_minor", "100"), fractionalOrInteger(column, "tax_rate_scaled", "1900"), fractionalOrInteger(column, "net_total_minor", "100000"), fractionalOrInteger(column, "tax_total_minor", "19000"), fractionalOrInteger(column, "gross_total_minor", "119000")))
+	}
+}
+
+func TestMigrateRejectsNameDrift(t *testing.T) {
+	t.Parallel()
+
+	s := openMigratedStore(t)
+	if _, err := s.db.ExecContext(context.Background(), `UPDATE schema_migrations SET name = 'changed' WHERE version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Migrate(context.Background()); err == nil {
+		t.Fatal("Migrate accepted a changed migration name")
+	}
+}
+
 func openMigratedStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "app.db"))
@@ -98,4 +154,11 @@ func mustReject(t *testing.T, db *sql.DB, ctx context.Context, statement string)
 	if _, err := db.ExecContext(ctx, statement); err == nil {
 		t.Fatalf("statement unexpectedly succeeded: %s", statement)
 	}
+}
+
+func fractionalOrInteger(column, fractionalColumn, integer string) string {
+	if column == fractionalColumn {
+		return "1.5"
+	}
+	return integer
 }

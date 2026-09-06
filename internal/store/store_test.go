@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -15,6 +17,34 @@ func TestOpenAppliesSecurityPragmas(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+
+	assertSecurityPragmas(t, s)
+}
+
+func TestOpenEscapesReservedPathCharacters(t *testing.T) {
+	t.Parallel()
+
+	name := "app?#reserved.db"
+	if runtime.GOOS == "windows" {
+		// Windows reserves '?' in file names, so '#' is the supported
+		// filesystem-backed URI delimiter regression case on this platform.
+		name = "app#reserved.db"
+	}
+	path := filepath.Join(t.TempDir(), name)
+	s, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("intended database path was not created: %v", err)
+	}
+	assertSecurityPragmas(t, s)
+}
+
+func assertSecurityPragmas(t *testing.T, s *Store) {
+	t.Helper()
 
 	checks := map[string]string{
 		"foreign_keys":   "1",

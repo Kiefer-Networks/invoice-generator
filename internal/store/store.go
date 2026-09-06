@@ -5,7 +5,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -53,10 +55,18 @@ func (s *Store) Close() error {
 }
 
 func sqliteDSN(path string) string {
-	return "file:" + filepath.ToSlash(path) + "?" +
-		"_pragma=foreign_keys(1)&" +
-		"_pragma=journal_mode(WAL)&" +
-		"_pragma=busy_timeout(5000)&" +
-		"_pragma=trusted_schema(0)&" +
-		"_pragma=synchronous(FULL)"
+	escapedPath := strings.NewReplacer(
+		"%", "%25",
+		"?", "%3F",
+		"#", "%23",
+	).Replace(filepath.ToSlash(path))
+	u := &url.URL{Scheme: "file", Opaque: escapedPath}
+	query := u.Query()
+	query.Add("_pragma", "foreign_keys(1)")
+	query.Add("_pragma", "journal_mode(WAL)")
+	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "trusted_schema(0)")
+	query.Add("_pragma", "synchronous(FULL)")
+	u.RawQuery = query.Encode()
+	return u.String()
 }
