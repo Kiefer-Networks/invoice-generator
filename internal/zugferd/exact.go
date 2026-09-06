@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
+	"github.com/kiefer-networks/invoice-generator/internal/units"
 	"io"
 	"io/fs"
 	"os"
@@ -26,7 +27,7 @@ func GenerateSnapshot(s invoicing.Snapshot) ([]byte, error) {
 	if e := invoicing.ValidateFinalization(s.Draft, s.Company); e != nil {
 		return nil, e
 	}
-	f := template.FuncMap{"esc": xmlEsc, "money": decimal, "unit": mapUnitCode, "qty": func(v int64) string { return fmt.Sprintf("%d.%04d", v/10000, v%10000) }, "base": func(l invoicing.DraftLine) string { return decimal(lineBase(l)) }, "allowance": func(l invoicing.DraftLine) string { return decimal(lineBase(l) - l.NetMinor) }, "date": func(v time.Time) string { return v.Format("20060102") }, "service": func(v string) string { return strings.ReplaceAll(v, "-", "") }, "inc": func(v int) int { return v + 1 }, "cat": func(v int64) string {
+	f := template.FuncMap{"esc": xmlEsc, "money": decimal, "unit": units.Code, "qty": func(v int64) string { return fmt.Sprintf("%d.%04d", v/10000, v%10000) }, "base": func(l invoicing.DraftLine) string { return decimal(lineBase(l)) }, "allowance": func(l invoicing.DraftLine) string { return decimal(lineBase(l) - l.NetMinor) }, "date": func(v time.Time) string { return v.Format("20060102") }, "service": func(v string) string { return strings.ReplaceAll(v, "-", "") }, "inc": func(v int) int { return v + 1 }, "cat": func(v int64) string {
 		if v == 0 {
 			return "Z"
 		}

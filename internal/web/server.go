@@ -21,6 +21,7 @@ import (
 	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
 	"github.com/kiefer-networks/invoice-generator/internal/render"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
+	"github.com/kiefer-networks/invoice-generator/internal/units"
 )
 
 const defaultBodyLimit int64 = 1 << 20
@@ -129,6 +130,7 @@ func New(deps Dependencies) (http.Handler, error) {
 
 func templateFunctions() template.FuncMap {
 	return template.FuncMap{
+		"invoiceUnits": func() string { return units.Help },
 		"formValue": func(raw map[string]string, name, fallback string) string {
 			if raw != nil {
 				if value, ok := raw[name]; ok {

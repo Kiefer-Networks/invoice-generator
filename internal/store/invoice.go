@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kiefer-networks/invoice-generator/internal/units"
 	"strconv"
 	"strings"
 	"time"
@@ -385,6 +386,9 @@ func (r *InvoiceRepository) draftMissingOrConflict(ctx context.Context, id strin
 	return ErrConflict
 }
 func validInvoiceLine(line InvoiceLine) error {
+	if _, err := units.Code(line.Unit); err != nil {
+		return fieldError("unit", err.Error())
+	}
 	if strings.TrimSpace(line.Title) == "" || strings.TrimSpace(line.Unit) == "" || line.QuantityScaled <= 0 || line.UnitPriceMinor < 0 || line.DiscountBasisPoints < 0 || line.DiscountBasisPoints > 10000 || line.TaxRateBasisPoints < 0 || line.TaxRateBasisPoints > 10000 || line.NetMinor < 0 || line.TaxMinor < 0 || line.GrossMinor < 0 {
 		return fieldError("line", "is invalid")
 	}

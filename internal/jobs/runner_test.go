@@ -76,3 +76,58 @@ func TestRunnerBoundedWakeAndCancellation(t *testing.T) {
 	}
 	r.Stop(ctx)
 }
+func TestRunnerIdleWakeDoesNotBusyPoll(t *testing.T) {
+	ctx := context.Background()
+	s, e := store.Open(ctx, filepath.Join(t.TempDir(), "idle.db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	if e = s.Migrate(ctx); e != nil {
+		t.Fatal(e)
+	}
+	called := make(chan struct{}, 2)
+	r := New(s.DocumentRepository(), func(ctx context.Context, j store.DocumentJob) error {
+		called <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	r.interval = time.Hour
+	var polls atomic.Int32
+	initial := make(chan struct{}, 2)
+	r.now = func() time.Time {
+		if polls.Add(1) <= 2 {
+			initial <- struct{}{}
+		}
+		return time.Now().Add(time.Second)
+	}
+	if e = r.Start(ctx); e != nil {
+		t.Fatal(e)
+	}
+	defer r.Stop(ctx)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-initial:
+		case <-time.After(3 * time.Second):
+			t.Fatal("idle claim not attempted")
+		}
+	}
+	time.Sleep(30 * time.Millisecond)
+	before := polls.Load()
+	if before != 2 {
+		t.Fatal("runner busy polls without work", before)
+	}
+	_, e = s.DB().Exec(`INSERT INTO customers(id,number,display_name) VALUES('idle','idle','Buyer'); INSERT INTO invoices(id,customer_id,state,currency,number,company_snapshot,customer_snapshot,payment_snapshot,locale_snapshot,tax_snapshot,note_snapshot,frozen_snapshot) VALUES('idle','idle','finalized','EUR','IDLE','{}','{}','{}','{}','{}','{}','{}')`)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.DocumentRepository().Enqueue(ctx, "idle"); e != nil {
+		t.Fatal(e)
+	}
+	r.Wake()
+	select {
+	case <-called:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Wake did not resume idle workers")
+	}
+}

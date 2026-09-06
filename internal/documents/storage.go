@@ -23,8 +23,9 @@ type Artifact struct {
 	Size        int64
 }
 type Storage struct {
-	root *os.Root
-	max  int64
+	publicationBarrier func(*os.Root, string) error
+	root               *os.Root
+	max                int64
 }
 
 func NewStorage(path string, max int64) (*Storage, error) {
@@ -46,7 +47,7 @@ func NewStorage(path string, max int64) (*Storage, error) {
 	if e != nil {
 		return nil, e
 	}
-	return &Storage{root: root, max: max}, nil
+	return &Storage{root: root, max: max, publicationBarrier: syncPublication}, nil
 }
 func (s *Storage) Close() error { return s.root.Close() }
 func opaqueKey() (string, error) {
@@ -86,6 +87,11 @@ func (s *Storage) Put(r io.Reader) (a Artifact, err error) {
 		return a, ErrIntegrity
 	}
 	if e = s.root.Rename(tmp, key); e != nil {
+		return a, e
+	}
+	// A failed metadata flush has an uncertain persistence outcome. Keep the
+	// renamed orphan for recovery, but never return publishable metadata.
+	if e = s.publicationBarrier(s.root, key); e != nil {
 		return a, e
 	}
 	return Artifact{Key: key, SHA256: hex.EncodeToString(h.Sum(nil)), Size: n}, nil

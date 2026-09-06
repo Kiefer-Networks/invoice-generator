@@ -106,3 +106,49 @@ func TestDocumentServerDrainsActiveRequestsBeforeStorageClose(t *testing.T) {
 	}
 	<-requestDone
 }
+func TestDocumentServerForcedShutdownTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(entered); <-release })}
+	ln, e := net.Listen("tcp", "127.0.0.1:0")
+	if e != nil {
+		t.Fatal(e)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- serveHTTPWithGrace(ctx, srv, func() error { return srv.Serve(ln) }, 20*time.Millisecond)
+	}()
+	requestDone := make(chan error, 1)
+	go func() {
+		resp, e := http.Get("http://" + ln.Addr().String())
+		if resp != nil {
+			resp.Body.Close()
+		}
+		requestDone <- e
+	}()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("not serving")
+	}
+	cancel()
+	select {
+	case e := <-done:
+		if e != nil {
+			t.Fatal(e)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("forced shutdown exceeded its bound")
+	}
+	select {
+	case e := <-requestDone:
+		if e == nil {
+			t.Fatal("blocked connection was not closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("forced shutdown left connection open")
+	}
+}

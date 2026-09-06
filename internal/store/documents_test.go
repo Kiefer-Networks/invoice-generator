@@ -184,3 +184,40 @@ func TestDocumentCompletionBindsLeaseToDocument(t *testing.T) {
 		t.Fatal("rejected command changed actual job", e)
 	}
 }
+func TestDocumentExactRetryBoundaries(t *testing.T) {
+	s, _, d := populatedDraft(t)
+	ctx := context.Background()
+	_, e := s.db.Exec(`UPDATE invoices SET state='finalized',number='BOUNDARIES',company_snapshot='{}',payment_snapshot='{}',locale_snapshot='{}',tax_snapshot='{}',note_snapshot='{}',frozen_snapshot='{}' WHERE id=?`, d.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	now := time.Unix(2000000000, 0)
+	r := s.DocumentRepository()
+	j, e := r.Claim(ctx, now, time.Minute)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for i, seconds := range []int{30, 60, 120, 240} {
+		if j.Attempts != i+1 {
+			t.Fatal(j)
+		}
+		if e = r.Fail(ctx, j, now, "render_failed", 5); e != nil {
+			t.Fatal(e)
+		}
+		due := now.Add(time.Duration(seconds) * time.Second)
+		if _, e = r.Claim(ctx, due.Add(-time.Nanosecond), time.Minute); !errors.Is(e, ErrNotFound) {
+			t.Fatal("retry before boundary", i, e)
+		}
+		j, e = r.Claim(ctx, due, time.Minute)
+		if e != nil {
+			t.Fatal("retry at boundary", i, e)
+		}
+		now = due
+	}
+	if e = r.Fail(ctx, j, now, "render_failed", 5); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = r.Claim(ctx, now.Add(time.Hour), time.Minute); !errors.Is(e, ErrNotFound) {
+		t.Fatal("max attempts not terminal", e)
+	}
+}

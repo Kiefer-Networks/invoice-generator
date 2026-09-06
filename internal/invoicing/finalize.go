@@ -7,6 +7,7 @@ import (
 	"github.com/kiefer-networks/invoice-generator/internal/config"
 	"github.com/kiefer-networks/invoice-generator/internal/render"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
+	"github.com/kiefer-networks/invoice-generator/internal/units"
 	"math"
 	"strings"
 	"time"
@@ -136,6 +137,9 @@ func ValidateFinalization(d Draft, c store.CompanyInput) error {
 		return &store.ValidationError{Field: "lines", Message: "at least one position is required"}
 	}
 	for _, l := range d.Lines {
+		if _, err := units.Code(l.Unit); err != nil {
+			return &store.ValidationError{Field: "unit", Message: err.Error()}
+		}
 		if strings.TrimSpace(l.Title) == "" || strings.TrimSpace(l.Unit) == "" {
 			return &store.ValidationError{Field: "lines", Message: "title and unit are required"}
 		}

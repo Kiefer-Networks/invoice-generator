@@ -70,13 +70,17 @@ func startDocuments(ctx context.Context, db *store.Store, cfg Config) (*document
 
 // serveHTTP joins shutdown before document storage and SQLite are closed.
 func serveHTTP(ctx context.Context, server *http.Server, listen func() error) error {
+	return serveHTTPWithGrace(ctx, server, listen, 10*time.Second)
+}
+
+func serveHTTPWithGrace(ctx context.Context, server *http.Server, listen func() error, grace time.Duration) error {
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		select {
 		case <-ctx.Done():
-			drain, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			drain, cancel := context.WithTimeout(context.Background(), grace)
 			defer cancel()
 			if e := server.Shutdown(drain); e != nil {
 				_ = server.Close()

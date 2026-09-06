@@ -119,22 +119,6 @@ func TestGenerateCIIEscapesXML(t *testing.T) {
 	}
 }
 
-func TestMapUnitCode(t *testing.T) {
-	cases := map[string]string{
-		"Stunde(n)": "HUR",
-		"hours":     "HUR",
-		"Stück":     "C62",
-		"kg":        "KGM",
-		"unknown-x": "C62", // default fallback
-		"":          "C62",
-	}
-	for in, want := range cases {
-		if got := mapUnitCode(in); got != want {
-			t.Errorf("mapUnitCode(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestConvertDate(t *testing.T) {
 	cases := map[string]string{
 		"01.03.2026": "20260301",

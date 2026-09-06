@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kiefer-networks/invoice-generator/internal/units"
 	"strings"
 	"time"
 )
@@ -203,6 +204,9 @@ func normalizeCatalog(in CatalogInput) (CatalogInput, error) {
 	}
 	if err := required(in.Unit, "unit", 64); err != nil {
 		return in, err
+	}
+	if _, err := units.Code(in.Unit); err != nil {
+		return in, fieldError("unit", err.Error())
 	}
 	if err := optional(in.Description, "description", 5000); err != nil {
 		return in, err
