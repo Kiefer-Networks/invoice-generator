@@ -103,6 +103,13 @@ func (s *DraftService) AddCatalogItem(ctx context.Context, id string, version in
 	if !item.Active {
 		return Draft{}, &store.ValidationError{Field: "catalog_item", Message: "must be active"}
 	}
+	company, companyErr := s.store.CompanyRepository().Get(ctx)
+	if companyErr != nil && !errors.Is(companyErr, store.ErrNotFound) {
+		return Draft{}, companyErr
+	}
+	if companyErr == nil && company.Currency != current.Currency {
+		return Draft{}, &store.ValidationError{Field: "catalog_item", Message: "uses the company currency " + company.Currency + ", which does not match this draft"}
+	}
 	line := DraftLine{CatalogItemID: item.ID, Title: item.Title, Description: item.Description, Unit: item.Unit, QuantityScaled: quantityScaled, UnitPriceMinor: int64(item.UnitPriceMinor), TaxRateBasisPoints: int64(item.TaxRateBasisPoints)}
 	lines := append(append([]DraftLine{}, current.Lines...), line)
 	totals, err := Calculate(linesForDraft(lines))

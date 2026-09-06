@@ -68,14 +68,19 @@ func (r *InvoiceRepository) CreateDraft(ctx context.Context, input InvoiceDraftI
 	return r.GetDraft(ctx, id)
 }
 func (r *InvoiceRepository) GetDraft(ctx context.Context, id string) (InvoiceDraft, error) {
-	draft, err := scanInvoiceDraft(r.store.db.QueryRowContext(ctx, `SELECT id, customer_id, number, state, currency, issue_date, due_date, customer_snapshot, version, net_total_minor, tax_total_minor, gross_total_minor FROM invoices WHERE id=?`, id))
+	tx, err := r.store.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return InvoiceDraft{}, fmt.Errorf("begin draft read: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	draft, err := scanInvoiceDraft(tx.QueryRowContext(ctx, `SELECT id, customer_id, number, state, currency, issue_date, due_date, customer_snapshot, version, net_total_minor, tax_total_minor, gross_total_minor FROM invoices WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return InvoiceDraft{}, ErrNotFound
 	}
 	if err != nil {
 		return InvoiceDraft{}, fmt.Errorf("get invoice draft: %w", err)
 	}
-	rows, err := r.store.db.QueryContext(ctx, `SELECT id, COALESCE(catalog_item_id,''), position, title_snapshot, description_snapshot, unit_snapshot, quantity_scaled, net_unit_price_minor, discount_basis_points, tax_rate_scaled, net_total_minor, tax_total_minor, gross_total_minor FROM invoice_items WHERE invoice_id=? ORDER BY position`, id)
+	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(catalog_item_id,''), position, title_snapshot, description_snapshot, unit_snapshot, quantity_scaled, net_unit_price_minor, discount_basis_points, tax_rate_scaled, net_total_minor, tax_total_minor, gross_total_minor FROM invoice_items WHERE invoice_id=? ORDER BY position`, id)
 	if err != nil {
 		return InvoiceDraft{}, fmt.Errorf("list invoice lines: %w", err)
 	}
@@ -89,6 +94,9 @@ func (r *InvoiceRepository) GetDraft(ctx context.Context, id string) (InvoiceDra
 	}
 	if err := rows.Err(); err != nil {
 		return InvoiceDraft{}, fmt.Errorf("list invoice lines: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return InvoiceDraft{}, fmt.Errorf("commit draft read: %w", err)
 	}
 	return draft, nil
 }
@@ -246,6 +254,16 @@ func (r *InvoiceRepository) ReorderLines(ctx context.Context, id string, version
 	}
 	if count != len(lineIDs) {
 		return InvoiceDraft{}, fieldError("lines", "do not match draft")
+	}
+	seen := make(map[string]struct{}, len(lineIDs))
+	for _, lineID := range lineIDs {
+		if lineID == "" {
+			return InvoiceDraft{}, fieldError("lines", "do not match draft")
+		}
+		if _, ok := seen[lineID]; ok {
+			return InvoiceDraft{}, fieldError("lines", "must not contain duplicates")
+		}
+		seen[lineID] = struct{}{}
 	}
 	for i, lineID := range lineIDs {
 		result, err := tx.ExecContext(ctx, `UPDATE invoice_items SET position=? WHERE id=? AND invoice_id=?`, count+i+1, lineID, id)

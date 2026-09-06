@@ -2,14 +2,24 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
+
+func formatInvoiceQuantity(value int64) string {
+	whole, fraction := value/10000, value%10000
+	if fraction == 0 {
+		return strconv.FormatInt(whole, 10)
+	}
+	return strconv.FormatInt(whole, 10) + "." + strings.TrimRight(fmt.Sprintf("%04d", fraction), "0")
+}
 
 func (a *app) invoiceService() *invoicing.DraftService { return invoicing.NewDraftService(a.store) }
 func (a *app) invoices(w http.ResponseWriter, r *http.Request) {
@@ -347,7 +357,11 @@ func (a *app) renderInvoiceError(w http.ResponseWriter, r *http.Request, id stri
 		http.Error(w, "unable to load invoice", 500)
 		return
 	}
-	a.renderTemplate(w, "invoiceEditor", data)
+	if isHTMX(r) {
+		a.renderTemplate(w, "invoiceEditor", data)
+		return
+	}
+	a.renderTemplate(w, "invoicesPage", data)
 }
 func (a *app) invoiceListData(r *http.Request, data pageData) (pageData, error) {
 	state := r.URL.Query().Get("state")

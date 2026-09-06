@@ -125,10 +125,11 @@ func templateFunctions() template.FuncMap {
 			}
 			return ""
 		},
-		"catalogMinor": formatMinor,
-		"invoiceMinor": func(value int64) string { return formatMinor(int(value)) },
-		"catalogTax":   formatTaxRate,
-		"string":       func(value int) string { return strconv.Itoa(value) },
+		"catalogMinor":    formatMinor,
+		"invoiceMinor":    func(value int64) string { return formatMinor(int(value)) },
+		"invoiceQuantity": formatInvoiceQuantity,
+		"catalogTax":      formatTaxRate,
+		"string":          func(value int) string { return strconv.Itoa(value) },
 	}
 }
 

@@ -97,6 +97,30 @@ func TestDraftServiceRejectsArchivedCustomerAndInvalidLineWithoutWriting(t *test
 	}
 }
 
+func TestDraftServiceRejectsCatalogWhenCompanyCurrencyDiffers(t *testing.T) {
+	t.Parallel()
+	s := draftStore(t)
+	ctx := context.Background()
+	if _, err := s.CompanyRepository().Save(ctx, store.CompanyInput{LegalName: "Issuer", Country: "DE", DefaultLanguage: "de", Currency: "USD", BrandColor: "#123456", PaymentTermsDays: 14}); err != nil {
+		t.Fatal(err)
+	}
+	customer, err := s.CustomerRepository().Create(ctx, store.CustomerInput{Number: "C-001", DisplayName: "Acme", Country: "DE", PreferredLanguage: "de", Currency: "EUR", PaymentTermsDays: 14})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := s.CatalogRepository().Create(ctx, store.CatalogInput{Number: "S-001", Kind: "service", Title: "Advice", Unit: "hour", UnitPriceMinor: 100, TaxRateBasisPoints: 1900})
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := NewDraftService(s).Create(ctx, customer.ID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = NewDraftService(s).AddCatalogItem(ctx, draft.ID, draft.Version, item.ID, 10000); !store.IsValidationError(err) {
+		t.Fatalf("currency mismatch=%v", err)
+	}
+}
+
 func draftStore(t *testing.T) *store.Store {
 	t.Helper()
 	s, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "invoices.db"))
