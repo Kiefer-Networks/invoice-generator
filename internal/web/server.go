@@ -63,6 +63,11 @@ type pageData struct {
 	CustomerVersion                                int
 	CustomerAction, CustomerTitle, Search          string
 	CustomerState, NextPageURL                     string
+	Catalog                                        store.CatalogPage
+	CatalogItem                                    *store.CatalogItem
+	CatalogInput                                   store.CatalogInput
+	CatalogVersion                                 int
+	CatalogAction, CatalogTitle, CatalogState      string
 	Errors                                         map[string]string
 	Raw                                            map[string]string
 }
@@ -84,7 +89,7 @@ func New(deps Dependencies) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	t, err := template.New("pages").Funcs(templateFunctions()).ParseFS(embeddedFiles, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html")
+	t, err := template.New("pages").Funcs(templateFunctions()).ParseFS(embeddedFiles, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html", "templates/catalog.html", "templates/catalog_detail.html", "templates/catalog_form.html")
 	if err != nil {
 		return nil, err
 	}
@@ -138,6 +143,10 @@ func (a *app) routes(w http.ResponseWriter, r *http.Request) {
 		a.customers(w, r)
 	case "/customers/new":
 		a.customerNew(w, r)
+	case "/catalog":
+		a.catalog(w, r)
+	case "/catalog/new":
+		a.catalogNew(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/assets/") {
 			if r.Method != http.MethodGet {
@@ -151,6 +160,10 @@ func (a *app) routes(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			if strings.HasPrefix(r.URL.Path, "/customers/") {
 				a.customerRoute(w, r)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/catalog/") {
+				a.catalogRoute(w, r)
 				return
 			}
 			http.NotFound(w, r)

@@ -168,8 +168,8 @@ func TestMigrateUpgradesOriginalSchema(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationsApplied); err != nil {
 		t.Fatal(err)
 	}
-	if migrationsApplied != 4 {
-		t.Fatalf("migration count=%d, want 4", migrationsApplied)
+	if migrationsApplied != 5 {
+		t.Fatalf("migration count=%d, want 5", migrationsApplied)
 	}
 }
 
@@ -311,8 +311,8 @@ func TestCustomerKeyRepairMigrationUpgradesRecorded003WithoutChecksumDrift(t *te
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
-	if applied != 4 {
-		t.Fatalf("migration count after idempotent repair = %d, want 4", applied)
+	if applied != 5 {
+		t.Fatalf("migration count after idempotent repair = %d, want 5", applied)
 	}
 }
 
