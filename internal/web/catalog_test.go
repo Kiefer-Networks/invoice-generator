@@ -301,3 +301,55 @@ func TestCatalogFullPageActionsPreserveEncodedArchivedState(t *testing.T) {
 		t.Fatalf("restore lost state: %q", response.Header().Get("Location"))
 	}
 }
+
+func TestCatalogMutationsRejectInvalidNavigationBeforeWriting(t *testing.T) {
+	t.Parallel()
+	for _, navigation := range []string{"?state=invalid", "?cursor=not-a-cursor"} {
+		t.Run(navigation, func(t *testing.T) {
+			h, s := customerApp(t, &fakeAuth{})
+			ctx := context.Background()
+			beforeCount := catalogCount(t, s)
+			create := customerRequest(t, h, http.MethodPost, "/catalog/new"+navigation, catalogForm("G-new", "New"), false)
+			if create.Code != http.StatusBadRequest || catalogCount(t, s) != beforeCount {
+				t.Fatalf("create invalid state=%d count=%d", create.Code, catalogCount(t, s))
+			}
+
+			item, err := s.CatalogRepository().Create(ctx, store.CatalogInput{Number: "G-001", Kind: "good", Title: "Original", Unit: "piece", UnitPriceMinor: 1250, TaxRateBasisPoints: 1900})
+			if err != nil {
+				t.Fatal(err)
+			}
+			update := catalogForm(item.Number, "Changed")
+			update.Set("version", strconv.Itoa(item.Version))
+			response := customerRequest(t, h, http.MethodPost, "/catalog/"+item.ID+"/edit"+navigation, update, false)
+			unchanged, err := s.CatalogRepository().Get(ctx, item.ID)
+			if err != nil || response.Code != http.StatusBadRequest || unchanged.Title != "Original" || unchanged.Version != item.Version {
+				t.Fatalf("update state=%d item=%#v err=%v", response.Code, unchanged, err)
+			}
+
+			archive := customerRequest(t, h, http.MethodPost, "/catalog/"+item.ID+"/archive"+navigation, url.Values{"version": {strconv.Itoa(item.Version)}}, false)
+			unchanged, err = s.CatalogRepository().Get(ctx, item.ID)
+			if err != nil || archive.Code != http.StatusBadRequest || !unchanged.Active || unchanged.Version != item.Version {
+				t.Fatalf("archive state=%d item=%#v err=%v", archive.Code, unchanged, err)
+			}
+
+			archived, err := s.CatalogRepository().Archive(ctx, item.ID, item.Version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restore := customerRequest(t, h, http.MethodPost, "/catalog/"+item.ID+"/restore"+navigation, url.Values{"version": {strconv.Itoa(archived.Version)}}, false)
+			unchanged, err = s.CatalogRepository().Get(ctx, item.ID)
+			if err != nil || restore.Code != http.StatusBadRequest || unchanged.Active || unchanged.Version != archived.Version {
+				t.Fatalf("restore state=%d item=%#v err=%v", restore.Code, unchanged, err)
+			}
+		})
+	}
+}
+
+func catalogCount(t *testing.T, s *store.Store) int {
+	t.Helper()
+	var count int
+	if err := s.DB().QueryRowContext(context.Background(), `SELECT COUNT(*) FROM catalog_items`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}

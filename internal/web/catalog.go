@@ -41,6 +41,10 @@ func (a *app) catalogNew(w http.ResponseWriter, r *http.Request) {
 		input := defaultCatalogInput()
 		a.renderCatalogPage(w, r, pageData{CatalogInput: input, Raw: catalogDisplayRaw(input), CatalogAction: "/catalog/new" + catalogQuerySuffix(r.URL.Query()), CatalogTitle: "New catalog item"}, false)
 	case http.MethodPost:
+		if err := a.validateCatalogNavigation(r); err != nil {
+			http.Error(w, "invalid catalog query", http.StatusBadRequest)
+			return
+		}
 		input, err := catalogInputFromRequest(r)
 		if err == nil {
 			var item store.CatalogItem
@@ -129,6 +133,10 @@ func (a *app) catalogEdit(w http.ResponseWriter, r *http.Request, id string) {
 		}
 		a.renderCatalogPage(w, r, pageData{CatalogInput: item.CatalogInput, CatalogVersion: item.Version, CatalogAction: "/catalog/" + id + "/edit" + catalogQuerySuffix(r.URL.Query()), CatalogTitle: "Edit catalog item", Raw: catalogDisplayRaw(item.CatalogInput)}, false)
 	case http.MethodPost:
+		if err := a.validateCatalogNavigation(r); err != nil {
+			http.Error(w, "invalid catalog query", http.StatusBadRequest)
+			return
+		}
 		input, err := catalogInputFromRequest(r)
 		version, versionErr := formInt(r, "version")
 		if err == nil {
@@ -160,6 +168,10 @@ func (a *app) catalogEdit(w http.ResponseWriter, r *http.Request, id string) {
 	}
 }
 func (a *app) catalogState(w http.ResponseWriter, r *http.Request, id string, active bool) {
+	if err := a.validateCatalogNavigation(r); err != nil {
+		http.Error(w, "invalid catalog query", http.StatusBadRequest)
+		return
+	}
 	version, err := formInt(r, "version")
 	if err == nil {
 		if active {
@@ -285,16 +297,15 @@ func parseDecimal(raw string, decimals int, field string) (int, error) {
 	return result, nil
 }
 func (a *app) catalogSaved(w http.ResponseWriter, r *http.Request, item store.CatalogItem) {
-	data, err := a.catalogListViewData(r, pageData{CatalogItem: &item})
-	if err != nil {
-		http.Error(w, "invalid catalog query", http.StatusBadRequest)
-		return
-	}
-	data = a.withCatalogData(r, data)
+	data := a.withCatalogData(r, pageData{CatalogItem: &item})
 	if isHTMX(r) {
 		w.Header().Set("HX-Retarget", "#catalog-detail")
 		w.Header().Set("HX-Push-Url", "/catalog/"+item.ID+data.CatalogQuery)
-		a.renderTemplate(w, "catalogSaved", data)
+		if listed, err := a.catalogListViewData(r, data); err == nil {
+			a.renderTemplate(w, "catalogSaved", listed)
+		} else {
+			a.renderTemplate(w, "catalogDetail", data)
+		}
 		return
 	}
 	http.Redirect(w, r, "/catalog/"+item.ID+data.CatalogQuery, http.StatusSeeOther)
@@ -373,6 +384,10 @@ func (a *app) catalogListViewData(r *http.Request, data pageData) (pageData, err
 	data.Catalog, data.Search, data.CatalogState, data.NextPageURL = page, options.Search, state, catalogListURL(options.Search, state, page.NextCursor)
 	data.CatalogQuery = catalogQuerySuffix(r.URL.Query())
 	return data, nil
+}
+func (a *app) validateCatalogNavigation(r *http.Request) error {
+	_, err := a.catalogListViewData(r, pageData{})
+	return err
 }
 func catalogQuerySuffix(query url.Values) string {
 	values := url.Values{}
