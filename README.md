@@ -384,3 +384,7 @@ checksums and build provenance attestations.
 ## License
 
 MIT
+
+## Container deployment
+
+See [container deployment](docs/container-deployment.md) for hardened production Compose, NetBird/Pocket ID configuration, secret provisioning, recovery, and both local CI entry points.

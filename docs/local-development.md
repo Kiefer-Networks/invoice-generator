@@ -52,10 +52,12 @@ cookies or browser storage. `go test ./...` also includes the browser workflow.
 On hosts with CGO and a supported C toolchain, additionally run
 `go test -race ./internal/devmode ./internal/web ./cmd/server`.
 
-The complete container/CI entry point belongs to the subsequent deployment
-task; these scripts intentionally cover the local test stages only.
+The complete container/CI entry points are `scripts/ci-local.ps1` and
+`scripts/ci-local.sh`; they also run the local stages above.
 
-Templates and static assets are embedded at build time. Restart `go run` after
-editing them. Development-only template/static reload and exclusion of development
-fixtures from the production binary are deferred to Task 12; production does not
-load templates or assets from writable development paths.
+Templates and static assets are embedded by default. For edits to reload per
+request, run `go run ./cmd/server serve -dev -dev-assets ./internal/web`.
+The dedicated directory is confined through `os.OpenRoot`; production builds
+exclude the reload implementation and development fixtures. Go source edits
+still require a process restart. For Linux/opt-in Docker Desktop host networking,
+use the [development Compose profile](container-deployment.md).

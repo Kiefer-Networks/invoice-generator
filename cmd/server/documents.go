@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/kiefer-networks/invoice-generator/internal/devmode"
 	"github.com/kiefer-networks/invoice-generator/internal/documents"
 	"github.com/kiefer-networks/invoice-generator/internal/jobs"
 	"github.com/kiefer-networks/invoice-generator/internal/paperless"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -61,7 +61,7 @@ func startDocumentsWithStorage(ctx context.Context, db *store.Store, cfg Config,
 	}
 	paperlessWorker := jobs.NewPaperlessWorker(db, storage, func() (*paperless.Client, error) {
 		if cfg.Development && cfg.devPaperless != nil {
-			return paperless.NewClient(paperless.Config{URL: cfg.devPaperless.URL, APIKey: devmode.PaperlessToken}, &http.Client{Timeout: time.Second}, true)
+			return cfg.devPaperless()
 		}
 		if cfg.Development || cfg.PaperlessURL == "" {
 			return nil, errors.New("configuration_missing")
@@ -103,8 +103,12 @@ func serveHTTP(ctx context.Context, server *http.Server, listen func() error) er
 }
 
 func serveHTTPWithGrace(ctx context.Context, server *http.Server, listen func() error, grace time.Duration) error {
+	// SIGTERM stops acceptance and claims. Active request transactions retain
+	// their context until Shutdown drains or the fixed deadline closes sockets.
+	server.BaseContext = func(net.Listener) context.Context { return context.WithoutCancel(ctx) }
 	stop := make(chan struct{})
 	done := make(chan struct{})
+	var shutdownErr error
 	go func() {
 		defer close(done)
 		select {
@@ -112,7 +116,7 @@ func serveHTTPWithGrace(ctx context.Context, server *http.Server, listen func() 
 			drain, cancel := context.WithTimeout(context.Background(), grace)
 			defer cancel()
 			if e := server.Shutdown(drain); e != nil {
-				_ = server.Close()
+				shutdownErr = errors.Join(e, server.Close())
 			}
 		case <-stop:
 		}
@@ -121,7 +125,7 @@ func serveHTTPWithGrace(ctx context.Context, server *http.Server, listen func() 
 	close(stop)
 	<-done
 	if errors.Is(e, http.ErrServerClosed) {
-		return nil
+		e = nil
 	}
-	return e
+	return errors.Join(e, shutdownErr)
 }

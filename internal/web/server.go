@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -38,6 +39,7 @@ type Authenticator interface {
 }
 
 type Config struct {
+	DevAssetsDir   string
 	AllowedHosts   []string
 	TrustedProxies []netip.Prefix
 	Development    bool
@@ -103,6 +105,13 @@ type pageData struct {
 }
 
 func New(deps Dependencies) (http.Handler, error) {
+	if deps.Config.DevAssetsDir != "" {
+		return reloadHandler(deps)
+	}
+	return newWithFiles(deps, embeddedFiles)
+}
+
+func newWithFiles(deps Dependencies, assets fs.FS) (http.Handler, error) {
 	if deps.Auth == nil {
 		return nil, errors.New("Pocket ID manager is required")
 	}
@@ -115,11 +124,11 @@ func New(deps Dependencies) (http.Handler, error) {
 	if deps.Config.BodyLimit != defaultBodyLimit {
 		return nil, errors.New("body limit must be 1 MiB")
 	}
-	files, err := staticFS()
+	files, err := fs.Sub(assets, "static")
 	if err != nil {
 		return nil, err
 	}
-	t, err := template.New("pages").Funcs(templateFunctions()).ParseFS(embeddedFiles, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html", "templates/catalog.html", "templates/catalog_detail.html", "templates/catalog_form.html", "templates/invoices.html", "templates/invoice_editor.html", "templates/invoice_items.html", "templates/invoice_review.html", "templates/invoice_detail.html")
+	t, err := template.New("pages").Funcs(templateFunctions()).ParseFS(assets, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html", "templates/catalog.html", "templates/catalog_detail.html", "templates/catalog_form.html", "templates/invoices.html", "templates/invoice_editor.html", "templates/invoice_items.html", "templates/invoice_review.html", "templates/invoice_detail.html")
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +142,8 @@ func New(deps Dependencies) (http.Handler, error) {
 
 func templateFunctions() template.FuncMap {
 	return template.FuncMap{
-		"invoiceUnits": func() string { return units.Help },
+		"developmentBanner": developmentBanner,
+		"invoiceUnits":      func() string { return units.Help },
 		"formValue": func(raw map[string]string, name, fallback string) string {
 			if raw != nil {
 				if value, ok := raw[name]; ok {

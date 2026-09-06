@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
-	"github.com/kiefer-networks/invoice-generator/internal/devmode"
 	"github.com/kiefer-networks/invoice-generator/internal/paperless"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"github.com/kiefer-networks/invoice-generator/internal/web"
@@ -34,8 +33,9 @@ const defaultBodyLimit int64 = 1 << 20
 // Config contains the deployment boundary for the HTTP service. Secrets are
 // represented only by file paths so they cannot accidentally reach logs.
 type Config struct {
+	DevAssetsDir                                         string
 	DevRoot, DevPaperlessState                           string
-	devPaperless                                         *devmode.Paperless
+	devPaperless                                         func() (*paperless.Client, error)
 	DocumentRoot                                         string
 	Listen, Database                                     string
 	AllowedHosts                                         []string
@@ -404,47 +404,42 @@ func parsePrefixes(raw string) ([]netip.Prefix, error) {
 	return out, nil
 }
 
-func serve(cfg Config) error {
+func serve(cfg Config) (result error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer cancel()
-	if cfg.Development {
-		if err := cfg.Validate(); err != nil {
-			return err
-		}
-		secrets, err := devmode.PrepareRoot(cfg.DevRoot)
-		if err != nil {
-			return err
-		}
-		provider, err := devmode.StartOIDC(cfg.CallbackURL)
-		if err != nil {
-			return err
-		}
-		defer provider.Close()
-		remote, err := devmode.StartPaperless(cfg.DevPaperlessState)
-		if err != nil {
-			return err
-		}
-		defer remote.Close()
-		cfg.PocketIDIssuer, cfg.PocketIDClientID = provider.URL, devmode.ClientID
-		cfg.ClientSecretFile, cfg.SessionKeyFile, cfg.TransactionKeyFile = secrets.Client, secrets.Session, secrets.Transaction
-		cfg.devPaperless = remote
-		fmt.Fprintln(os.Stdout, "LOCAL DEVELOPMENT — synthetic data only — http://"+cfg.Listen)
+	cleanupDevelopment, err := prepareDevelopment(&cfg)
+	if err != nil {
+		return err
 	}
+	defer cleanupDevelopment()
 	database, release, err := store.OpenService(ctx, cfg.Database)
 	if err != nil {
 		return err
 	}
 	defer release()
-	defer database.Close()
+	defer func() {
+		result = finishService(result, func(ctx context.Context) error {
+			var busy, log, done int
+			err := database.DB().QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &log, &done)
+			if err == nil && busy != 0 {
+				err = errors.New("checkpoint busy")
+			}
+			return err
+		}, func(context.Context) error { return database.Close() })
+	}()
 	if err := database.Migrate(ctx); err != nil {
 		return err
 	}
 	if cfg.Development {
-		if err := devmode.Seed(ctx, database); err != nil {
+		if err := seedDevelopment(ctx, database); err != nil {
 			return err
 		}
 	}
 	manager, err := newAuthManager(ctx, database, cfg, nil)
+	if err != nil {
+		return err
+	}
+	ready, err := readiness(ctx, database, cfg, manager)
 	if err != nil {
 		return err
 	}
@@ -453,16 +448,14 @@ func serve(cfg Config) error {
 		return err
 	}
 	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = stopDocuments(cleanup)
+		result = finishService(result, stopDocuments)
 	}()
-	handler, err := web.New(web.Dependencies{Documents: documentService, WakeDocuments: wakeDocuments, Auth: manager, Store: database, Config: web.Config{AllowedHosts: cfg.AllowedHosts, TrustedProxies: cfg.TrustedProxies, Development: cfg.Development, BodyLimit: cfg.BodyLimit}})
+	handler, err := web.New(web.Dependencies{Documents: documentService, WakeDocuments: wakeDocuments, Auth: manager, Store: database, Config: web.Config{DevAssetsDir: cfg.DevAssetsDir, AllowedHosts: cfg.AllowedHosts, TrustedProxies: cfg.TrustedProxies, Development: cfg.Development, BodyLimit: cfg.BodyLimit}})
 	if err != nil {
 		return err
 	}
+	handler = withHealth(handler, ready)
 	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13}}
-	server.BaseContext = func(net.Listener) context.Context { return ctx }
 	return serveHTTP(ctx, server, func() error {
 		if cfg.TLSCertFile != "" {
 			return server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile)

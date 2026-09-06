@@ -1,3 +1,5 @@
+//go:build !production
+
 // Package devmode provides local fixtures. It never disables application auth.
 package devmode
 

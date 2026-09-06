@@ -1,3 +1,5 @@
+//go:build !production
+
 // Package fixtures contains synthetic development data only.
 package fixtures
 

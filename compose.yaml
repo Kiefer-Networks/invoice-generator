@@ -1,0 +1,79 @@
+name: invoice-generator
+services:
+  invoice:
+    image: invoice-generator:local
+    build:
+      context: .
+      target: production
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./docker/seccomp.json
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 35s
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=536870912,mode=1777
+    shm_size: 256mb
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 512
+    ulimits:
+      nofile: {soft: 4096, hard: 4096}
+      core: {soft: 0, hard: 0}
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      INVOICE_LISTEN: "0.0.0.0:8080"
+      INVOICE_DATABASE: /data/database/invoice.sqlite
+      INVOICE_DOCUMENT_ROOT: /data/documents
+      INVOICE_ALLOWED_HOSTS: ${INVOICE_ALLOWED_HOSTS:-invoices.example.net}
+      INVOICE_TRUSTED_PROXIES: ${INVOICE_TRUSTED_PROXIES:-172.30.80.1/32}
+      INVOICE_POCKET_ID_ISSUER: ${INVOICE_POCKET_ID_ISSUER:-https://id.example.net}
+      INVOICE_POCKET_ID_CLIENT_ID: ${INVOICE_POCKET_ID_CLIENT_ID:-invoice-generator}
+      INVOICE_CALLBACK_URL: ${INVOICE_CALLBACK_URL:-https://invoices.example.net/auth/callback}
+      INVOICE_POCKET_ID_CLIENT_SECRET_FILE: /run/secrets/oidc_client
+      INVOICE_SESSION_KEY_FILE: /run/secrets/session_key
+      INVOICE_TRANSACTION_KEY_FILE: /run/secrets/transaction_key
+      INVOICE_PAPERLESS_URL: ${INVOICE_PAPERLESS_URL:-}
+      INVOICE_PAPERLESS_TOKEN_FILE: /run/secrets/paperless_token
+    volumes:
+      - type: bind
+        source: ${INVOICE_DATA_DIR:-/srv/invoice/data}/database
+        target: /data/database
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${INVOICE_DATA_DIR:-/srv/invoice/data}/documents
+        target: /data/documents
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${INVOICE_BACKUP_DIR:-/srv/invoice/backup}
+        target: /backup
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${INVOICE_CONFIG_DIR:-/srv/invoice/config}
+        target: /config
+        read_only: true
+        bind: {create_host_path: false}
+    secrets: [oidc_client, session_key, transaction_key, paperless_token, backup_key]
+    networks: [invoice]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+networks:
+  invoice:
+    ipam:
+      config: [{subnet: 172.30.80.0/28, gateway: 172.30.80.1}]
+secrets:
+  oidc_client:
+    file: ${INVOICE_SECRET_DIR:-/srv/invoice/secrets}/oidc-client
+  session_key:
+    file: ${INVOICE_SECRET_DIR:-/srv/invoice/secrets}/session-key
+  transaction_key:
+    file: ${INVOICE_SECRET_DIR:-/srv/invoice/secrets}/transaction-key
+  paperless_token:
+    file: ${INVOICE_SECRET_DIR:-/srv/invoice/secrets}/paperless-token
+  backup_key:
+    file: ${INVOICE_SECRET_DIR:-/srv/invoice/secrets}/backup-key

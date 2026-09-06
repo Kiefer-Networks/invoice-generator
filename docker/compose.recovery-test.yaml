@@ -1,0 +1,19 @@
+# Only for scripts/ci-local: synthetic data is copied into isolated test volumes.
+services:
+  invoice:
+    image: invoice-generator:test
+    ports: !reset []
+    networks: !reset []
+    network_mode: none
+    secrets: !reset []
+    environment: !reset {}
+    volumes: !override
+      - recovery-data:/data
+      - recovery-backups:/backup
+volumes:
+  recovery-data:
+    external: true
+    name: ${INVOICE_DRILL_DATA_VOLUME:?required isolated test volume}
+  recovery-backups:
+    external: true
+    name: ${INVOICE_DRILL_BACKUP_VOLUME:?required isolated test volume}

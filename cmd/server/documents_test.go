@@ -137,8 +137,8 @@ func TestDocumentServerForcedShutdownTimeout(t *testing.T) {
 	cancel()
 	select {
 	case e := <-done:
-		if e != nil {
-			t.Fatal(e)
+		if e == nil {
+			t.Fatal("forced shutdown reported success")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("forced shutdown exceeded its bound")

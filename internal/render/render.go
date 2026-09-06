@@ -16,6 +16,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 
@@ -471,6 +472,10 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 }
 
 func printHTML(parent context.Context, chrome, html, footerHTML, outputPath string) error {
+	return printHTMLWithPolicy(parent, chrome, html, footerHTML, outputPath, false)
+}
+
+func printHTMLWithPolicy(parent context.Context, chrome, html, footerHTML, outputPath string, confined bool) error {
 	// Write HTML to temp file
 	tmpFile, err := os.CreateTemp("", "invoice-*.html")
 	if err != nil {
@@ -541,6 +546,11 @@ func printHTML(parent context.Context, chrome, html, footerHTML, outputPath stri
 		paperHeightIn = 297.0 / mmPerInch
 	)
 
+	if confined {
+		if err := chromedp.Run(ctx, network.Enable(), network.SetBlockedURLs().WithURLPatterns(snapshotNetworkPatterns())); err != nil {
+			return err
+		}
+	}
 	var pdfBytes []byte
 	err = chromedp.Run(ctx,
 		chromedp.Navigate("file://"+filepath.ToSlash(tmpPath)),
@@ -606,5 +616,9 @@ func FromSnapshot(ctx context.Context, data *TplData, path string) error {
 	if e = footer.Execute(&b, data); e != nil {
 		return e
 	}
-	return printHTML(ctx, chrome, body, b.String(), path)
+	return printHTMLWithPolicy(ctx, chrome, body, b.String(), path, true)
+}
+
+func snapshotNetworkPatterns() []*network.BlockPattern {
+	return []*network.BlockPattern{{URLPattern: "http://*/*", Block: true}, {URLPattern: "https://*/*", Block: true}, {URLPattern: "ws://*/*", Block: true}, {URLPattern: "wss://*/*", Block: true}, {URLPattern: "ftp://*/*", Block: true}, {URLPattern: "http://*:*/*", Block: true}, {URLPattern: "https://*:*/*", Block: true}, {URLPattern: "ws://*:*/*", Block: true}, {URLPattern: "wss://*:*/*", Block: true}, {URLPattern: "ftp://*:*/*", Block: true}}
 }

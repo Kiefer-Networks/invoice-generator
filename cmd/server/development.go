@@ -1,3 +1,5 @@
+//go:build !production
+
 package main
 
 import (
@@ -22,6 +24,7 @@ func parseDevelopment(args []string, getenv func(string) string) (Config, error)
 	dev := fs.Bool("dev", false, "explicit local development")
 	root := fs.String("dev-root", ".invoice-development", "isolated development root")
 	listen := fs.String("listen", "127.0.0.1:8080", "literal loopback address")
+	assets := fs.String("dev-assets", "", "dedicated development templates/static directory")
 	state := fs.String("dev-paperless", "accepted", "accepted, delayed, rejected, timeout, reject-once")
 	if e := fs.Parse(args); e != nil {
 		return Config{}, errors.New("development accepts only -dev, -dev-root, -listen and -dev-paperless")
@@ -33,7 +36,7 @@ func parseDevelopment(args []string, getenv func(string) string) (Config, error)
 	if e != nil {
 		return Config{}, e
 	}
-	cfg := Config{Development: true, DevRoot: absolute, DevPaperlessState: *state, Listen: *listen, Database: filepath.Join(absolute, "development.sqlite"), DocumentRoot: filepath.Join(absolute, "documents"), BodyLimit: defaultBodyLimit, RequiredGroup: "invoice-admins"}
+	cfg := Config{DevAssetsDir: *assets, Development: true, DevRoot: absolute, DevPaperlessState: *state, Listen: *listen, Database: filepath.Join(absolute, "development.sqlite"), DocumentRoot: filepath.Join(absolute, "documents"), BodyLimit: defaultBodyLimit, RequiredGroup: "invoice-admins"}
 	host, _, e := net.SplitHostPort(*listen)
 	if e != nil {
 		return Config{}, e

@@ -1,3 +1,5 @@
+//go:build !production
+
 package web_test
 
 import (
@@ -9,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -28,7 +31,7 @@ import (
 	"github.com/kiefer-networks/invoice-generator/internal/web"
 )
 
-func browserFixture(t *testing.T) (*httptest.Server, *store.Store, *devmode.Paperless) {
+func browserFixture(t *testing.T) (*httptest.Server, *store.Store, *devmode.Paperless, *documents.Service) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -116,7 +119,7 @@ func browserFixture(t *testing.T) (*httptest.Server, *store.Store, *devmode.Pape
 		t.Fatal(e)
 	}
 	server.Config.Handler = handler
-	return server, db, remote
+	return server, db, remote, svc
 }
 
 func assertRemoteDocumentCount(t *testing.T, remote *devmode.Paperless, want int) {
@@ -139,12 +142,24 @@ func assertRemoteDocumentCount(t *testing.T, remote *devmode.Paperless, want int
 }
 
 func TestBrowserWorkflow(t *testing.T) {
+	t.Cleanup(func() {
+		for _, name := range []string{"pids.current", "pids.events", "cpu.stat", "memory.events"} {
+			if data, err := os.ReadFile("/sys/fs/cgroup/" + name); err == nil {
+				t.Logf("cgroup %s: %s", name, data)
+			}
+		}
+	})
 	chrome := render.FindChrome()
 	if chrome == "" {
 		t.Fatal("Chrome is required for browser workflow; set INVOICE_CHROME")
 	}
-	server, db, remote := browserFixture(t)
-	alloc, stop := chromedp.NewExecAllocator(context.Background(), append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(chrome), chromedp.NoSandbox)...)
+	server, db, remote, svc := browserFixture(t)
+	options := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
+	options = append(options, chromedp.ExecPath(chrome))
+	if os.Geteuid() == 0 {
+		options = append(options, chromedp.NoSandbox)
+	}
+	alloc, stop := chromedp.NewExecAllocator(context.Background(), options...)
 	defer stop()
 	ctx, close := chromedp.NewContext(alloc)
 	defer close()
@@ -167,7 +182,7 @@ func TestBrowserWorkflow(t *testing.T) {
 	if !createLink {
 		t.Fatal("dashboard has no working create invoice link")
 	}
-	browserWorkflow(t, ctx, server.URL, db)
+	browserWorkflow(t, ctx, server.URL, db, svc)
 	assertRemoteDocumentCount(t, remote, 1)
 	t.Log("protected manual retry delivered the rejected invoice exactly once")
 }
@@ -214,7 +229,7 @@ func (u browserUI) waitText(text string) {
 	u.run("visible "+text, chromedp.WaitVisible(fmt.Sprintf(`//body//*[not(self::script) and contains(text(),%q)]`, text), chromedp.BySearch))
 }
 
-func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.Store) {
+func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.Store, svc *documents.Service) {
 	ui := browserUI{t, ctx}
 	ui.run("failed Paperless fixture", chromedp.Navigate(base+"/invoices/dev-invoice-finalized-0001"))
 	ui.waitText("Paperless: failed")
@@ -242,7 +257,8 @@ func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.S
 		return p.WithAwaitPromise(true).WithReturnByValue(true)
 	}))
 	if previewStatus != 200 {
-		t.Fatalf("fixture preview status %d", previewStatus)
+		_, cause := svc.Preview(ctx, "dev-invoice-finalized-0001")
+		t.Fatalf("fixture preview status %d; independent renderer: %v", previewStatus, cause)
 	}
 	ui.click("Retry Paperless delivery")
 	for i := 0; i < 30; i++ {

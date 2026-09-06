@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+mkdir -p /out/licenses/go
+cp /usr/local/go/LICENSE /usr/local/go/PATENTS /out/licenses/go/
+go version > /out/licenses/go/version.txt
+go list -m all > /out/licenses/modules.txt
+go list -tags=production -deps -f '{{with .Module}}{{.Path}}{{end}}' ./cmd/server | sort -u > /out/licenses/compiled-modules.txt
+while IFS= read -r module; do
+  [ -n "$module" ] || continue
+  dir=$(go list -m -f '{{.Dir}}' "$module")
+  destination="/out/licenses/modules/$module"
+  mkdir -p "$destination"
+  find "$dir" -maxdepth 2 -type f \( -iname 'LICENSE*' -o -iname 'NOTICE*' -o -iname 'COPYING*' -o -iname 'AUTHORS*' -o -iname 'PATENTS*' \) -exec cp --parents '{}' "$destination" ';'
+  if ! find "$destination" -type f | read -r first; then
+    echo "Missing license notice: $module" >&2
+    exit 1
+  fi
+done < /out/licenses/compiled-modules.txt
