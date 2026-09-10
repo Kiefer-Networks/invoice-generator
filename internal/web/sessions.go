@@ -2,10 +2,12 @@ package web
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func (a *app) sessions(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +59,16 @@ func (a *app) sessionRoute(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err != nil || manager.RevokeSession(r.Context(), cookie(r, auth.SessionCookieName), id) != nil {
+	event := mutationAuditEvent(r, "session.revoked", "session")
+	if err != nil {
+		http.Error(w, "unable to revoke session", http.StatusBadRequest)
+		return
+	}
+	if err := manager.RevokeSession(r.Context(), cookie(r, auth.SessionCookieName), id, event); err != nil {
+		if errors.Is(err, store.ErrAudit) {
+			http.Error(w, "unable to record operation", http.StatusInternalServerError)
+			return
+		}
 		http.Error(w, "unable to revoke session", http.StatusBadRequest)
 		return
 	}
@@ -79,7 +90,11 @@ func (a *app) revokeAllSessions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session administration unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if err := manager.RevokeAllSessions(r.Context(), cookie(r, auth.SessionCookieName)); err != nil {
+	if err := manager.RevokeAllSessions(r.Context(), cookie(r, auth.SessionCookieName), mutationAuditEvent(r, "session.revoked_all", "session")); err != nil {
+		if errors.Is(err, store.ErrAudit) {
+			http.Error(w, "unable to record operation", http.StatusInternalServerError)
+			return
+		}
 		http.Error(w, "unable to revoke sessions", http.StatusInternalServerError)
 		return
 	}

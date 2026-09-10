@@ -62,7 +62,7 @@ func TestManagerEnforcesConcurrentSessionLimitAndCanManageSessions(t *testing.T)
 	}
 	for _, session := range sessions {
 		if !session.Current {
-			if err := manager.RevokeSession(context.Background(), latest.SessionCookie, session.ID); err != nil {
+			if err := manager.RevokeSession(context.Background(), latest.SessionCookie, session.ID, store.AuditEvent{ActorSubject: "person-1", Action: "session.revoked", TargetType: "session", RequestID: "request"}); err != nil {
 				t.Fatal(err)
 			}
 			break
@@ -103,7 +103,7 @@ func TestSessionLifecycleRotatesRevokesAndBindsCSRF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.RevokeAll(context.Background(), principal); err != nil {
+	if err := manager.RevokeAllSessions(context.Background(), second.SessionCookie, store.AuditEvent{ActorSubject: principal.Subject, Action: "session.revoked_all", TargetType: "session", RequestID: "request-all"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := manager.Authenticate(context.Background(), second.SessionCookie); err == nil {

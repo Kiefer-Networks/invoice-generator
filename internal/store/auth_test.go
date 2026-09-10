@@ -46,6 +46,58 @@ func TestCreateSessionLimitedEnforcesMaximumAtomically(t *testing.T) {
 	}
 }
 
+func TestAuditedSessionRevocationIsScopedAndAtomic(t *testing.T) {
+	t.Parallel()
+	s := openMigratedStore(t)
+	repo := s.AuthRepository()
+	ctx := context.Background()
+	first, err := repo.UpsertUser(ctx, OIDCUser{Issuer: "https://issuer.example.test", Subject: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := repo.UpsertUser(ctx, OIDCUser{Issuer: "https://issuer.example.test", Subject: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires := time.Now().Add(time.Minute)
+	for _, item := range []struct{ id, user string }{{"first-a", first.ID}, {"first-b", first.ID}, {"second-a", second.ID}} {
+		h := sha256.Sum256([]byte(item.id))
+		if err := repo.CreateSession(ctx, StoredSession{ID: item.id, UserID: item.user, TokenHash: h[:], CSRFSecretHash: h[:], AuthorizationExpiresAt: expires, ExpiresAt: expires}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	event := AuditEvent{ActorSubject: "first", Action: "session.revoked_all", TargetType: "session", RequestID: "request-session"}
+	if err := repo.DeleteSessionsForUserAudited(ctx, first.ID, event); err != nil {
+		t.Fatal(err)
+	}
+	var remaining int
+	if err := s.DB().QueryRow(`SELECT count(*) FROM sessions WHERE user_id=?`, second.ID).Scan(&remaining); err != nil || remaining != 1 {
+		t.Fatalf("other user sessions=%d err=%v", remaining, err)
+	}
+	var actor, request string
+	if err := s.DB().QueryRow(`SELECT actor_subject,request_id FROM audit_events WHERE action='session.revoked_all'`).Scan(&actor, &request); err != nil || actor != "first" || request != "request-session" {
+		t.Fatalf("audit actor=%q request=%q err=%v", actor, request, err)
+	}
+
+	h := sha256.Sum256([]byte("rollback"))
+	if err := repo.CreateSession(ctx, StoredSession{ID: "rollback", UserID: second.ID, TokenHash: h[:], CSRFSecretHash: h[:], AuthorizationExpiresAt: expires, ExpiresAt: expires}); err != nil {
+		t.Fatal(err)
+	}
+	rejectAuditInserts(t, s)
+	if err := repo.DeleteSessionForUserAudited(ctx, "rollback", second.ID, AuditEvent{ActorSubject: "second", Action: "session.revoked", TargetType: "session", RequestID: "request-fail"}); !errors.Is(err, ErrAudit) {
+		t.Fatalf("error=%v, want ErrAudit", err)
+	}
+	if err := s.DB().QueryRow(`SELECT count(*) FROM sessions WHERE id='rollback'`).Scan(&remaining); err != nil || remaining != 1 {
+		t.Fatalf("revocation survived audit failure count=%d err=%v", remaining, err)
+	}
+	if err := repo.DeleteSessionsForUserAudited(ctx, second.ID, AuditEvent{ActorSubject: "second", Action: "session.revoked_all", TargetType: "session", RequestID: "request-fail-all"}); !errors.Is(err, ErrAudit) {
+		t.Fatalf("bulk error=%v, want ErrAudit", err)
+	}
+	if err := s.DB().QueryRow(`SELECT count(*) FROM sessions WHERE user_id=?`, second.ID).Scan(&remaining); err != nil || remaining != 2 {
+		t.Fatalf("bulk revocation survived audit failure count=%d err=%v", remaining, err)
+	}
+}
+
 func TestAuthRepositoryKeepsIssuerSubjectIdentityWhenEmailChanges(t *testing.T) {
 	t.Parallel()
 	s := openMigratedStore(t)

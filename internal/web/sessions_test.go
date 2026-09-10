@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 type sessionAuth struct {
@@ -16,17 +17,20 @@ type sessionAuth struct {
 	sessions []auth.Session
 	revoked  string
 	all      bool
+	event    store.AuditEvent
 }
 
 func (s *sessionAuth) ListSessions(context.Context, *http.Cookie) ([]auth.Session, error) {
 	return s.sessions, nil
 }
-func (s *sessionAuth) RevokeSession(_ context.Context, _ *http.Cookie, id string) error {
+func (s *sessionAuth) RevokeSession(_ context.Context, _ *http.Cookie, id string, event store.AuditEvent) error {
 	s.revoked = id
+	s.event = event
 	return nil
 }
-func (s *sessionAuth) RevokeAllSessions(context.Context, *http.Cookie) error {
+func (s *sessionAuth) RevokeAllSessions(_ context.Context, _ *http.Cookie, event store.AuditEvent) error {
 	s.all = true
+	s.event = event
 	return nil
 }
 
@@ -56,6 +60,9 @@ func TestSessionPageDoesNotExposeSecretsAndRevokesSpecificSession(t *testing.T) 
 	h.ServeHTTP(w, request)
 	if w.Code != http.StatusSeeOther || a.revoked != id {
 		t.Fatalf("revoke status=%d id=%q", w.Code, a.revoked)
+	}
+	if a.event.ActorSubject != "subject-ada" || a.event.RequestID == "" || a.event.Action != "session.revoked" {
+		t.Fatalf("audit event=%#v", a.event)
 	}
 }
 

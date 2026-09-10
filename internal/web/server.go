@@ -41,8 +41,8 @@ type Authenticator interface {
 
 type sessionAdministrator interface {
 	ListSessions(context.Context, *http.Cookie) ([]auth.Session, error)
-	RevokeSession(context.Context, *http.Cookie, string) error
-	RevokeAllSessions(context.Context, *http.Cookie) error
+	RevokeSession(context.Context, *http.Cookie, string, store.AuditEvent) error
+	RevokeAllSessions(context.Context, *http.Cookie, store.AuditEvent) error
 }
 
 type Config struct {

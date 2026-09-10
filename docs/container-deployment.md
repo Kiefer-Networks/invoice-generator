@@ -170,7 +170,9 @@ docker compose exec -T invoice server sessions revoke-all -database /data/databa
 
 Authenticated users can review and revoke their own active sessions at
 `/settings/sessions`. The current session, a specific other session, or every
-session can be terminated there. The application permits at most five active
+session belonging to the signed-in Pocket ID identity can be terminated there.
+Web revocations and targeted CLI revocations are committed with their audit
+event; a failed audit write rolls back the revocation. The application permits at most five active
 sessions per Pocket ID identity and requires a fresh Pocket ID group check after
 15 minutes; local session handling never extends that authorization window.
 For targeted emergency administration, use the opaque identifier displayed in

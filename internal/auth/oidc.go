@@ -582,9 +582,6 @@ func (m *Manager) Logout(ctx context.Context, cookie *http.Cookie) error {
 	}
 	return m.repo.DeleteSessionByTokenHash(ctx, m.keyedHash(token))
 }
-func (m *Manager) RevokeAll(ctx context.Context, p Principal) error {
-	return m.repo.DeleteSessionsForUser(ctx, p.UserID)
-}
 func (m *Manager) ListSessions(ctx context.Context, cookie *http.Cookie) ([]Session, error) {
 	token, _, ok := m.splitSessionCookie(cookie)
 	if !ok {
@@ -604,7 +601,7 @@ func (m *Manager) ListSessions(ctx context.Context, cookie *http.Cookie) ([]Sess
 	}
 	return out, nil
 }
-func (m *Manager) RevokeSession(ctx context.Context, cookie *http.Cookie, id string) error {
+func (m *Manager) RevokeSession(ctx context.Context, cookie *http.Cookie, id string, event store.AuditEvent) error {
 	token, _, ok := m.splitSessionCookie(cookie)
 	if !ok || id == "" {
 		return errors.New("invalid session")
@@ -613,20 +610,14 @@ func (m *Manager) RevokeSession(ctx context.Context, cookie *http.Cookie, id str
 	if err != nil {
 		return errors.New("invalid or expired session")
 	}
-	deleted, err := m.repo.DeleteSessionForUser(ctx, id, user.ID)
+	return m.repo.DeleteSessionForUserAudited(ctx, id, user.ID, event)
+}
+func (m *Manager) RevokeAllSessions(ctx context.Context, cookie *http.Cookie, event store.AuditEvent) error {
+	p, err := m.Authenticate(ctx, cookie)
 	if err != nil {
 		return err
 	}
-	if !deleted {
-		return errors.New("session not found")
-	}
-	return nil
-}
-func (m *Manager) RevokeAllSessions(ctx context.Context, cookie *http.Cookie) error {
-	if _, err := m.Authenticate(ctx, cookie); err != nil {
-		return err
-	}
-	return m.repo.DeleteAllSessions(ctx)
+	return m.repo.DeleteSessionsForUserAudited(ctx, p.UserID, event)
 }
 func (m *Manager) CSRFToken(cookie *http.Cookie) (string, error) {
 	_, csrf, ok := m.splitSessionCookie(cookie)

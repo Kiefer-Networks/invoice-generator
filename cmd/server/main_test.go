@@ -239,6 +239,10 @@ func TestRevokeSpecificSession(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("sessions remaining=%d, want 1", count)
 	}
+	var actor, requestID string
+	if err := check.DB().QueryRow(`SELECT actor_subject,request_id FROM audit_events WHERE action='session.revoked'`).Scan(&actor, &requestID); err != nil || actor != "local-admin" || !strings.HasPrefix(requestID, "cli:") {
+		t.Fatalf("audit actor=%q request=%q err=%v", actor, requestID, err)
+	}
 }
 
 func testConfig(t *testing.T) Config {

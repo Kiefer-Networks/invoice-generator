@@ -133,13 +133,22 @@ func (r *AuthRepository) SessionsForUser(ctx context.Context, userID string, now
 	return out, rows.Err()
 }
 
-func (r *AuthRepository) DeleteSessionForUser(ctx context.Context, id, userID string) (bool, error) {
-	result, err := r.store.db.ExecContext(ctx, `DELETE FROM sessions WHERE id=? AND user_id=?`, id, userID)
-	if err != nil {
-		return false, err
-	}
-	n, err := result.RowsAffected()
-	return n == 1, err
+func (r *AuthRepository) DeleteSessionForUserAudited(ctx context.Context, id, userID string, event AuditEvent) error {
+	_, err := auditedMutation(ctx, r.store, event, func(tx *sql.Tx) (bool, string, error) {
+		result, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id=? AND user_id=?`, id, userID)
+		if err != nil {
+			return false, "", err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return false, "", err
+		}
+		if n != 1 {
+			return false, "", errors.New("session not found")
+		}
+		return true, id, nil
+	})
+	return err
 }
 
 func (r *AuthRepository) DeleteAllSessions(ctx context.Context) error {
@@ -147,16 +156,32 @@ func (r *AuthRepository) DeleteAllSessions(ctx context.Context) error {
 	return err
 }
 
-func (r *AuthRepository) DeleteSessionByID(ctx context.Context, id string) (bool, error) {
-	if id == "" {
-		return false, errors.New("session identifier is required")
-	}
-	result, err := r.store.db.ExecContext(ctx, `DELETE FROM sessions WHERE id=?`, id)
-	if err != nil {
-		return false, err
-	}
-	n, err := result.RowsAffected()
-	return n == 1, err
+func (r *AuthRepository) DeleteSessionsForUserAudited(ctx context.Context, userID string, event AuditEvent) error {
+	_, err := auditedMutation(ctx, r.store, event, func(tx *sql.Tx) (bool, string, error) {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id=?`, userID); err != nil {
+			return false, "", err
+		}
+		return true, userID, nil
+	})
+	return err
+}
+
+func (r *AuthRepository) DeleteSessionByIDAudited(ctx context.Context, id string, event AuditEvent) error {
+	_, err := auditedMutation(ctx, r.store, event, func(tx *sql.Tx) (bool, string, error) {
+		result, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id=?`, id)
+		if err != nil {
+			return false, "", err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return false, "", err
+		}
+		if n != 1 {
+			return false, "", errors.New("session not found")
+		}
+		return true, id, nil
+	})
+	return err
 }
 
 func (r *AuthRepository) SessionByTokenHash(ctx context.Context, tokenHash []byte, now time.Time) (StoredSession, OIDCUser, error) {
@@ -178,10 +203,6 @@ WHERE s.token_hash=? AND CAST(s.expires_at AS INTEGER)>? AND CAST(s.authorizatio
 
 func (r *AuthRepository) DeleteSessionByTokenHash(ctx context.Context, tokenHash []byte) error {
 	_, err := r.store.db.ExecContext(ctx, "DELETE FROM sessions WHERE token_hash=?", tokenHash)
-	return err
-}
-func (r *AuthRepository) DeleteSessionsForUser(ctx context.Context, userID string) error {
-	_, err := r.store.db.ExecContext(ctx, "DELETE FROM sessions WHERE user_id=?", userID)
 	return err
 }
 func (r *AuthRepository) DeleteExpiredSessions(ctx context.Context, now time.Time, limit int) error {

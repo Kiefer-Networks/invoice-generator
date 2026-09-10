@@ -4,6 +4,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -503,8 +504,7 @@ func revokeAllSessions(ctx context.Context, path string) error {
 	if err := database.Migrate(ctx); err != nil {
 		return err
 	}
-	_, err = database.DB().ExecContext(ctx, "DELETE FROM sessions")
-	return err
+	return database.AuthRepository().DeleteAllSessions(ctx)
 }
 
 func revokeSessionByID(ctx context.Context, path, id string) error {
@@ -516,12 +516,9 @@ func revokeSessionByID(ctx context.Context, path, id string) error {
 	if err := database.Migrate(ctx); err != nil {
 		return err
 	}
-	deleted, err := database.AuthRepository().DeleteSessionByID(ctx, id)
-	if err != nil {
+	correlation := make([]byte, 18)
+	if _, err := rand.Read(correlation); err != nil {
 		return err
 	}
-	if !deleted {
-		return errors.New("session not found")
-	}
-	return nil
+	return database.AuthRepository().DeleteSessionByIDAudited(ctx, id, store.AuditEvent{ActorSubject: "local-admin", Action: "session.revoked", TargetType: "session", RequestID: "cli:" + base64.RawURLEncoding.EncodeToString(correlation)})
 }
