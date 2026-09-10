@@ -16,13 +16,9 @@ FROM build AS development-build
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o /out/development ./cmd/server && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -trimpath -o /out/browser.test ./internal/web
 
-FROM debian:trixie-20260824-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132 AS runtime
-# Timestamped signed repositories also freeze the complete dependency closure.
-RUN rm /etc/apt/sources.list.d/debian.sources && \
-    printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20260906T000000Z trixie main\ndeb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260906T000000Z trixie-security main\n' > /etc/apt/sources.list && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates chromium=152.0.7977.82-1~deb13u1 openjdk-21-jdk-headless=21.0.12.1+1-1~deb13u1 fonts-liberation curl && \
-    rm -rf /var/lib/apt/lists/* && \
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS runtime
+RUN apk upgrade --no-cache && \
+    apk add --no-cache ca-certificates=20260611-r0 chromium=152.0.7977.82-r0 openjdk21-jdk=21.0.12_p8-r0 font-liberation=2.1.5-r2 curl=8.22.0-r0 && \
     mkdir -p /data/database /data/documents /backup /config /development && \
     chown -R 65532:65532 /data /backup /development && chmod 0700 /data /data/database /data/documents /backup /development
 ENV HOME=/tmp INVOICE_CHROME=/usr/bin/chromium
