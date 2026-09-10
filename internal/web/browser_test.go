@@ -155,7 +155,16 @@ func TestBrowserWorkflow(t *testing.T) {
 	}
 	server, db, remote, svc := browserFixture(t)
 	options := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
-	options = append(options, chromedp.ExecPath(chrome))
+	options = append(options,
+		chromedp.ExecPath(chrome),
+		chromedp.DisableGPU,
+		chromedp.Flag("disable-gpu-compositing", true),
+		chromedp.Flag("use-gl", "disabled"),
+		// The test container is already unprivileged and uses a dedicated
+		// seccomp profile; Chromium's nested filter rejects a harmless syscall
+		// while the PDF worker runs alongside the browser session.
+		chromedp.Flag("disable-seccomp-filter-sandbox", true),
+	)
 	if os.Geteuid() == 0 {
 		options = append(options, chromedp.NoSandbox)
 	}

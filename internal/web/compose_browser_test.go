@@ -27,7 +27,13 @@ func composeBrowser(t *testing.T) (browserUI, string, func()) {
 	if err != nil || parsed.Scheme != "http" || parsed.Host != "127.0.0.1:8080" || parsed.Path != "" {
 		t.Fatal("Compose smoke requires exact local server URL")
 	}
-	allocator, stop := chromedp.NewExecAllocator(context.Background(), append(chromedp.DefaultExecAllocatorOptions[:], chromedp.ExecPath(render.FindChrome()))...)
+	allocator, stop := chromedp.NewExecAllocator(context.Background(), append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.ExecPath(render.FindChrome()),
+		chromedp.DisableGPU,
+		chromedp.Flag("disable-gpu-compositing", true),
+		chromedp.Flag("use-gl", "disabled"),
+		chromedp.Flag("disable-seccomp-filter-sandbox", true),
+	)...)
 	ctx, closeBrowser := chromedp.NewContext(allocator)
 	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	ui := browserUI{t, ctx}
