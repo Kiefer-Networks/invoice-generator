@@ -610,6 +610,9 @@ func (m *Manager) RevokeSession(ctx context.Context, cookie *http.Cookie, id str
 	if err != nil {
 		return errors.New("invalid or expired session")
 	}
+	event.ActorSubject = user.Subject
+	event.Action = "session.revoked"
+	event.TargetType = "session"
 	return m.repo.DeleteSessionForUserAudited(ctx, id, user.ID, event)
 }
 func (m *Manager) RevokeAllSessions(ctx context.Context, cookie *http.Cookie, event store.AuditEvent) error {
@@ -617,6 +620,9 @@ func (m *Manager) RevokeAllSessions(ctx context.Context, cookie *http.Cookie, ev
 	if err != nil {
 		return err
 	}
+	event.ActorSubject = p.Subject
+	event.Action = "session.revoked_all"
+	event.TargetType = "session"
 	return m.repo.DeleteSessionsForUserAudited(ctx, p.UserID, event)
 }
 func (m *Manager) CSRFToken(cookie *http.Cookie) (string, error) {
