@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -68,7 +67,7 @@ func TestManagerEnforcesConcurrentSessionLimitAndCanManageSessions(t *testing.T)
 			break
 		}
 	}
-	if _, err := manager.Authenticate(context.Background(), &http.Cookie{Name: latest.SessionCookie.Name, Value: latest.SessionCookie.Value}); err != nil {
+	if _, err := manager.Authenticate(context.Background(), latest.SessionCookie); err != nil {
 		t.Fatal(err)
 	}
 }

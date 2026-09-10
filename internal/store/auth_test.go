@@ -27,7 +27,7 @@ func TestCreateSessionLimitedEnforcesMaximumAtomically(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			h := sha256.Sum256([]byte(string(rune('a' + i))))
+			h := sha256.Sum256([]byte(fmt.Sprintf("hash-%d", i)))
 			errs <- repo.CreateSessionLimited(ctx, StoredSession{ID: fmt.Sprintf("session-%d", i), UserID: user.ID, TokenHash: h[:], CSRFSecretHash: h[:], AuthorizationExpiresAt: now.Add(time.Minute), ExpiresAt: now.Add(time.Minute)}, now, maximum)
 		}(i)
 	}

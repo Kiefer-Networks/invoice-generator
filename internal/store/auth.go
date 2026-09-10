@@ -116,7 +116,7 @@ func (r *AuthRepository) SessionsForUser(ctx context.Context, userID string, now
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []SessionInfo
 	for rows.Next() {
 		var item SessionInfo

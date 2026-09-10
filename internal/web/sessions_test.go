@@ -43,7 +43,7 @@ func TestSessionPageDoesNotExposeSecretsAndRevokesSpecificSession(t *testing.T) 
 	}
 	view := httptest.NewRequest(http.MethodGet, "https://app.example.test/settings/sessions", nil)
 	view.Host = "app.example.test"
-	view.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "session"})
+	view.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "session", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, view)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), id+"/revoke") {
@@ -55,7 +55,7 @@ func TestSessionPageDoesNotExposeSecretsAndRevokesSpecificSession(t *testing.T) 
 	request := httptest.NewRequest(http.MethodPost, "https://app.example.test/settings/sessions/"+id+"/revoke", strings.NewReader("csrf_token=csrf"))
 	request.Host = "app.example.test"
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "session"})
+	request.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: "session", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, request)
 	if w.Code != http.StatusSeeOther || a.revoked != id {
@@ -68,7 +68,7 @@ func TestSessionPageDoesNotExposeSecretsAndRevokesSpecificSession(t *testing.T) 
 
 func TestDevelopmentCookieLookupUsesDedicatedName(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/", nil)
-	r.AddCookie(&http.Cookie{Name: auth.DevelopmentSessionCookieName, Value: "development"})
+	r.AddCookie(&http.Cookie{Name: auth.DevelopmentSessionCookieName, Value: "development"}) // #nosec G124 -- Request-only loopback-development fixture; response cookie protections are applied by the auth manager.
 	c := cookie(r, auth.SessionCookieName)
 	if c == nil || c.Name != auth.DevelopmentSessionCookieName {
 		t.Fatalf("cookie=%#v", c)
