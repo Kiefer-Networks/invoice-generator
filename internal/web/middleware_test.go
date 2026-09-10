@@ -1,8 +1,11 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,17 +19,61 @@ import (
 
 type fakeAuth struct {
 	callbackErr, csrfErr, authenticateErr error
+	callbackResult                        auth.SessionResult
 	loggedOut                             bool
 }
 
 func (f *fakeAuth) Begin(string) (string, *http.Cookie, error) {
-	return "https://pocket-id.test/authorize", &http.Cookie{Name: "invoice_oidc_transaction", Value: "state", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}, nil
+	return "https://pocket-id.test/authorize", &http.Cookie{Name: "__Host-invoice_oidc_transaction", Value: "state", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}, nil
 }
 func (f *fakeAuth) Callback(context.Context, *url.URL, *http.Cookie) (auth.SessionResult, error) {
 	if f.callbackErr != nil {
-		return auth.SessionResult{TransactionCookie: &http.Cookie{Name: "invoice_oidc_transaction", MaxAge: -1}}, f.callbackErr // #nosec G124 -- Deliberately bare authentication fixture; the web boundary applies and tests response-cookie protections.
+		result := f.callbackResult
+		result.TransactionCookie = &http.Cookie{Name: "__Host-invoice_oidc_transaction", MaxAge: -1} // #nosec G124 -- Deliberately bare authentication fixture; the web boundary applies and tests response-cookie protections.
+		return result, f.callbackErr
 	}
-	return auth.SessionResult{SessionCookie: &http.Cookie{Name: "invoice_session", Value: "session"}, TransactionCookie: &http.Cookie{Name: "invoice_oidc_transaction", MaxAge: -1}, ReturnTo: "/"}, nil // #nosec G124 -- Deliberately bare authentication fixture; the web boundary applies and tests response-cookie protections.
+	return auth.SessionResult{SessionCookie: &http.Cookie{Name: "__Host-invoice_session", Value: "session"}, TransactionCookie: &http.Cookie{Name: "__Host-invoice_oidc_transaction", MaxAge: -1}, ReturnTo: "/"}, nil // #nosec G124 -- Deliberately bare authentication fixture; the web boundary applies and tests response-cookie protections.
+}
+
+func TestRequestLogCapturesFinalResponseAndRecoveredPanicOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		handler http.Handler
+		status  int
+		bytes   int
+	}{
+		{name: "response", handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte("created"))
+		}), status: http.StatusCreated, bytes: len("created")},
+		{name: "panic", handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }), status: http.StatusInternalServerError, bytes: len("internal server error\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			a := &app{logger: slog.New(slog.NewJSONHandler(&output, nil))}
+			h := a.log(a.recover(a.correlation(tc.handler)))
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "https://app.example.test/test", nil))
+			if w.Code != tc.status || w.Body.Len() != tc.bytes {
+				t.Fatalf("response status=%d bytes=%d, want %d/%d", w.Code, w.Body.Len(), tc.status, tc.bytes)
+			}
+			lines := bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n"))
+			if len(lines) != 1 {
+				t.Fatalf("request log count=%d, want 1: %q", len(lines), output.String())
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(lines[0], &entry); err != nil {
+				t.Fatal(err)
+			}
+			if entry["status"] != float64(tc.status) || entry["bytes"] != float64(tc.bytes) {
+				t.Fatalf("request log status/bytes=%v/%v, want %d/%d", entry["status"], entry["bytes"], tc.status, tc.bytes)
+			}
+			if entry["request_id"] == "" {
+				t.Fatal("request log omitted correlation identifier")
+			}
+		})
+	}
 }
 func (f *fakeAuth) Authenticate(context.Context, *http.Cookie) (auth.Principal, error) {
 	return auth.Principal{UserID: "u1", Subject: "subject-ada", DisplayName: "Ada"}, f.authenticateErr
@@ -60,7 +107,7 @@ func TestMissingAndExpiredSessionsAreDenied(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, "https://app.example.test/", nil)
 			r.Host = "app.example.test"
 			if name == "expired" {
-				r.AddCookie(&http.Cookie{Name: "invoice_session", Value: "expired"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
+				r.AddCookie(&http.Cookie{Name: "__Host-invoice_session", Value: "expired"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
 			}
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, r)
@@ -77,7 +124,7 @@ func TestLogoutRevokesAuthenticatedSession(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "https://app.example.test/auth/logout", strings.NewReader("csrf_token=csrf"))
 	r.Host = "app.example.test"
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
+	r.AddCookie(&http.Cookie{Name: "__Host-invoice_session", Value: "session"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusSeeOther || !a.loggedOut {
@@ -92,7 +139,7 @@ func TestRootMethodIsExplicit(t *testing.T) {
 	r.Host = "app.example.test"
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("X-CSRF-Token", "csrf")
-	r.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
+	r.AddCookie(&http.Cookie{Name: "__Host-invoice_session", Value: "session"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusMethodNotAllowed {
@@ -115,7 +162,7 @@ func request(t *testing.T, h http.Handler, method, target string, body string) *
 	t.Helper()
 	r := httptest.NewRequest(method, "https://app.example.test"+target, strings.NewReader(body))
 	r.Host = "app.example.test"
-	r.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
+	r.AddCookie(&http.Cookie{Name: "__Host-invoice_session", Value: "session"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
@@ -150,7 +197,7 @@ func TestMiddleware(t *testing.T) {
 			h := testApp(t, a)
 			r := httptest.NewRequest(tc.method, "https://app.example.test"+tc.target, strings.NewReader(tc.body))
 			r.Host = "app.example.test"
-			r.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
+			r.AddCookie(&http.Cookie{Name: "__Host-invoice_session", Value: "session"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie. // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
 			if tc.setup != nil {
 				tc.setup(r)
 			}
@@ -313,7 +360,7 @@ func TestSecurityHeadersAndAuthenticationFlow(t *testing.T) {
 	}
 	var session *http.Cookie
 	for _, c := range callback.Result().Cookies() {
-		if c.Name == "invoice_session" {
+		if c.Name == "__Host-invoice_session" {
 			session = c
 		}
 	}

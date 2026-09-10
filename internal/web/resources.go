@@ -72,8 +72,8 @@ func clientAddress(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-func authEndpoint(path string) bool {
-	return path == "/auth/login" || path == "/auth/callback" || path == "/auth/logout"
+func authEndpoint(r *http.Request) bool {
+	return r.Method == http.MethodGet && (r.URL.Path == "/auth/login" || r.URL.Path == "/auth/callback")
 }
 
 func expensiveEndpoint(r *http.Request) bool {
@@ -85,7 +85,7 @@ func expensiveEndpoint(r *http.Request) bool {
 
 func (a *app) resources(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if authEndpoint(r.URL.Path) && !a.authLimiter.allow(clientAddress(r)) {
+		if authEndpoint(r) && !a.authLimiter.allow(clientAddress(r)) {
 			w.Header().Set("Retry-After", "60")
 			http.Error(w, "too many authentication requests", http.StatusTooManyRequests)
 			return

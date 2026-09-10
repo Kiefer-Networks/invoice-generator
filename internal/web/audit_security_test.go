@@ -58,7 +58,7 @@ func TestAuthenticationOutcomesAreDurablyAudited(t *testing.T) {
 	logout := httptest.NewRequest(http.MethodPost, "https://app.example.test/auth/logout", strings.NewReader("csrf_token=csrf"))
 	logout.Host = "app.example.test"
 	logout.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	logout.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"}) // #nosec G124 -- Request-only fixture; response cookie attributes do not apply to AddCookie.
+	logout.AddCookie(&http.Cookie{Name: "__Host-invoice_session", Value: "session"}) // #nosec G124 -- Request-only fixture; response cookie attributes do not apply to AddCookie.
 	h.ServeHTTP(httptest.NewRecorder(), logout)
 
 	rows, err := db.DB().Query(`SELECT action,result,actor_subject,change_summary FROM audit_events ORDER BY created_at,id`)
@@ -95,6 +95,23 @@ func TestAuthenticationFailureIsAuditedWithoutErrorDetails(t *testing.T) {
 	}
 }
 
+func TestDeniedGroupCallbackUsesOnlyPseudonymousAuditSubject(t *testing.T) {
+	t.Parallel()
+	want := "oidc-subject:v1:opaque"
+	authn := &fakeAuth{callbackErr: errors.New("identity is not authorized"), callbackResult: auth.SessionResult{AuditSubject: want}}
+	h, db := auditTestApp(t, authn, Config{})
+	r := httptest.NewRequest(http.MethodGet, "https://app.example.test/auth/callback?code=secret&state=secret", nil)
+	r.Host = "app.example.test"
+	h.ServeHTTP(httptest.NewRecorder(), r)
+	var actor string
+	if err := db.DB().QueryRow(`SELECT actor_subject FROM audit_events WHERE action='auth.callback'`).Scan(&actor); err != nil {
+		t.Fatal(err)
+	}
+	if actor != want {
+		t.Fatalf("callback failure actor=%q, want pseudonymous subject %q", actor, want)
+	}
+}
+
 func TestConfigurationCRUDWritesActorAndObjectAudits(t *testing.T) {
 	t.Parallel()
 	h, db := auditTestApp(t, &fakeAuth{}, Config{})
@@ -102,7 +119,7 @@ func TestConfigurationCRUDWritesActorAndObjectAudits(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "https://app.example.test/customers/new", strings.NewReader(form.Encode()+"&csrf_token=csrf"))
 	r.Host = "app.example.test"
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"}) // #nosec G124 -- Request-only fixture; response cookie attributes do not apply to AddCookie.
+	r.AddCookie(&http.Cookie{Name: "__Host-invoice_session", Value: "session"}) // #nosec G124 -- Request-only fixture; response cookie attributes do not apply to AddCookie.
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusSeeOther {
@@ -139,6 +156,23 @@ func TestAuthRateLimitUsesNormalizedClientAddress(t *testing.T) {
 	}
 	if got := request("198.51.100.2"); got != http.StatusFound {
 		t.Fatalf("different client shared rate bucket: %d", got)
+	}
+}
+
+func TestUnauthenticatedLogoutDoesNotConsumeLoginRateBudget(t *testing.T) {
+	t.Parallel()
+	h, _ := auditTestApp(t, &fakeAuth{}, Config{authRateLimit: 1, authRateWindow: time.Minute})
+	for i := 0; i < 3; i++ {
+		r := httptest.NewRequest(http.MethodPost, "https://app.example.test/auth/logout", nil)
+		r.Host = "app.example.test"
+		h.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	login := httptest.NewRequest(http.MethodGet, "https://app.example.test/auth/login", nil)
+	login.Host = "app.example.test"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, login)
+	if w.Code != http.StatusFound {
+		t.Fatalf("login status=%d after invalid logout requests, want %d", w.Code, http.StatusFound)
 	}
 }
 

@@ -34,7 +34,7 @@ func principalFromContext(ctx context.Context) (auth.Principal, bool) {
 }
 
 func (a *app) chain(next http.Handler) http.Handler {
-	return a.recover(a.correlation(a.proxy(a.transport(a.host(a.limit(a.security(a.log(a.resources(a.session(next))))))))))
+	return a.log(a.recover(a.correlation(a.proxy(a.transport(a.host(a.limit(a.security(a.resources(a.session(next))))))))))
 }
 func (a *app) recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -124,18 +124,53 @@ func (a *app) security(next http.Handler) http.Handler {
 func (a *app) log(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
-		next.ServeHTTP(w, r)
-		id, _ := r.Context().Value(requestIDKey).(string)
-		a.logger.LogAttrs(r.Context(), slog.LevelInfo, "request", slog.String("request_id", id), slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Duration("duration", time.Since(started)))
+		metrics := &responseMetrics{ResponseWriter: w}
+		defer func() {
+			id := metrics.Header().Get("X-Request-ID")
+			a.logger.LogAttrs(r.Context(), slog.LevelInfo, "request", slog.String("request_id", id), slog.String("method", r.Method), slog.String("path", r.URL.Path), slog.Int("status", metrics.statusCode()), slog.Int("bytes", metrics.bytes), slog.Duration("duration", time.Since(started)))
+		}()
+		next.ServeHTTP(metrics, r)
 	})
 }
+
+type responseMetrics struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (w *responseMetrics) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *responseMetrics) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	n, err := w.ResponseWriter.Write(body)
+	w.bytes += n
+	return n, err
+}
+
+func (w *responseMetrics) statusCode() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}
+
+func (w *responseMetrics) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (a *app) session(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if publicPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		session := cookie(r, "invoice_session")
+		session := cookie(r, auth.SessionCookieName)
 		principal, err := a.auth.Authenticate(r.Context(), session)
 		if err != nil {
 			http.Redirect(w, r, "/auth/login?return_to="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
