@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
@@ -28,10 +29,21 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	code := m.Run()
-	if err := os.RemoveAll(root); err != nil {
+	if err := removeWindowsTestRoot(root); err != nil {
 		panic(err)
 	}
 	os.Exit(code)
+}
+
+func removeWindowsTestRoot(root string) error {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := os.RemoveAll(root)
+		if err == nil || !errors.Is(err, syscall.Errno(32)) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func configureRecoverySignalChild(cmd *exec.Cmd) {
