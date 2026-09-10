@@ -10,6 +10,9 @@ import (
 
 var auditNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)
 
+// ErrAudit identifies a failed audit write for a mutation that was rolled back.
+var ErrAudit = errors.New("audit write failed")
+
 // AuditEvent contains stable identifiers only. Human-entered values, error
 // messages, credentials and request payloads must not cross this boundary.
 type AuditEvent struct {
@@ -65,7 +68,7 @@ func auditedMutation[T any](ctx context.Context, s *Store, event AuditEvent, mut
 	event.Result = "success"
 	if err = recordAudit(ctx, tx, event); err != nil {
 		var zero T
-		return zero, fmt.Errorf("record mutation audit: %w", err)
+		return zero, fmt.Errorf("%w: %v", ErrAudit, err)
 	}
 	if err = tx.Commit(); err != nil {
 		var zero T

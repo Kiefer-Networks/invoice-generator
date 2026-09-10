@@ -1,12 +1,43 @@
 package web
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
+
+func TestAuditMutationTreatsAtomicAuditFailureAsInternalError(t *testing.T) {
+	database, err := store.Open(context.Background(), t.TempDir()+"/audit.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err = database.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	application := &app{store: database, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	request := httptest.NewRequest(http.MethodPost, "https://app.example.test/customers/new", nil)
+	recorder := httptest.NewRecorder()
+
+	if application.auditMutation(recorder, request, "customer.created", "customer", "", fmt.Errorf("write: %w", store.ErrAudit)) {
+		t.Fatal("auditMutation() = true, want request stopped")
+	}
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+	}
+	var count int
+	if err = database.DB().QueryRow(`SELECT count(*) FROM audit_events`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("audit count = %d, error = %v; want no misleading failure event", count, err)
+	}
+}
 
 func TestCustomerHandlerRollsBackMutationWhenAuditStorageFails(t *testing.T) {
 	handler, database := auditTestApp(t, &fakeAuth{}, Config{})

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -27,8 +28,8 @@ func TestCompanyAuditedSaveRollsBackWhenAuditInsertFails(t *testing.T) {
 	}
 	rejectAuditInserts(t, s)
 
-	if _, err = repo.SaveAudited(ctx, CompanyInput{LegalName: "Changed", Country: "DE", Currency: "EUR", DefaultLanguage: "de", BrandColor: "#5B9BD5"}, mutationAudit("company.saved", "company")); err == nil {
-		t.Fatal("SaveAudited() error = nil, want audit failure")
+	if _, err = repo.SaveAudited(ctx, CompanyInput{LegalName: "Changed", Country: "DE", Currency: "EUR", DefaultLanguage: "de", BrandColor: "#5B9BD5"}, mutationAudit("company.saved", "company")); !errors.Is(err, ErrAudit) {
+		t.Fatalf("SaveAudited() error = %v, want ErrAudit", err)
 	}
 	got, err := repo.Get(ctx)
 	if err != nil {
