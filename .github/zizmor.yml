@@ -1,0 +1,2 @@
+# No blanket rule exclusions. Suppressions need an inline rationale and review.
+rules: {}

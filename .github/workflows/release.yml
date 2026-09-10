@@ -1,46 +1,221 @@
 name: Release
-
 on:
   push:
-    tags:
-      - "v*.*.*"
-
+    tags: ['v*.*.*']
+  workflow_dispatch: {}
 permissions:
   contents: read
-
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+env:
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
 jobs:
-  test:
-    name: Test before release
-    uses: ./.github/workflows/ci.yml
-
-  goreleaser:
-    name: GoReleaser
-    needs: [test]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # create the GitHub release + upload assets
-      id-token: write # keyless (OIDC) provenance attestation
-      attestations: write
+  trust:
+    name: Validate protected release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: "1.26.x"
-          cache: true
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean
+      - name: Require protected semantic tag on main history
+        id: source
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
+          REF: ${{ github.ref }}
+          PROTECTED: ${{ github.ref_protected }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          [[ "$REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$PROTECTED" = true
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git merge-base --is-ancestor HEAD origin/main
+          echo "sha=$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+  ci:
+    needs: [trust]
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 requires documented ./ syntax; it resolves at the caller commit.
+  security:
+    needs: [trust]
+    uses: ./.github/workflows/security.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 compatibility; same immutable caller commit.
+  container:
+    needs: [trust]
+    uses: ./.github/workflows/container.yml # zizmor: ignore[self-repository] -- actionlint 1.7.12 compatibility; same immutable caller commit.
+  candidate:
+    name: Build and scan immutable release candidate
+    needs: [trust, ci, security, container]
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write # Push the tested candidate and its attestations to GHCR.
+      id-token: write # Obtain the GitHub workload identity for keyless signing.
+      attestations: write # Publish provenance and SBOM attestations.
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.build.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          subject-path: "dist/invoice_*"
+          persist-credentials: false
+          ref: ${{ needs.trust.outputs.sha }}
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        with:
+          image: tonistiigi/binfmt:qemu-v10.2.3-68@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          cache-image: false
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          version: v0.37.0
+          driver-opts: image=moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
+          buildkitd-flags: --debug
+          cache-binary: false
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install verified scanners
+        run: |
+          bash scripts/install-ci-tool.sh trivy
+          bash scripts/install-ci-tool.sh syft
+      - name: Build candidate exactly once from tested SHA
+        id: build
+        env:
+          TESTED_SHA: ${{ needs.trust.outputs.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=normal)"
+          image="ghcr.io/${REPOSITORY,,}"
+          mkdir -p .ci-private
+          docker buildx build --platform linux/amd64,linux/arm64 --target production \
+            --provenance=mode=max \
+            --metadata-file .ci-private/build.json \
+            --tag "$image:candidate-$TESTED_SHA" --push .
+          digest=$(jq -r '."containerimage.digest"' .ci-private/build.json)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+      - name: Scan both immutable platform images and scrub SBOMs
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          for arch in amd64 arm64; do
+            trivy image --platform "linux/$arch" --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 "$IMAGE@$DIGEST"
+            syft "$IMAGE@$DIGEST" --platform "linux/$arch" -o "spdx-json=.ci-private/sbom-$arch.json"
+            python3 scripts/scrub-artifact.py ".ci-private/sbom-$arch.json" ".ci-private/safe-$arch.spdx.json"
+          done
+      - name: Attest tested immutable image provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.build.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest amd64 SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.build.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          predicate-type: https://spdx.dev/Document
+          predicate-path: .ci-private/safe-amd64.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest arm64 SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.build.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          predicate-type: https://spdx.dev/Document
+          predicate-path: .ci-private/safe-arm64.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+  candidate-runtime:
+    name: Test immutable candidate runtime (${{ matrix.arch }})
+    needs: [trust, candidate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: ubuntu-24.04
+          - arch: arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read # Pull the immutable private GHCR candidate for runtime tests.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.trust.outputs.sha }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Exercise the scanned digest on its native architecture
+        env:
+          IMAGE: ${{ needs.candidate.outputs.image }}
+          DIGEST: ${{ needs.candidate.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+          INVOICE_CONTAINER_TEST: '1'
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker pull --platform "linux/$ARCH" "$IMAGE@$DIGEST"
+          docker tag "$IMAGE@$DIGEST" invoice-generator:test
+          test "$(docker image inspect invoice-generator:test --format '{{.Architecture}}')" = "$ARCH"
+          docker image inspect invoice-generator:test --format '{{json .Config}}' | jq -e '.User == "65532:65532" and (.Healthcheck.Test | length > 0) and .Healthcheck.Test[0] != "NONE"'
+          bash scripts/run-ci-tests.sh container-runtime
+  promote:
+    name: Promote the scanned and attested digest
+    needs: [trust, ci, security, container, candidate, candidate-runtime]
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # Create release notes for the existing protected tag.
+      packages: write # Promote the already scanned manifest digest.
+      attestations: read # Verify candidate identity and tested source before promotion.
+    steps:
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          version: v0.37.0
+          driver-opts: image=moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
+          buildkitd-flags: --debug
+          cache-binary: false
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote without rebuilding source
+        env:
+          IMAGE: ${{ needs.candidate.outputs.image }}
+          DIGEST: ${{ needs.candidate.outputs.digest }}
+          TAG: ${{ github.ref_name }}
+          TESTED_SHA: ${{ needs.trust.outputs.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh attestation verify "oci://$IMAGE@$DIGEST" --repo "$GH_REPO" --signer-workflow "$GH_REPO/.github/workflows/release.yml" --source-digest "$TESTED_SHA"
+          docker buildx imagetools create --tag "$IMAGE:$TAG" "$IMAGE@$DIGEST"
+          promoted=$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          test "$promoted" = "$DIGEST"
+          printf 'Tested commit: `%s`\n\nImmutable image: `%s@%s`\n\nBoth Linux platforms scanned; SBOM and provenance attestations are attached.\n' "$TESTED_SHA" "$IMAGE" "$DIGEST" > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"

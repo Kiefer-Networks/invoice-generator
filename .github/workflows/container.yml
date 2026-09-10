@@ -1,0 +1,93 @@
+name: Container
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+  workflow_call: {}
+permissions:
+  contents: read
+concurrency:
+  group: container-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+defaults:
+  run:
+    shell: bash
+env:
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
+jobs:
+  images:
+    name: Image and vulnerability scan (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        with:
+          image: tonistiigi/binfmt:qemu-v10.2.3-68@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          cache-image: false
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          version: v0.37.0
+          driver-opts: image=moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
+          buildkitd-flags: --debug
+          cache-binary: false
+      - run: bash scripts/install-ci-tool.sh trivy
+      - name: Build production image with no external cache
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: docker buildx build --platform "linux/$ARCH" --target production --load -t invoice-generator:test .
+      - name: Scan exact platform image
+        run: |
+          docker image inspect invoice-generator:test --format '{{json .Config}}' | jq -e '.User == "65532:65532" and (.Healthcheck.Test | length > 0) and .Healthcheck.Test[0] != "NONE"'
+          trivy image --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed=false invoice-generator:test
+      - run: bash scripts/check-container-security.sh
+  local-parity:
+    name: Local script, Compose smoke and recovery parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Require Chrome, Java and fonts
+        run: |
+          command -v google-chrome || command -v chromium
+          command -v java
+          command -v javac
+          fc-match LiberationSans | grep -q Liberation
+          if command -v google-chrome >/dev/null; then
+            echo "INVOICE_CHROME=$(command -v google-chrome)" >> "$GITHUB_ENV"
+          else
+            echo "INVOICE_CHROME=$(command -v chromium)" >> "$GITHUB_ENV"
+          fi
+      - run: bash scripts/ci-local.sh
+      - name: PowerShell stage parity
+        shell: pwsh
+        run: ./scripts/ci-local.ps1
+  required:
+    name: Container required
+    if: always()
+    needs: [images, local-parity]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'length == 2 and all(.[]; .result == "success")' <<< "$RESULTS"
