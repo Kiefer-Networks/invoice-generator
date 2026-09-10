@@ -80,6 +80,52 @@ func TestRepositoryPolicies(t *testing.T) {
 	if err := Workflows("../../.github/workflows"); err != nil {
 		t.Fatal(err)
 	}
+	installer, err := os.ReadFile("../../scripts/install-ci-tool.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := BuildxInstaller(installer); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuildxMustBeVerifiedBeforeUse(t *testing.T) {
+	install := map[string]any{"run": "bash scripts/install-ci-tool.sh buildx"}
+	use := map[string]any{"run": "docker buildx create --use"}
+	for _, tc := range []struct {
+		name  string
+		steps []map[string]any
+		valid bool
+	}{
+		{"verified", []map[string]any{install, use}, true},
+		{"runner-binary", []map[string]any{use}, false},
+		{"installed-too-late", []map[string]any{use, install}, false},
+		{"action-download", []map[string]any{{"uses": "docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e"}}, false},
+		{"conditional-install", []map[string]any{{"run": "bash scripts/install-ci-tool.sh buildx", "if": "false"}, use}, false},
+		{"ignored-install-failure", []map[string]any{{"run": "bash scripts/install-ci-tool.sh buildx", "continue-on-error": true}, use}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := BuildxSteps(tc.steps); (err == nil) != tc.valid {
+				t.Fatalf("unexpected result: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildxChecksumCannotBeRemoved(t *testing.T) {
+	installer, err := os.ReadFile("../../scripts/install-ci-tool.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, from := range []string{"ae43fa08c796b44efc86d7a63c55f73f7c35f3101188dea7bf93bcd6f99577ba", "sha256sum --check --status"} {
+		changed := strings.Replace(string(installer), from, "removed", 1)
+		if changed == string(installer) {
+			t.Fatal("fixture not mutated")
+		}
+		if BuildxInstaller([]byte(changed)) == nil {
+			t.Fatal("unverified installer accepted")
+		}
+	}
 }
 
 func TestWorkflowPrivilegeAndGateMutations(t *testing.T) {
@@ -96,11 +142,14 @@ func TestWorkflowPrivilegeAndGateMutations(t *testing.T) {
 		{"missing-visual", "ci.yml", "paperless, visual, cross-build", "paperless, cross-build"},
 		{"untested-promotion", "release.yml", "candidate, candidate-runtime]", "candidate]"},
 		{"automatic-build-record", "container.yml", "DOCKER_BUILD_RECORD_UPLOAD: 'false'", "DOCKER_BUILD_RECORD_UPLOAD: 'true'"},
+		{"unverified-container-buildx", "container.yml", "bash scripts/install-ci-tool.sh buildx", "docker buildx version"},
+		{"unverified-release-buildx", "release.yml", "bash scripts/install-ci-tool.sh buildx", "docker buildx version"},
+		{"unverified-visual-buildx", "ci.yml", "bash scripts/install-ci-tool.sh buildx", "docker buildx version"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			for _, file := range []string{"ci.yml", "security.yml", "container.yml", "release.yml"} {
-				b, err := os.ReadFile("../../.github/workflows/" + file)
+				b, err := os.ReadFile("../../.github/workflows/" + file) // #nosec G304 -- Read only the four literal workflow filenames in the repository to construct adversarial policy fixtures.
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -112,7 +161,7 @@ func TestWorkflowPrivilegeAndGateMutations(t *testing.T) {
 					}
 					b = []byte(changed)
 				}
-				if err := os.WriteFile(dir+"/"+file, b, 0600); err != nil {
+				if err := os.WriteFile(dir+"/"+file, b, 0600); err != nil { // #nosec G703 -- file is one of four literal workflow names and dir is this test's TempDir.
 					t.Fatal(err)
 				}
 			}

@@ -226,6 +226,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install checksum-verified Buildx
+        run: bash scripts/install-ci-tool.sh buildx
       - run: bash scripts/test-visual.sh
   cross-build:
     name: Build Linux ${{ matrix.arch }}

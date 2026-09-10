@@ -3,6 +3,8 @@
 set -euo pipefail
 tool=${1:?tool name required}
 case "$tool" in
+  # Official v0.37.0 release asset and downloaded bytes verified 2026-09-10.
+  buildx) version=0.37.0; repo=docker/buildx; asset=buildx-v${version}.linux-amd64; sha=ae43fa08c796b44efc86d7a63c55f73f7c35f3101188dea7bf93bcd6f99577ba ;;
   golangci-lint) version=2.13.2; repo=golangci/golangci-lint; asset=golangci-lint-${version}-linux-amd64.tar.gz; sha=2277d43b98ec0054280f2ac26b53268bae97682444678a59a657dd565da021d6 ;;
   actionlint) version=1.7.12; repo=rhysd/actionlint; asset=actionlint_${version}_linux_amd64.tar.gz; sha=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 ;;
   zizmor) version=1.30.0; repo=zizmorcore/zizmor; asset=zizmor-x86_64-unknown-linux-gnu.tar.gz; sha=ec8c95cd800845abb9bbc5f377ec7c57d2eb8e2386a00a201d3a74ee4092e5ed ;;
@@ -17,6 +19,14 @@ archive=$(mktemp)
 trap 'rm -f "$archive"' EXIT
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 "https://github.com/$repo/releases/download/v$version/$asset" -o "$archive"
 printf '%s  %s\n' "$sha" "$archive" | sha256sum --check --status
+if [[ $tool == buildx ]]; then
+  [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]]
+  plugin_dir=${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins
+  mkdir -p "$plugin_dir"
+  install -m 0755 "$archive" "$plugin_dir/docker-buildx"
+  docker buildx version
+  exit 0
+fi
 if [[ $tool == golangci-lint ]]; then
   tar -xzf "$archive" -C "$destination" --strip-components=1 "golangci-lint-${version}-linux-amd64/golangci-lint"
 else

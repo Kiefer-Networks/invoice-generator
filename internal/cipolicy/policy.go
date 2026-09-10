@@ -253,6 +253,9 @@ func Workflows(dir string) error {
 			return fmt.Errorf("mutable installer forbidden")
 		}
 		for name, j := range w.Jobs {
+			if err := BuildxSteps(j.Steps); err != nil {
+				return fmt.Errorf("%s/%s: %w", file, name, err)
+			}
 			for _, permission := range j.Permissions {
 				if permission == "write" && (file != "release.yml" || (name != "candidate" && name != "promote")) {
 					return fmt.Errorf("write permission outside release is forbidden")
@@ -292,6 +295,49 @@ func Workflows(dir string) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// BuildxSteps forbids installer actions that download unchecked executables and
+// requires the checksum-verified installer before direct or scripted Docker builds.
+func BuildxSteps(steps []map[string]any) error {
+	verified := false
+	for _, step := range steps {
+		uses, _ := step["uses"].(string)
+		if strings.HasPrefix(uses, "docker/setup-buildx-action@") {
+			return fmt.Errorf("buildx action downloads are not checksum-verified")
+		}
+		run, _ := step["run"].(string)
+		if strings.TrimSpace(run) == "bash scripts/install-ci-tool.sh buildx" {
+			if _, conditional := step["if"]; conditional || step["continue-on-error"] != nil {
+				return fmt.Errorf("buildx verification must run unconditionally and fail closed")
+			}
+			verified = true
+		}
+		for _, command := range []string{"docker buildx", "scripts/ci-local.sh", "scripts/ci-local.ps1", "scripts/test-visual.sh"} {
+			if strings.Contains(run, command) && !verified {
+				return fmt.Errorf("buildx checksum verification must precede use")
+			}
+		}
+	}
+	return nil
+}
+
+func BuildxInstaller(data []byte) error {
+	script := string(data)
+	for _, required := range []string{
+		"buildx) version=0.37.0; repo=docker/buildx; asset=buildx-v${version}.linux-amd64; sha=ae43fa08c796b44efc86d7a63c55f73f7c35f3101188dea7bf93bcd6f99577ba",
+		"set -euo pipefail",
+		"sha256sum --check --status",
+		`install -m 0755 "$archive" "$plugin_dir/docker-buildx"`,
+	} {
+		if !strings.Contains(script, required) {
+			return fmt.Errorf("verified Buildx release pin or installation guard missing")
+		}
+	}
+	if strings.Index(script, "sha256sum --check --status") > strings.Index(script, "install -m 0755") {
+		return fmt.Errorf("buildx checksum must be checked before installation")
 	}
 	return nil
 }

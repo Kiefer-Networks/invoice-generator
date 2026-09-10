@@ -21,7 +21,14 @@ func run() error {
 	}
 	switch os.Args[1] {
 	case "actions", "workflows":
-		return cipolicy.Workflows(".github/workflows")
+		if err := cipolicy.Workflows(".github/workflows"); err != nil {
+			return err
+		}
+		installer, err := os.ReadFile("scripts/install-ci-tool.sh")
+		if err != nil {
+			return err
+		}
+		return cipolicy.BuildxInstaller(installer)
 	case "container":
 		c, e := os.ReadFile("compose.yaml")
 		if e != nil {

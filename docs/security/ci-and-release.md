@@ -58,7 +58,10 @@ Release runs only from a protected exact `vMAJOR.MINOR.PATCH` tag whose commit i
 in main history; manual runs must select such a tag. It invokes all three reusable
 workflows at that exact commit and waits for success. After environment approval,
 one candidate multiarchitecture build uses that tested SHA without external cache.
-Buildx v0.37.0 uses the separately pinned BuildKit v0.33.0 daemon. SBOMs are generated
+Buildx v0.37.0 is installed from the official Linux AMD64 release asset only after
+matching its recorded SHA-256, and uses the separately pinned BuildKit v0.33.0
+daemon. Builders are created directly; no setup action downloads Buildx binaries.
+The visual and local-parity jobs use the same verified CLI plugin. SBOMs are generated
 by checksum-verified Syft and scrubbed before their attestation is published;
 BuildKit's automatic raw SBOM export is disabled. Each platform is scanned by digest; SBOMs
 and GitHub OIDC provenance are attested. Native AMD64 and ARM64 jobs then pull that
