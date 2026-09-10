@@ -45,9 +45,15 @@ func (a *app) customerNew(w http.ResponseWriter, r *http.Request) {
 			var customer store.Customer
 			customer, err = a.store.CustomerRepository().Create(r.Context(), input)
 			if err == nil {
+				if !a.auditMutation(w, r, "customer.created", "customer", customer.ID, nil) {
+					return
+				}
 				a.customerSaved(w, r, customer)
 				return
 			}
+		}
+		if !a.auditMutation(w, r, "customer.created", "customer", "", err) {
+			return
 		}
 		a.renderCustomerError(w, r, pageData{CustomerInput: input, CustomerAction: "/customers/new", CustomerTitle: "New customer", Raw: rawForm(r)}, err)
 	default:
@@ -140,9 +146,15 @@ func (a *app) customerEdit(w http.ResponseWriter, r *http.Request, id string) {
 			var c store.Customer
 			c, err = a.store.CustomerRepository().Update(r.Context(), id, version, input)
 			if err == nil {
+				if !a.auditMutation(w, r, "customer.updated", "customer", c.ID, nil) {
+					return
+				}
 				a.customerSaved(w, r, c)
 				return
 			}
+		}
+		if !a.auditMutation(w, r, "customer.updated", "customer", id, err) {
+			return
 		}
 		status := http.StatusBadRequest
 		if errors.Is(err, store.ErrConflict) {
@@ -170,6 +182,9 @@ func (a *app) customerState(w http.ResponseWriter, r *http.Request, id string, a
 			var c store.Customer
 			c, err = a.store.CustomerRepository().Restore(r.Context(), id, version)
 			if err == nil {
+				if !a.auditMutation(w, r, actionForState(active, "customer"), "customer", c.ID, nil) {
+					return
+				}
 				a.customerSaved(w, r, c)
 				return
 			}
@@ -177,10 +192,16 @@ func (a *app) customerState(w http.ResponseWriter, r *http.Request, id string, a
 			var c store.Customer
 			c, err = a.store.CustomerRepository().Archive(r.Context(), id, version)
 			if err == nil {
+				if !a.auditMutation(w, r, actionForState(active, "customer"), "customer", c.ID, nil) {
+					return
+				}
 				a.customerSaved(w, r, c)
 				return
 			}
 		}
+	}
+	if !a.auditMutation(w, r, actionForState(active, "customer"), "customer", id, err) {
+		return
 	}
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)

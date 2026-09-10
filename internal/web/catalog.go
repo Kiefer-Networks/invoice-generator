@@ -50,9 +50,15 @@ func (a *app) catalogNew(w http.ResponseWriter, r *http.Request) {
 			var item store.CatalogItem
 			item, err = a.store.CatalogRepository().Create(r.Context(), input)
 			if err == nil {
+				if !a.auditMutation(w, r, "catalog.created", "catalog_item", item.ID, nil) {
+					return
+				}
 				a.catalogSaved(w, r, item)
 				return
 			}
+		}
+		if !a.auditMutation(w, r, "catalog.created", "catalog_item", "", err) {
+			return
 		}
 		a.renderCatalogError(w, r, pageData{CatalogInput: input, CatalogAction: "/catalog/new" + catalogQuerySuffix(r.URL.Query()), CatalogTitle: "New catalog item", Raw: rawForm(r)}, err)
 	default:
@@ -146,9 +152,15 @@ func (a *app) catalogEdit(w http.ResponseWriter, r *http.Request, id string) {
 			var item store.CatalogItem
 			item, err = a.store.CatalogRepository().Update(r.Context(), id, version, input)
 			if err == nil {
+				if !a.auditMutation(w, r, "catalog.updated", "catalog_item", item.ID, nil) {
+					return
+				}
 				a.catalogSaved(w, r, item)
 				return
 			}
+		}
+		if !a.auditMutation(w, r, "catalog.updated", "catalog_item", id, err) {
+			return
 		}
 		if errors.Is(err, store.ErrNotFound) {
 			http.NotFound(w, r)
@@ -178,6 +190,9 @@ func (a *app) catalogState(w http.ResponseWriter, r *http.Request, id string, ac
 			var item store.CatalogItem
 			item, err = a.store.CatalogRepository().Restore(r.Context(), id, version)
 			if err == nil {
+				if !a.auditMutation(w, r, actionForState(active, "catalog"), "catalog_item", item.ID, nil) {
+					return
+				}
 				a.catalogSaved(w, r, item)
 				return
 			}
@@ -185,10 +200,16 @@ func (a *app) catalogState(w http.ResponseWriter, r *http.Request, id string, ac
 			var item store.CatalogItem
 			item, err = a.store.CatalogRepository().Archive(r.Context(), id, version)
 			if err == nil {
+				if !a.auditMutation(w, r, actionForState(active, "catalog"), "catalog_item", item.ID, nil) {
+					return
+				}
 				a.catalogSaved(w, r, item)
 				return
 			}
 		}
+	}
+	if !a.auditMutation(w, r, actionForState(active, "catalog"), "catalog_item", id, err) {
+		return
 	}
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)

@@ -25,8 +25,12 @@ func (a *app) company(w http.ResponseWriter, r *http.Request) {
 		a.renderCompany(w, r, pageData{CompanyInput: input})
 	case http.MethodPost:
 		input, err := companyInputFromRequest(r)
+		var company store.Company
 		if err == nil {
-			_, err = a.store.CompanyRepository().Save(r.Context(), input)
+			company, err = a.store.CompanyRepository().Save(r.Context(), input)
+		}
+		if !a.auditMutation(w, r, "company.saved", "company", company.ID, err) {
+			return
 		}
 		if err != nil {
 			a.renderCompanyError(w, r, input, rawForm(r), err)

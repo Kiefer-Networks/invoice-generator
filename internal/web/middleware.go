@@ -34,7 +34,7 @@ func principalFromContext(ctx context.Context) (auth.Principal, bool) {
 }
 
 func (a *app) chain(next http.Handler) http.Handler {
-	return a.recover(a.correlation(a.proxy(a.transport(a.host(a.limit(a.security(a.log(a.session(next)))))))))
+	return a.recover(a.correlation(a.proxy(a.transport(a.host(a.limit(a.security(a.log(a.resources(a.session(next))))))))))
 }
 func (a *app) recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

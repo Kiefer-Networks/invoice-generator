@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -450,7 +451,9 @@ func serve(cfg Config) (result error) {
 	defer func() {
 		result = finishService(result, stopDocuments)
 	}()
-	handler, err := web.New(web.Dependencies{Documents: documentService, WakeDocuments: wakeDocuments, Auth: manager, Store: database, Config: web.Config{DevAssetsDir: cfg.DevAssetsDir, AllowedHosts: cfg.AllowedHosts, TrustedProxies: cfg.TrustedProxies, Development: cfg.Development, BodyLimit: cfg.BodyLimit}})
+	logger := newApplicationLogger(cfg.Development, os.Stderr)
+	slog.SetDefault(logger)
+	handler, err := web.New(web.Dependencies{Documents: documentService, WakeDocuments: wakeDocuments, Auth: manager, Store: database, Logger: logger, Config: web.Config{DevAssetsDir: cfg.DevAssetsDir, AllowedHosts: cfg.AllowedHosts, TrustedProxies: cfg.TrustedProxies, Development: cfg.Development, BodyLimit: cfg.BodyLimit}})
 	if err != nil {
 		return err
 	}

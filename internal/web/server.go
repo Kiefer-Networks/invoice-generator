@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
 	"github.com/kiefer-networks/invoice-generator/internal/documents"
@@ -39,11 +40,16 @@ type Authenticator interface {
 }
 
 type Config struct {
-	DevAssetsDir   string
-	AllowedHosts   []string
-	TrustedProxies []netip.Prefix
-	Development    bool
-	BodyLimit      int64
+	DevAssetsDir         string
+	AllowedHosts         []string
+	TrustedProxies       []netip.Prefix
+	Development          bool
+	BodyLimit            int64
+	authRateLimit        int
+	authRateWindow       time.Duration
+	authRateClients      int
+	expensiveConcurrency int
+	now                  func() time.Time
 }
 type Dependencies struct {
 	Documents     *documents.Service
@@ -62,6 +68,8 @@ type app struct {
 	logger        *slog.Logger
 	templates     *template.Template
 	static        http.Handler
+	authLimiter   *clientRateLimiter
+	expensive     chan struct{}
 }
 
 type pageData struct {
@@ -124,6 +132,21 @@ func newWithFiles(deps Dependencies, assets fs.FS) (http.Handler, error) {
 	if deps.Config.BodyLimit != defaultBodyLimit {
 		return nil, errors.New("body limit must be 1 MiB")
 	}
+	if deps.Config.authRateLimit <= 0 {
+		deps.Config.authRateLimit = defaultAuthRateLimit
+	}
+	if deps.Config.authRateWindow <= 0 {
+		deps.Config.authRateWindow = defaultAuthRateWindow
+	}
+	if deps.Config.authRateClients <= 0 {
+		deps.Config.authRateClients = defaultAuthRateClients
+	}
+	if deps.Config.expensiveConcurrency <= 0 {
+		deps.Config.expensiveConcurrency = defaultExpensiveConcurrent
+	}
+	if deps.Config.now == nil {
+		deps.Config.now = time.Now
+	}
 	files, err := fs.Sub(assets, "static")
 	if err != nil {
 		return nil, err
@@ -136,7 +159,7 @@ func newWithFiles(deps Dependencies, assets fs.FS) (http.Handler, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	a := &app{documents: deps.Documents, wakeDocuments: deps.WakeDocuments, auth: deps.Auth, store: deps.Store, config: deps.Config, logger: logger, templates: t, static: http.StripPrefix("/assets/", http.FileServer(http.FS(files)))}
+	a := &app{documents: deps.Documents, wakeDocuments: deps.WakeDocuments, auth: deps.Auth, store: deps.Store, config: deps.Config, logger: logger, templates: t, static: http.StripPrefix("/assets/", http.FileServer(http.FS(files))), authLimiter: newClientRateLimiter(deps.Config.authRateLimit, deps.Config.authRateWindow, deps.Config.authRateClients, deps.Config.now), expensive: make(chan struct{}, deps.Config.expensiveConcurrency)}
 	return a.chain(http.HandlerFunc(a.routes)), nil
 }
 
@@ -246,6 +269,11 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	destination, transaction, err := a.auth.Begin(r.URL.Query().Get("return_to"))
+	if auditErr := a.audit(r, "", "auth.login", "authentication", "", auditResult(err)); auditErr != nil {
+		a.logger.Error("persist authentication audit", "action", "auth.login")
+		http.Error(w, "unable to start sign-in", http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil {
 		http.Error(w, "unable to start sign-in", http.StatusServiceUnavailable)
 		return
@@ -273,11 +301,27 @@ func (a *app) callback(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, result.TransactionCookie)
 	}
 	if err != nil {
+		if auditErr := a.audit(r, "", "auth.callback", "authentication", "", "failure"); auditErr != nil {
+			a.logger.Error("persist authentication audit", "action", "auth.callback")
+			http.Error(w, "sign-in unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, "sign-in failed", http.StatusBadRequest)
 		return
 	}
 	if result.SessionCookie == nil {
+		if auditErr := a.audit(r, "", "auth.callback", "authentication", "", "failure"); auditErr != nil {
+			a.logger.Error("persist authentication audit", "action", "auth.callback")
+			http.Error(w, "sign-in unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, "sign-in failed", http.StatusBadRequest)
+		return
+	}
+	if auditErr := a.audit(r, result.Principal.Subject, "auth.callback", "authentication", result.Principal.UserID, "success"); auditErr != nil {
+		_ = a.auth.Logout(r.Context(), result.SessionCookie)
+		a.logger.Error("persist authentication audit", "action", "auth.callback")
+		http.Error(w, "sign-in unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	a.protectCookie(result.SessionCookie, http.SameSiteStrictMode)
@@ -290,7 +334,13 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session := cookie(r, "invoice_session")
-	if err := a.auth.Logout(r.Context(), session); err != nil {
+	err := a.auth.Logout(r.Context(), session)
+	if auditErr := a.audit(r, "", "auth.logout", "authentication", "", auditResult(err)); auditErr != nil {
+		a.logger.Error("persist authentication audit", "action", "auth.logout")
+		http.Error(w, "unable to sign out", http.StatusInternalServerError)
+		return
+	}
+	if err != nil {
 		http.Error(w, "unable to sign out", http.StatusInternalServerError)
 		return
 	}
