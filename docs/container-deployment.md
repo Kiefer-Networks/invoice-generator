@@ -4,10 +4,11 @@ Production uses the `production` Go build tag: local OIDC/Paperless implementati
 synthetic JSON, banners and asset reload are absent from its binary. The separate
 `development` target contains them. The image pins Go 1.27.1, Chromium
 152.0.7977.82, OpenJDK 21.0.12, Alpine 3.24.1, multiarchitecture base-image
-digests and the Dockerfile frontend. APK verifies repository signatures and the
-runtime package versions are pinned. Update the runtime versions and digests
-together after review; the CI freshness and vulnerability gates reject stale or
-vulnerable runtime inputs.
+digests and the Dockerfile frontend. APK verifies repository signatures; every
+security-sensitive direct runtime package is version-pinned. The generated SBOM
+and provenance record the resolved closure for each immutable image digest.
+Update the runtime versions and digests together after review; the CI freshness
+and vulnerability gates reject stale or vulnerable runtime inputs.
 The JDK is required for Java source launch of the embedded official CII schemas;
 their manifest/license and Alpine package metadata are retained. Go runtime
 and compiled module licenses/notices are under

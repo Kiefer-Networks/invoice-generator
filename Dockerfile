@@ -17,8 +17,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -buildvcs
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -trimpath -o /out/browser.test ./internal/web
 
 FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS runtime
-RUN apk upgrade --no-cache && \
-    apk add --no-cache ca-certificates=20260611-r0 chromium=152.0.7977.82-r0 openjdk21-jdk=21.0.12_p8-r0 font-liberation=2.1.5-r2 curl=8.22.0-r0 && \
+RUN apk add --no-cache ca-certificates=20260611-r0 chromium=152.0.7977.82-r0 openjdk21-jdk=21.0.12_p8-r0 font-liberation=2.1.5-r2 curl=8.22.0-r0 libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 && \
     mkdir -p /data/database /data/documents /backup /config /development && \
     chown -R 65532:65532 /data /backup /development && chmod 0700 /data /data/database /data/documents /backup /development
 ENV HOME=/tmp INVOICE_CHROME=/usr/bin/chromium
