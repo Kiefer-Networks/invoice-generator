@@ -33,7 +33,7 @@ func invoiceHTTP(t *testing.T, h http.Handler) func(string, string, url.Values, 
 			t.Fatal(err)
 		}
 		req.Host = "app.example.test"
-		req.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
+		req.AddCookie(&http.Cookie{Name: "__Host-invoice_session", Value: "session"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
 		if form != nil {
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		}
