@@ -44,7 +44,7 @@ func browserFixture(t *testing.T) (*httptest.Server, *store.Store, *devmode.Pape
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	if e = db.Migrate(ctx); e != nil {
 		t.Fatal(e)
 	}
@@ -72,7 +72,7 @@ func browserFixture(t *testing.T) (*httptest.Server, *store.Store, *devmode.Pape
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { storage.Close() })
+	t.Cleanup(func() { _ = storage.Close() })
 	svc := documents.New(db, storage)
 	runner := jobs.New(db.DocumentRepository(), svc.Generate)
 	worker := jobs.NewPaperlessWorker(db, storage, func() (*paperless.Client, error) {
@@ -144,7 +144,7 @@ func assertRemoteDocumentCount(t *testing.T, remote *devmode.Paperless, want int
 func TestBrowserWorkflow(t *testing.T) {
 	t.Cleanup(func() {
 		for _, name := range []string{"pids.current", "pids.events", "cpu.stat", "memory.events"} {
-			if data, err := os.ReadFile("/sys/fs/cgroup/" + name); err == nil {
+			if data, err := os.ReadFile("/sys/fs/cgroup/" + name); err == nil { // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 				t.Logf("cgroup %s: %s", name, data)
 			}
 		}
@@ -240,7 +240,7 @@ func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.S
 	if e != nil {
 		t.Fatal(e)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	if res.StatusCode != http.StatusSeeOther && res.StatusCode != http.StatusFound {
 		t.Fatalf("anonymous retry was not redirected to authentication: %d", res.StatusCode)
 	}

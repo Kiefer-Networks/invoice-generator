@@ -69,7 +69,7 @@ func customerRequest(t *testing.T, h http.Handler, method, target string, form u
 	if htmx {
 		r.Header.Set("HX-Request", "true")
 	}
-	r.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"})
+	r.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"}) // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w

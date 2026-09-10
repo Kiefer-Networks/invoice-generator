@@ -5,6 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+
 	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
 	"github.com/kiefer-networks/invoice-generator/internal/pdfattach"
 	"github.com/kiefer-networks/invoice-generator/internal/render"
@@ -12,10 +17,6 @@ import (
 	"github.com/kiefer-networks/invoice-generator/internal/zugferd"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
-	"io"
-	"os"
-	"path/filepath"
-	"time"
 )
 
 const GeneratorVersion = "chrome-snapshot-cii-d16b-1"
@@ -65,7 +66,7 @@ func (s *Service) Preview(ctx context.Context, id string) ([]byte, error) {
 	}
 	return s.renderPDF(ctx, p, nil)
 }
-func (s *Service) renderPDF(ctx context.Context, p *render.TplData, xml []byte) ([]byte, error) {
+func (s *Service) renderPDF(ctx context.Context, p *render.TplData, xml []byte) (data []byte, err error) {
 	if e := s.acquire(ctx); e != nil {
 		return nil, e
 	}
@@ -74,7 +75,7 @@ func (s *Service) renderPDF(ctx context.Context, p *render.TplData, xml []byte) 
 	if e != nil {
 		return nil, e
 	}
-	defer os.RemoveAll(dir)
+	defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
 	path := filepath.Join(dir, "invoice.pdf")
 	if e = s.render(ctx, p, path); e != nil {
 		return nil, e
@@ -94,12 +95,12 @@ func (s *Service) renderPDF(ctx context.Context, p *render.TplData, xml []byte) 
 			return nil, e
 		}
 	}
-	f, e := os.Open(path)
+	f, e := os.Open(path) // #nosec G304 -- path is the fixed invoice.pdf name inside this operation's private MkdirTemp directory; no request path is used.
 	if e != nil {
 		return nil, e
 	}
-	defer f.Close()
-	data, e := io.ReadAll(io.LimitReader(f, s.storage.max+1))
+	defer func() { _ = f.Close() }() // Read-only input; reads and validation report their own errors.
+	data, e = io.ReadAll(io.LimitReader(f, s.storage.max+1))
 	if e != nil {
 		return nil, e
 	}
@@ -216,13 +217,13 @@ func (s *Service) Recover(ctx context.Context) error {
 	for rows.Next() {
 		var id string
 		if e = rows.Scan(&id); e != nil {
-			rows.Close()
+			_ = rows.Close() // Release the handle without replacing the validation result.
 			return e
 		}
 		ids = append(ids, id)
 	}
 	e = rows.Err()
-	rows.Close()
+	_ = rows.Close() // Release the handle without replacing the validation result.
 	if e != nil {
 		return e
 	}
@@ -239,13 +240,13 @@ func (s *Service) Recover(ctx context.Context) error {
 	for rows.Next() {
 		var key string
 		if e = rows.Scan(&key); e != nil {
-			rows.Close()
+			_ = rows.Close() // Release the handle without replacing the validation result.
 			return e
 		}
 		refs[key] = true
 	}
 	e = rows.Err()
-	rows.Close()
+	_ = rows.Close() // Release the handle without replacing the validation result.
 	if e != nil {
 		return e
 	}

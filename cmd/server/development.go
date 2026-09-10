@@ -5,11 +5,12 @@ package main
 import (
 	"errors"
 	"flag"
-	"github.com/kiefer-networks/invoice-generator/internal/devmode"
 	"io"
 	"net"
 	"path/filepath"
 	"strings"
+
+	"github.com/kiefer-networks/invoice-generator/internal/devmode"
 )
 
 func parseDevelopment(args []string, getenv func(string) string) (Config, error) {

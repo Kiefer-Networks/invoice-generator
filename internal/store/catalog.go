@@ -7,9 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/kiefer-networks/invoice-generator/internal/units"
 	"strings"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/units"
 )
 
 // CatalogInput is the editable catalog item data. Prices and tax rates remain
@@ -98,7 +99,7 @@ func (r *CatalogRepository) List(ctx context.Context, options CatalogListOptions
 	}
 	query := `SELECT id, number, kind, title, description, unit, net_unit_price_minor, tax_rate_scaled, active, version, created_at, updated_at FROM catalog_items`
 	if len(where) != 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
+		query += " WHERE " + strings.Join(where, " AND ") // #nosec G202 -- Only literal predicates are joined; all search and cursor values use bound parameters.
 	}
 	query += " ORDER BY sort_key, number, id LIMIT ?"
 	args = append(args, limit+1)
@@ -106,7 +107,7 @@ func (r *CatalogRepository) List(ctx context.Context, options CatalogListOptions
 	if err != nil {
 		return CatalogPage{}, fmt.Errorf("list catalog: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }() // Read-only query; iteration errors are checked with rows.Err.
 	page := CatalogPage{}
 	for rows.Next() {
 		item, err := scanCatalog(rows)
@@ -238,7 +239,7 @@ func backfillCatalogKeysOnConn(ctx context.Context, conn *sql.Conn) error {
 	if err != nil {
 		return fmt.Errorf("read catalog keys: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }() // Read-only query; iteration errors are checked with rows.Err.
 	type row struct {
 		id           string
 		in           CatalogInput

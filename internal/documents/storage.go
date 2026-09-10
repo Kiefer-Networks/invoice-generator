@@ -56,7 +56,7 @@ func (s *Storage) Put(r io.Reader) (a Artifact, err error) {
 	if e != nil {
 		return a, e
 	}
-	defer func() { f.Close(); s.root.Remove(tmp) }()
+	defer func() { _ = f.Close(); _ = s.root.Remove(tmp) }() // Success checks Sync and Close; Sweep cleans any orphaned scratch file.
 	h := sha256.New()
 	n, e := io.Copy(io.MultiWriter(f, h), io.LimitReader(r, s.max+1))
 	if e != nil {
@@ -102,7 +102,7 @@ func (s *Storage) Open(key, sum string, size int64) (*os.File, error) {
 	ok := false
 	defer func() {
 		if !ok {
-			f.Close()
+			_ = f.Close() // Release the handle without replacing the validation result.
 		}
 	}()
 	opened, e := f.Stat()
@@ -128,7 +128,7 @@ func (s *Storage) Sweep(before time.Time, referenced map[string]bool) error {
 	if e != nil {
 		return e
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }() // Read-only directory handle; removals report their own errors.
 	entries, e := dir.ReadDir(-1)
 	if e != nil {
 		return e

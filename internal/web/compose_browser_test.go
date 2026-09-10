@@ -5,15 +5,16 @@ package web_test
 import (
 	"context"
 	"encoding/json"
-	"github.com/chromedp/cdproto/runtime"
-	"github.com/chromedp/chromedp"
-	"github.com/kiefer-networks/invoice-generator/internal/render"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chromedp/cdproto/runtime"
+	"github.com/chromedp/chromedp"
+	"github.com/kiefer-networks/invoice-generator/internal/render"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func composeBrowser(t *testing.T) (browserUI, string, func()) {
@@ -51,7 +52,7 @@ func TestPrepareRecoveryFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.DB().ExecContext(ctx, "DROP TABLE development_fixture_version"); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {

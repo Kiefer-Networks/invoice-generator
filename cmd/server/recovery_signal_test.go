@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func TestRecoverySignalChild(t *testing.T) {
@@ -30,9 +31,13 @@ func TestRecoverySignalCleansReservationAndStaging(t *testing.T) {
 	root := t.TempDir()
 	database := filepath.Join(root, "source.sqlite")
 	docs := filepath.Join(root, "documents")
-	os.Mkdir(docs, 0700)
+	if err := os.Mkdir(docs, 0700); err != nil {
+		t.Error(err)
+	}
 	key := filepath.Join(root, "key")
-	os.WriteFile(key, bytes.Repeat([]byte{4}, 32), 0600)
+	if err := os.WriteFile(key, bytes.Repeat([]byte{4}, 32), 0600); err != nil {
+		t.Error(err)
+	}
 	archive := filepath.Join(root, "backup.enc")
 	db, e := store.Open(context.Background(), database)
 	if e != nil {
@@ -46,9 +51,13 @@ func TestRecoverySignalCleansReservationAndStaging(t *testing.T) {
 	if _, e = db.DB().Exec(`PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE`); e != nil {
 		t.Fatal(e)
 	}
-	defer db.DB().Exec(`ROLLBACK`)
+	defer func() { _, _ = db.DB().Exec(`ROLLBACK`) }() // Best-effort cleanup of the held test transaction.
 	args, _ := json.Marshal([]string{"backup", "-database", database, "-document-root", docs, "-output", archive, "-key-file", key})
-	cmd := exec.Command(os.Args[0], "-test.run=^TestRecoverySignalChild$")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(executable, "-test.run=^TestRecoverySignalChild$") // #nosec G204 -- Fixed integration-test command; variable arguments are generated fixture paths or IDs, never request data.
 	cmd.Env = append(os.Environ(), "INVOICE_RECOVERY_TEST_CHILD=1", "INVOICE_RECOVERY_TEST_ARGS="+string(args))
 	configureRecoverySignalChild(cmd)
 	var output bytes.Buffer
@@ -62,7 +71,7 @@ func TestRecoverySignalCleansReservationAndStaging(t *testing.T) {
 	finished := false
 	defer func() {
 		if !finished {
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 			<-done
 		}
 	}()

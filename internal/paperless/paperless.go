@@ -43,11 +43,11 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("paperless config file too large (%d bytes, max %d)", info.Size(), maxConfigFileSize)
 	}
 
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- Local CLI configuration path; protected regular-file type, identity and bounded size are checked.
 	if err != nil {
 		return nil, fmt.Errorf("paperless config unavailable")
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Read-only input; read and upload errors are reported separately.
 	opened, err := f.Stat()
 	if err != nil || !os.SameFile(info, opened) {
 		return nil, fmt.Errorf("paperless config changed")
@@ -133,11 +133,11 @@ func Upload(cfg *Config, filePath, title string) error {
 	if e != nil {
 		return e
 	}
-	f, e := os.Open(filePath)
+	f, e := os.Open(filePath) // #nosec G304 -- Local CLI document path selected by the operator; server delivery uses documents.Storage.Open.
 	if e != nil {
 		return ErrRequest
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Read-only input; read and upload errors are reported separately.
 	info, e := f.Stat()
 	if e != nil || !info.Mode().IsRegular() {
 		return ErrRequest

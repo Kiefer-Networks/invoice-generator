@@ -82,7 +82,7 @@ func (a *app) documentRoute(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Read-only input; reads and validation report their own errors.
 	documentHeaders(w, "attachment")
 	w.Header().Set("ETag", `"`+d.SHA256+`"`)
 	http.ServeContent(w, r, "invoice.pdf", time.Time{}, f)

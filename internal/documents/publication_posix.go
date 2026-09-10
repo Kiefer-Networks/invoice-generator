@@ -2,7 +2,10 @@
 
 package documents
 
-import "os"
+import (
+	"errors"
+	"os"
+)
 
 // syncPublication makes the renamed directory entry durable before SQLite may
 // publish it. File.Sync before rename alone does not persist the directory entry.
@@ -11,6 +14,6 @@ func syncPublication(root *os.Root, _ string) error {
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
-	return dir.Sync()
+	err = dir.Sync()
+	return errors.Join(err, dir.Close())
 }

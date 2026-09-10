@@ -3,15 +3,16 @@ package documents
 import (
 	"context"
 	"errors"
-	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
-	"github.com/kiefer-networks/invoice-generator/internal/render"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
+	"github.com/kiefer-networks/invoice-generator/internal/render"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func serviceFixture(t *testing.T) (*Service, *store.Store, invoicing.Draft) {
@@ -21,7 +22,7 @@ func serviceFixture(t *testing.T) (*Service, *store.Store, invoicing.Draft) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	if e = db.Migrate(ctx); e != nil {
 		t.Fatal(e)
 	}
@@ -50,7 +51,7 @@ func serviceFixture(t *testing.T) (*Service, *store.Store, invoicing.Draft) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 	return New(db, st), db, d
 }
 func TestPreviewDraftWithoutPersistence(t *testing.T) {
@@ -67,11 +68,15 @@ func TestPreviewDraftWithoutPersistence(t *testing.T) {
 		t.Fatal(seen)
 	}
 	var n int
-	db.DB().QueryRow(`SELECT count(*) FROM documents`).Scan(&n)
+	if err := db.DB().QueryRow(`SELECT count(*) FROM documents`).Scan(&n); err != nil {
+		t.Error(err)
+	}
 	if n != 0 {
 		t.Fatal(n)
 	}
-	db.DB().QueryRow(`SELECT count(*) FROM invoice_finalization_keys`).Scan(&n)
+	if err := db.DB().QueryRow(`SELECT count(*) FROM invoice_finalization_keys`).Scan(&n); err != nil {
+		t.Error(err)
+	}
 	if n != 0 {
 		t.Fatal("preview persisted review", n)
 	}
@@ -111,7 +116,7 @@ func TestGenerateFrozenChromeArtifact(t *testing.T) {
 		t.Fatal(e)
 	}
 	b, _ := io.ReadAll(h)
-	h.Close()
+	_ = h.Close()
 	if e = validatePDF(b, nil); e != nil {
 		t.Fatal(e)
 	}
@@ -123,8 +128,12 @@ func TestGenerateFrozenChromeArtifact(t *testing.T) {
 	}
 	if os.Getenv("INVOICE_DOCUMENT_QA") != "" {
 		path := filepath.Join("..", "..", "tmp", "pdfs")
-		os.MkdirAll(path, 0700)
-		os.WriteFile(filepath.Join(path, "frozen-invoice.pdf"), b, 0600)
+		if err := os.MkdirAll(path, 0700); err != nil {
+			t.Error(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "frozen-invoice.pdf"), b, 0600); err != nil {
+			t.Error(err)
+		}
 	}
 	html, e := render.SnapshotHTML(f.Snapshot.RenderData())
 	if e != nil {

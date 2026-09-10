@@ -333,7 +333,7 @@ func protectedSecretFile(path, label string) error {
 	return nil
 }
 func validateApplicationKey(path, label string) error {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- Startup-only administrator-configured secret path; validateSecretFile checks its type and permissions.
 	if err != nil {
 		return fmt.Errorf("read %s: %w", label, err)
 	}
@@ -473,7 +473,7 @@ func revokeAllSessions(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }() // The readiness query reports its own errors.
 	if err := database.Migrate(ctx); err != nil {
 		return err
 	}

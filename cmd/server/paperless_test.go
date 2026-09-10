@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func TestPaperlessServerConfigAndMissingToken(t *testing.T) {

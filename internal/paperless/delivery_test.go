@@ -19,7 +19,7 @@ func TestPaperlessSubmissionCertaintyFromTransport(t *testing.T) {
 			t.Fatal(e)
 		}
 		addr := ln.Addr().String()
-		ln.Close()
+		_ = ln.Close()
 		c, e := NewClient(Config{URL: "http://" + addr, APIKey: "secret"}, nil, true)
 		if e != nil {
 			t.Fatal(e)
@@ -43,7 +43,10 @@ func TestPaperlessSubmissionCertaintyFromTransport(t *testing.T) {
 	t.Run("after_write", func(t *testing.T) {
 		read := make(chan struct{})
 		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			r.ParseMultipartForm(1000)
+			r.Body = http.MaxBytesReader(w, r.Body, 21<<20)
+			if err := r.ParseMultipartForm(1000); err != nil { // #nosec G120 -- MaxBytesReader above bounds the total mock upload body.
+				t.Error(err)
+			}
 			close(read)
 			<-r.Context().Done()
 		}))
@@ -60,7 +63,7 @@ func TestPaperlessSubmissionCertaintyFromTransport(t *testing.T) {
 
 func TestPaperlessLookupRejectsDifferentTitle(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"count":1,"results":[{"id":42,"title":"different"}]}`)
+		_, _ = fmt.Fprint(w, `{"count":1,"results":[{"id":42,"title":"different"}]}`)
 	}))
 	defer s.Close()
 	c, _ := NewClient(Config{URL: s.URL, APIKey: "secret"}, s.Client(), true)
@@ -76,34 +79,50 @@ func TestPaperlessDNSAndResponseHeaderTimeouts(t *testing.T) {
 			t.Fatal(e)
 		}
 		defer blackhole.Close()
-		old := net.DefaultResolver
-		defer func() { net.DefaultResolver = old }()
 		dialed := make(chan struct{}, 2)
-		net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+		resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			select {
 			case dialed <- struct{}{}:
 			default:
 			}
 			return (&net.Dialer{}).DialContext(ctx, "udp", blackhole.LocalAddr().String())
 		}}
-		c, e := NewClient(Config{URL: "https://paperless.invalid", APIKey: "secret"}, &http.Client{Timeout: 70 * time.Millisecond}, false)
+		c, e := newClientWithResolver(Config{URL: "https://paperless.invalid", APIKey: "secret"}, &http.Client{Timeout: time.Second}, false, resolver)
 		if e != nil {
 			t.Fatal(e)
 		}
-		start := time.Now()
-		_, e = c.Submit(context.Background(), strings.NewReader("%PDF"), 4, "title", nil)
-		var failure *SubmissionError
-		if !errors.As(e, &failure) || failure.Certainty != NotSent || time.Since(start) > time.Second {
-			t.Fatal(e)
-		}
+		result := make(chan error, 1)
+		go func() {
+			_, err := c.Submit(context.Background(), strings.NewReader("%PDF"), 4, "title", nil)
+			result <- err
+		}()
 		select {
 		case <-dialed:
-		default:
-			t.Fatal("DNS was not attempted")
+		case err := <-result:
+			t.Fatalf("request ended before the injected DNS lookup started: %v", err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("DNS lookup did not start")
+		}
+		// Synchronize on the real lookup before checking that the blackholed
+		// DNS exchange is interrupted, instead of timing test scheduling.
+		select {
+		case e = <-result:
+			var failure *SubmissionError
+			if !errors.As(e, &failure) || failure.Certainty != NotSent {
+				t.Fatal(e)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("DNS lookup outlived the client timeout")
 		}
 	})
 	t.Run("response_headers_after_write", func(t *testing.T) {
-		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { r.ParseMultipartForm(1000); <-r.Context().Done() }))
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, 21<<20)
+			if err := r.ParseMultipartForm(1000); err != nil { // #nosec G120 -- MaxBytesReader above bounds the total mock upload body.
+				t.Error(err)
+			}
+			<-r.Context().Done()
+		}))
 		defer s.Close()
 		c, _ := NewClient(Config{URL: s.URL, APIKey: "secret"}, s.Client(), true)
 		c.http.Timeout = time.Second

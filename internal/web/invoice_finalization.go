@@ -10,7 +10,7 @@ import (
 
 func (a *app) invoiceFinalizationRoute(w http.ResponseWriter, r *http.Request, id, action string) {
 	allowedGet := action == "review" || action == "cancel"
-	if r.Method != http.MethodPost && !(r.Method == http.MethodGet && allowedGet) {
+	if r.Method != http.MethodPost && (r.Method != http.MethodGet || !allowedGet) {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
@@ -85,7 +85,7 @@ func (a *app) invoiceFinalizationRoute(w http.ResponseWriter, r *http.Request, i
 		w.WriteHeader(200)
 		return
 	}
-	http.Redirect(w, r, path, http.StatusSeeOther)
+	http.Redirect(w, r, path, http.StatusSeeOther) // #nosec G710 -- The fixed /invoices/ prefix keeps the target same-origin; the query is URL-encoded.
 }
 func (a *app) finalizationError(w http.ResponseWriter, r *http.Request, err error) {
 	code := 500
@@ -119,7 +119,7 @@ func (a *app) renderInvoiceReview(w http.ResponseWriter, r *http.Request, id str
 			a.finalizationError(w, r, problem)
 			return
 		}
-		http.Redirect(w, r, "/invoices/"+id, http.StatusSeeOther)
+		http.Redirect(w, r, "/invoices/"+id, http.StatusSeeOther) // #nosec G710 -- The fixed /invoices/ prefix keeps the target same-origin.
 		return
 	}
 	review, err := invoicing.NewFinalizationService(a.store).PrepareReview(r.Context(), id, d.Version)

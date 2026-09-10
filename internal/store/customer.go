@@ -102,7 +102,7 @@ func (r *CustomerRepository) List(ctx context.Context, options CustomerListOptio
 	}
 	query := `SELECT id, number, display_name, legal_name, contact_name, email, address_line1, address_line2, postal_code, city, country, vat_identifier, preferred_language, currency, payment_terms_days, notes, active, version, created_at, updated_at FROM customers`
 	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
+		query += " WHERE " + strings.Join(where, " AND ") // #nosec G202 -- Only literal predicates are joined; all search and cursor values use bound parameters.
 	}
 	query += " ORDER BY sort_key, number, id LIMIT ?"
 	args = append(args, limit+1)
@@ -110,7 +110,7 @@ func (r *CustomerRepository) List(ctx context.Context, options CustomerListOptio
 	if err != nil {
 		return CustomerPage{}, fmt.Errorf("list customers: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }() // Read-only query; iteration errors are checked with rows.Err.
 	page := CustomerPage{}
 	for rows.Next() {
 		c, err := scanCustomerRows(rows)
@@ -262,7 +262,7 @@ func backfillCustomerKeysOnConn(ctx context.Context, conn *sql.Conn) error {
 	if err != nil {
 		return fmt.Errorf("read customer keys: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }() // Read-only query; iteration errors are checked with rows.Err.
 	type row struct {
 		id           string
 		in           CustomerInput

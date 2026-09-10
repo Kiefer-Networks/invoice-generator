@@ -5,12 +5,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/kiefer-networks/invoice-generator/internal/devmode"
-	"github.com/kiefer-networks/invoice-generator/internal/paperless"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/devmode"
+	"github.com/kiefer-networks/invoice-generator/internal/paperless"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func prepareDevelopment(cfg *Config) (func(), error) {
@@ -39,7 +40,11 @@ func prepareDevelopment(cfg *Config) (func(), error) {
 	cfg.devPaperless = func() (*paperless.Client, error) {
 		return paperless.NewClient(paperless.Config{URL: remote.URL, APIKey: devmode.PaperlessToken}, &http.Client{Timeout: time.Second}, true)
 	}
-	fmt.Fprintln(os.Stdout, "LOCAL DEVELOPMENT — synthetic data only — http://"+cfg.Listen)
+	if _, err := fmt.Fprintln(os.Stdout, "LOCAL DEVELOPMENT — synthetic data only — http://"+cfg.Listen); err != nil {
+		remote.Close()
+		provider.Close()
+		return noop, err
+	}
 	return func() { remote.Close(); provider.Close() }, nil
 }
 func seedDevelopment(ctx context.Context, db *store.Store) error { return devmode.Seed(ctx, db) }

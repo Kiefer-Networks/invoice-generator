@@ -9,14 +9,30 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"golang.org/x/crypto/argon2"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/argon2"
 )
+
+func TestBackupChunkRejectsOversizedPlaintext(t *testing.T) {
+	aead, err := backupAEAD(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	writer := &backupEncryptor{w: &output, a: aead}
+	if err := writer.chunk(make([]byte, backupChunk+1)); err == nil {
+		t.Fatal("oversized encryption chunk accepted")
+	}
+	if output.Len() != 0 {
+		t.Fatal("oversized chunk wrote output")
+	}
+}
 
 func backupFixture(t *testing.T) (*Store, BackupOptions) {
 	t.Helper()
@@ -26,7 +42,7 @@ func backupFixture(t *testing.T) (*Store, BackupOptions) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	if e = s.Migrate(context.Background()); e != nil {
 		t.Fatal(e)
 	}
@@ -100,7 +116,7 @@ func TestBackupEnvelopeUsesArgon2idAndAES256GCM(t *testing.T) {
 	}
 	n := int(binary.BigEndian.Uint32(data[85:89]))
 	aad := append(bytes.Clone(data[:85]), make([]byte, 12)...)
-	binary.BigEndian.PutUint32(aad[93:], uint32(n))
+	binary.BigEndian.PutUint32(aad[93:], uint32(n)) // #nosec G115 -- Adversarial encryption fixture uses a bounded in-memory chunk, then tampers with its authenticated length.
 	plain, e := a.Open(nil, make([]byte, 12), data[89:89+n+16], aad)
 	if e != nil || !bytes.Contains(plain, []byte("manifest.json")) {
 		t.Fatal("invalid sequence-bound data encryption", e)
@@ -109,12 +125,16 @@ func TestBackupEnvelopeUsesArgon2idAndAES256GCM(t *testing.T) {
 	// Replaying the first valid chunk at sequence one must fail authentication.
 	bad := append(bytes.Clone(data[:89+n+16]), data[85:]...)
 	path := filepath.Join(t.TempDir(), "replay.enc")
-	os.WriteFile(path, bad, 0600)
+	if err := os.WriteFile(path, bad, 0600); err != nil { // #nosec G703 -- Deliberately corrupt this test's temporary backup/database fixture to verify fail-closed validation.
+		t.Error(err)
+	}
 	if e = VerifyBackup(context.Background(), VerifyOptions{Archive: path, Passphrase: o.Passphrase}); e == nil {
 		t.Fatal("chunk replay accepted")
 	}
 	// The authenticated end marker also requires a physical end of file.
-	os.WriteFile(path, append(data, 0), 0600)
+	if err := os.WriteFile(path, append(data, 0), 0600); err != nil { // #nosec G703 -- Deliberately corrupt this test's temporary backup/database fixture to verify fail-closed validation.
+		t.Error(err)
+	}
 	if e = VerifyBackup(context.Background(), VerifyOptions{Archive: path, Passphrase: o.Passphrase}); e == nil {
 		t.Fatal("trailing bytes accepted")
 	}
@@ -146,12 +166,12 @@ func TestBackupConcurrentWALTransactions(t *testing.T) {
 			}
 			value := fmt.Sprintf("transaction-%d", n)
 			if _, e = tx.Exec(`UPDATE customers SET notes=? WHERE number='B-1'`, value); e != nil {
-				tx.Rollback()
+				_ = tx.Rollback()
 				done <- e
 				return
 			}
 			if _, e = tx.Exec(`UPDATE customers SET notes=? WHERE number='B-2'`, value); e != nil {
-				tx.Rollback()
+				_ = tx.Rollback()
 				done <- e
 				return
 			}
@@ -182,7 +202,7 @@ func TestBackupConcurrentWALTransactions(t *testing.T) {
 		}
 		var distinct int
 		e = db.db.QueryRow(`SELECT count(DISTINCT notes) FROM customers`).Scan(&distinct)
-		db.Close()
+		_ = db.Close()
 		if e != nil || distinct != 1 {
 			t.Fatal("torn concurrent transaction", e)
 		}
@@ -203,8 +223,12 @@ func TestBackupAtomicPublicationNeverReplaces(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer root.Close()
-	root.WriteFile("original", []byte("keep"), 0600)
-	root.WriteFile("candidate", []byte("new"), 0600)
+	if err := root.WriteFile("original", []byte("keep"), 0600); err != nil {
+		t.Error(err)
+	}
+	if err := root.WriteFile("candidate", []byte("new"), 0600); err != nil {
+		t.Error(err)
+	}
 	if e = publishRecoveryFile(root, "candidate", "original"); e == nil {
 		t.Fatal("original replaced")
 	}
@@ -272,7 +296,9 @@ func TestBackupEncryptedAuthenticatedRandomized(t *testing.T) {
 		bad := bytes.Clone(data)
 		bad[at] ^= 1
 		p := filepath.Join(t.TempDir(), "bad.enc")
-		os.WriteFile(p, bad, 0600)
+		if err := os.WriteFile(p, bad, 0600); err != nil { // #nosec G703 -- Deliberately corrupt this test's temporary backup/database fixture to verify fail-closed validation.
+			t.Error(err)
+		}
 		verify.Archive = p
 		if e = VerifyBackup(ctx, verify); e == nil {
 			t.Fatalf("bit flip %d accepted", at)
@@ -280,7 +306,9 @@ func TestBackupEncryptedAuthenticatedRandomized(t *testing.T) {
 	}
 	for _, n := range []int{0, 30, len(data) - 1} {
 		p := filepath.Join(t.TempDir(), "short.enc")
-		os.WriteFile(p, data[:n], 0600)
+		if err := os.WriteFile(p, data[:n], 0600); err != nil { // #nosec G703 -- Deliberately corrupt this test's temporary backup/database fixture to verify fail-closed validation.
+			t.Error(err)
+		}
 		verify.Archive = p
 		if e = VerifyBackup(ctx, verify); e == nil {
 			t.Fatal("truncated archive accepted")
@@ -302,9 +330,13 @@ func TestBackupMissingOrChangedDocumentNeverPublishes(t *testing.T) {
 			_, o := backupFixture(t)
 			p := filepath.Join(o.DocumentRoot, strings.Repeat("A", 52))
 			if missing {
-				os.Remove(p)
+				if err := os.Remove(p); err != nil {
+					t.Error(err)
+				}
 			} else {
-				os.WriteFile(p, []byte("corrupt"), 0600)
+				if err := os.WriteFile(p, []byte("corrupt"), 0600); err != nil {
+					t.Error(err)
+				}
 			}
 			if _, e := Backup(context.Background(), o); e == nil {
 				t.Fatal("invalid artifact accepted")
@@ -318,7 +350,9 @@ func TestBackupMissingOrChangedDocumentNeverPublishes(t *testing.T) {
 
 func TestBackupDoesNotOverwriteAndHonorsCancellation(t *testing.T) {
 	_, o := backupFixture(t)
-	os.WriteFile(o.Output, []byte("original"), 0600)
+	if err := os.WriteFile(o.Output, []byte("original"), 0600); err != nil {
+		t.Error(err)
+	}
 	if _, e := Backup(context.Background(), o); e == nil {
 		t.Fatal("existing backup replaced")
 	}
@@ -326,7 +360,9 @@ func TestBackupDoesNotOverwriteAndHonorsCancellation(t *testing.T) {
 	if string(b) != "original" {
 		t.Fatal("original changed")
 	}
-	os.Remove(o.Output)
+	if err := os.Remove(o.Output); err != nil {
+		t.Error(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, e := Backup(ctx, o); e == nil {

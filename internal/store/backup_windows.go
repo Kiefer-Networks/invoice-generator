@@ -1,9 +1,10 @@
 package store
 
 import (
-	"golang.org/x/sys/windows"
 	"os"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 func trustedRecoveryDirectory(f *os.File) bool {
@@ -44,7 +45,7 @@ func trustedRecoveryAncestor(f *os.File) bool {
 		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
 			return false
 		}
-		if ace.Mask&unsafeRights != 0 && !trusted((*windows.SID)(unsafe.Pointer(&ace.SidStart))) {
+		if ace.Mask&unsafeRights != 0 && !trusted((*windows.SID)(unsafe.Pointer(&ace.SidStart))) { // #nosec G103 -- GetAce returns a validated ACCESS_ALLOWED_ACE; SidStart is its documented inline SID.
 			return false
 		}
 	}
@@ -79,7 +80,7 @@ func protectedRecoveryKey(f *os.File) bool {
 		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
 			return false
 		}
-		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)) // #nosec G103 -- GetAce returns a validated ACCESS_ALLOWED_ACE; SidStart is its documented inline SID.
 		if !sid.Equals(user.User.Sid) && !sid.IsWellKnown(windows.WinLocalSystemSid) && !sid.IsWellKnown(windows.WinBuiltinAdministratorsSid) {
 			return false
 		}

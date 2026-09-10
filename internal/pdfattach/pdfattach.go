@@ -28,7 +28,7 @@ func EmbedFacturX(pdfPath string, xml []byte) error {
 	if err := os.WriteFile(xmlPath, xml, 0600); err != nil {
 		return fmt.Errorf("could not stage Factur-X XML: %w", err)
 	}
-	in, err := os.Open(pdfPath)
+	in, err := os.Open(pdfPath) // #nosec G304 -- Internal rendered output path; the server supplies a fixed filename in its private render directory.
 	if err != nil {
 		return fmt.Errorf("could not open rendered PDF: %w", err)
 	}

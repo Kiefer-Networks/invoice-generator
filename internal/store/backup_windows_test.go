@@ -3,16 +3,19 @@ package store
 import (
 	"bytes"
 	"context"
-	"golang.org/x/sys/windows"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestBackupRejectsBroadWindowsKeyACL(t *testing.T) {
 	_, o := backupFixture(t)
 	path := filepath.Join(t.TempDir(), "key")
-	os.WriteFile(path, bytes.Repeat([]byte{5}, 32), 0600)
+	if err := os.WriteFile(path, bytes.Repeat([]byte{5}, 32), 0600); err != nil {
+		t.Error(err)
+	}
 	sd, e := windows.SecurityDescriptorFromString("D:P(A;;FA;;;WD)")
 	if e != nil {
 		t.Fatal(e)

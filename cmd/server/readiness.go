@@ -3,17 +3,17 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
 	"github.com/kiefer-networks/invoice-generator/internal/auth"
 	"github.com/kiefer-networks/invoice-generator/internal/render"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"github.com/kiefer-networks/invoice-generator/internal/web"
 	"github.com/kiefer-networks/invoice-generator/internal/zugferd"
-	"net/http"
-	"os"
-
-	"path/filepath"
-	"sync"
-	"time"
 )
 
 func checkReadiness(ctx context.Context, checks ...func(context.Context) error) error {
@@ -36,7 +36,7 @@ func validateRuntime(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }() // Best-effort cleanup of the synthetic readiness probe.
 	return render.FromSnapshot(ctx, &render.TplData{}, filepath.Join(dir, "probe.pdf"))
 }
 
@@ -80,7 +80,7 @@ func readiness(ctx context.Context, db *store.Store, cfg Config, manager *auth.M
 			}
 			name := f.Name()
 			err = f.Close()
-			return errors.Join(err, os.Remove(name))
+			return errors.Join(err, os.Remove(name)) // #nosec G703 -- name comes directly from CreateTemp in the validated document root; no request path is used.
 		})
 	}
 	if err := ready(ctx); err != nil {

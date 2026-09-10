@@ -2,14 +2,15 @@ package invoicing
 
 import (
 	"bytes"
-	"github.com/kiefer-networks/invoice-generator/internal/config"
-	"github.com/kiefer-networks/invoice-generator/internal/locale"
-	"github.com/kiefer-networks/invoice-generator/internal/render"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"html/template"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/config"
+	"github.com/kiefer-networks/invoice-generator/internal/locale"
+	"github.com/kiefer-networks/invoice-generator/internal/render"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func TestDraftPreviewUsesRendererBoundaryAndExactTotals(t *testing.T) {

@@ -20,7 +20,7 @@ func TestContainerRuntime(t *testing.T) {
 	}
 	run := func(args ...string) []byte {
 		t.Helper()
-		cmd := exec.Command("docker", args...)
+		cmd := exec.Command("docker", args...) // #nosec G204 -- Fixed integration-test command; variable arguments are generated fixture paths or IDs, never request data.
 		cmd.Dir = root
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -51,13 +51,13 @@ func TestContainerRuntime(t *testing.T) {
 	}
 	run("exec", id, "sh", "-c", `test "$(id -u)" = 65532 && test ! -e /usr/local/bin/browser.test && test ! -e /src && test ! -e /development-assets && test -z "$(find /run/secrets -type f 2>/dev/null)" && test -s /usr/share/doc/invoice-generator/licenses/go/LICENSE && test -s /usr/share/doc/invoice-generator/licenses/compiled-modules.txt && test ! -w /usr/local/bin && test ! -w /etc && grep -q '^CapEff:.*0000000000000000$' /proc/1/status && grep -q '^NoNewPrivs:.*1$' /proc/1/status`)
 	run("exec", id, "sh", "-c", `chromium --headless --disable-gpu --disable-dev-shm-usage --print-to-pdf=/tmp/probe.pdf about:blank >/tmp/chrome.log 2>&1 && test -s /tmp/probe.pdf && java -version && javac -version`)
-	cmd := exec.Command("docker", "exec", id, "server", "serve", "-dev")
+	cmd := exec.Command("docker", "exec", id, "server", "serve", "-dev") // #nosec G204 -- Fixed integration-test command; variable arguments are generated fixture paths or IDs, never request data.
 	if out, err := cmd.CombinedOutput(); err == nil || bytes.Contains(out, []byte("LOCAL DEVELOPMENT")) {
 		t.Fatalf("production accepted local fixtures: %v %s", err, out)
 	}
 	binary := filepath.Join(t.TempDir(), "server")
 	run("cp", id+":/usr/local/bin/server", binary)
-	data, err := os.ReadFile(binary)
+	data, err := os.ReadFile(binary) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestComposeRuntimeState(t *testing.T) {
 	if id == "" {
 		t.Fatal("Compose service missing")
 	}
-	out, err = exec.Command("docker", "inspect", id).CombinedOutput()
+	out, err = exec.Command("docker", "inspect", id).CombinedOutput() // #nosec G204 -- Fixed integration-test command; variable arguments are generated fixture paths or IDs, never request data.
 	if err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}

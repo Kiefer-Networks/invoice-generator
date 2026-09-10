@@ -70,17 +70,17 @@ func (p *Paperless) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 21<<20)
-		if r.ParseMultipartForm(1<<20) != nil {
+		if r.ParseMultipartForm(1<<20) != nil { // #nosec G120 -- MaxBytesReader above enforces the 21 MiB total body limit.
 			http.Error(w, "invalid upload", 400)
 			return
 		}
-		defer r.MultipartForm.RemoveAll()
+		defer func() { _ = r.MultipartForm.RemoveAll() }() // net/http also removes request multipart scratch files.
 		f, _, e := r.FormFile("document")
 		if e != nil {
 			http.Error(w, "missing document", 400)
 			return
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }() // Read-only input; reads and validation report their own errors.
 		data, e := io.ReadAll(io.LimitReader(f, 20<<20))
 		if e != nil {
 			http.Error(w, "invalid document", 400)

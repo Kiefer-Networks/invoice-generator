@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"reflect"
 	"sort"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func readyDraft(t *testing.T, s *store.Store, n int) Draft {
@@ -107,7 +108,9 @@ func TestFinalizeValidationStaleAndRollback(t *testing.T) {
 	if c.NextInvoiceSequence != 1 || got.Number != "" || got.Version != d.Version {
 		t.Fatal("failed finalization consumed number or changed draft")
 	}
-	s.DB().Exec(`DROP TRIGGER fail_audit`)
+	if _, err := s.DB().Exec(`DROP TRIGGER fail_audit`); err != nil {
+		t.Error(err)
+	}
 	if _, err = svc.Finalize(ctx, d.ID, key); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +196,9 @@ func TestFinalizeReviewRejectsChangedCompany(t *testing.T) {
 	key, _ := svc.Prepare(ctx, d.ID, d.Version)
 	c, _ := s.CompanyRepository().Get(ctx)
 	c.LegalName = "Unreviewed issuer"
-	s.CompanyRepository().Save(ctx, c.CompanyInput)
+	if _, err := s.CompanyRepository().Save(ctx, c.CompanyInput); err != nil {
+		t.Error(err)
+	}
 	if _, err := svc.Finalize(ctx, d.ID, key); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("unreviewed company=%v", err)
 	}
@@ -250,7 +255,9 @@ func TestConcurrentFinalizationSameDraftIsIdempotent(t *testing.T) {
 	}
 	wg.Wait()
 	var n int
-	s.DB().QueryRow(`SELECT count(*) FROM audit_events WHERE action='invoice.finalized'`).Scan(&n)
+	if err := s.DB().QueryRow(`SELECT count(*) FROM audit_events WHERE action='invoice.finalized'`).Scan(&n); err != nil {
+		t.Error(err)
+	}
 	if n != 1 {
 		t.Fatalf("audit duplicates=%d", n)
 	}
@@ -265,12 +272,16 @@ func TestCorrectionRollbackPreservesOriginalAndNoDraft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.DB().Exec(`CREATE TRIGGER fail_correction BEFORE INSERT ON audit_events WHEN NEW.action='invoice.correction_created' BEGIN SELECT RAISE(ABORT,'injected'); END`)
+	if _, err := s.DB().Exec(`CREATE TRIGGER fail_correction BEFORE INSERT ON audit_events WHEN NEW.action='invoice.correction_created' BEGIN SELECT RAISE(ABORT,'injected'); END`); err != nil {
+		t.Error(err)
+	}
 	if _, err = svc.CreateCorrection(ctx, d.ID); err == nil {
 		t.Fatal("expected correction rollback")
 	}
 	var count int
-	s.DB().QueryRow(`SELECT count(*) FROM invoices`).Scan(&count)
+	if err := s.DB().QueryRow(`SELECT count(*) FROM invoices`).Scan(&count); err != nil {
+		t.Error(err)
+	}
 	now, _ := svc.Get(ctx, d.ID)
 	if count != 1 || !reflect.DeepEqual(now, f) {
 		t.Fatal("correction rollback leaked changes")

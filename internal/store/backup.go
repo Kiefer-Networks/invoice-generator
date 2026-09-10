@@ -108,7 +108,7 @@ func backupWithHooks(ctx context.Context, o BackupOptions, hooks recoveryHooks) 
 	if e != nil {
 		return result, e
 	}
-	defer parent.Close()
+	defer func() { _ = parent.Close() }() // Read-only handle cleanup; operations report their own errors.
 	output := filepath.Base(o.Output)
 	if _, e = parent.Lstat(output); !os.IsNotExist(e) {
 		return result, ErrBackup
@@ -118,8 +118,8 @@ func backupWithHooks(ctx context.Context, o BackupOptions, hooks recoveryHooks) 
 	if e != nil {
 		return result, e
 	}
-	reservation.Close()
-	defer parent.Remove(output + ".lock")
+	_ = reservation.Close()                                // Empty reservation file; no buffered data or durability promise.
+	defer func() { _ = parent.Remove(output + ".lock") }() // Best-effort reservation cleanup; a leftover lock fails subsequent backups closed.
 	staging, e := newRecoveryStage(parent, filepath.Dir(o.Output), ".backup-")
 	if e != nil {
 		return result, e
@@ -144,7 +144,7 @@ func backupWithHooks(ctx context.Context, o BackupOptions, hooks recoveryHooks) 
 	if e != nil {
 		return result, e
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }() // Statements and transaction commits determine the database outcome.
 	if e = source.check(); e != nil {
 		return result, e
 	}
@@ -168,7 +168,7 @@ func backupWithHooks(ctx context.Context, o BackupOptions, hooks recoveryHooks) 
 	// Erase session hashes in the private snapshot, then vacuum to remove deleted
 	// bytes as well. Source authentication and business data remain untouched.
 	if _, e = snap.db.ExecContext(ctx, `PRAGMA secure_delete=ON; DELETE FROM sessions; VACUUM; PRAGMA wal_checkpoint(TRUNCATE)`); e != nil {
-		snap.Close()
+		_ = snap.Close() // Preserve the operation result while releasing its handle.
 		return result, e
 	}
 	if e = snap.Close(); e != nil {
@@ -186,11 +186,11 @@ func backupWithHooks(ctx context.Context, o BackupOptions, hooks recoveryHooks) 
 	if e != nil || len(encoded) > backupMaxManifest {
 		return result, ErrBackup
 	}
-	destination, e := os.OpenFile(filepath.Join(work, "archive.enc"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	destination, e := os.OpenFile(filepath.Join(work, "archive.enc"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- Fixed name in a private validated recovery stage; exclusive creation and stage identity checks precede publication.
 	if e != nil {
 		return result, e
 	}
-	defer destination.Close()
+	defer func() { _ = destination.Close() }() // Successful publication explicitly checks Sync and Close before rename.
 	enc, e := newBackupEncryptor(destination, o.Passphrase, o.KeyFile)
 	if e != nil {
 		return result, e
@@ -216,12 +216,12 @@ func backupWithHooks(ctx context.Context, o BackupOptions, hooks recoveryHooks) 
 			return result, e
 		}
 		if e = tw.WriteHeader(&tar.Header{Name: entry.Name, Mode: 0600, Size: entry.Size, Typeflag: tar.TypeReg}); e != nil {
-			f.Close()
+			_ = f.Close() // Preserve the operation result while releasing its handle.
 			return result, e
 		}
 		h := sha256.New()
 		n, e := io.Copy(io.MultiWriter(tw, h), io.LimitReader(&recoveryReader{ctx: ctx, r: f}, entry.Size+1))
-		f.Close()
+		_ = f.Close() // Preserve the operation result while releasing its handle.
 		if e != nil || n != entry.Size || hex.EncodeToString(h.Sum(nil)) != entry.SHA256 {
 			return result, ErrBackup
 		}
@@ -286,7 +286,7 @@ func recordRecoveryAudit(ctx context.Context, database, action string) error {
 	if e != nil {
 		return e
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }() // Statements and transaction commits determine the database outcome.
 	if e = binding.check(); e != nil {
 		return e
 	}
@@ -316,8 +316,8 @@ func publishRecoveryFile(root *os.Root, from, to string) error {
 	if e != nil {
 		return e
 	}
-	defer f.Close()
-	return f.Sync()
+	e = f.Sync()
+	return errors.Join(e, f.Close())
 }
 
 // Envelope: fixed header (magic/version, wrapping mode, random salt, wrap nonce,
@@ -344,7 +344,7 @@ func wrappingKey(pass []byte, keyFile string, salt []byte) ([]byte, byte, error)
 		if e != nil {
 			return nil, 0, e
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }() // Read-only input; reads and validation report their own errors.
 		if !protectedRecoveryKey(f) {
 			return nil, 0, ErrBackup
 		}
@@ -412,7 +412,10 @@ func chunkBinding(h []byte, seq uint64, n uint32) ([]byte, []byte) {
 	return nonce, aad
 }
 func (w *backupEncryptor) chunk(p []byte) error {
-	n := uint32(len(p))
+	if len(p) > backupChunk {
+		return ErrBackup
+	}
+	n := uint32(len(p)) // #nosec G115 -- The guard bounds the nonnegative length to 64 KiB before conversion.
 	nonce, aad := chunkBinding(w.header, w.seq, n)
 	sealed := w.a.Seal(nil, nonce, p, aad)
 	var size [4]byte
@@ -551,41 +554,41 @@ func safeRoot(path string) (*os.Root, error) {
 		}
 		ancestor, e := root.Open(".")
 		if e != nil {
-			root.Close()
+			_ = root.Close() // Releasing a read-only identity handle cannot change validation.
 			return nil, e
 		}
 		trusted := trustedRecoveryAncestor(ancestor)
-		ancestor.Close()
+		_ = ancestor.Close() // Releasing a read-only identity handle cannot change validation.
 		if !trusted {
-			root.Close()
+			_ = root.Close() // Releasing a read-only identity handle cannot change validation.
 			return nil, ErrBackup
 		}
 		info, e := root.Lstat(part)
 		if e != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			root.Close()
+			_ = root.Close() // Releasing a read-only identity handle cannot change validation.
 			return nil, ErrBackup
 		}
 		next, e := root.OpenRoot(part)
-		root.Close()
+		_ = root.Close() // Releasing a read-only identity handle cannot change validation.
 		if e != nil {
 			return nil, e
 		}
 		opened, e := next.Stat(".")
 		if e != nil || !os.SameFile(info, opened) {
-			next.Close()
+			_ = next.Close() // Releasing a read-only identity handle cannot change validation.
 			return nil, ErrBackup
 		}
 		root = next
 	}
 	directory, e := root.Open(".")
 	if e != nil {
-		root.Close()
+		_ = root.Close() // Releasing a read-only identity handle cannot change validation.
 		return nil, e
 	}
 	trusted := trustedRecoveryDirectory(directory)
-	directory.Close()
+	_ = directory.Close() // Releasing a read-only identity handle cannot change validation.
 	if !trusted {
-		root.Close()
+		_ = root.Close() // Releasing a read-only identity handle cannot change validation.
 		return nil, ErrBackup
 	}
 	return root, nil
@@ -595,7 +598,7 @@ func safeRegular(path string, max int64) (*os.File, error) {
 	if e != nil {
 		return nil, e
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }() // Read-only handle cleanup; operations report their own errors.
 	name := filepath.Base(path)
 	i, e := root.Lstat(name)
 	if e != nil || !i.Mode().IsRegular() || i.Mode()&os.ModeSymlink != 0 || i.Size() > max {
@@ -607,7 +610,7 @@ func safeRegular(path string, max int64) (*os.File, error) {
 	}
 	j, e := f.Stat()
 	if e != nil || !os.SameFile(i, j) || !j.Mode().IsRegular() || j.Size() > max || !singleRecoveryLink(f) {
-		f.Close()
+		_ = f.Close() // Preserve the operation result while releasing its handle.
 		return nil, ErrBackup
 	}
 	return f, nil
@@ -618,7 +621,7 @@ func privateTemp(parent, prefix string) (string, error) {
 		return "", e
 	}
 	if e = protectRecoveryPath(p, true); e != nil {
-		os.Remove(p)
+		_ = os.Remove(p) // Best-effort cleanup after protection failed.
 		return "", e
 	}
 	return p, nil
@@ -633,7 +636,7 @@ func openRecoveryDB(ctx context.Context, path string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(2)
 	if e = db.PingContext(ctx); e != nil {
-		db.Close()
+		_ = db.Close() // Preserve the operation result while releasing its handle.
 		return nil, e
 	}
 	return db, nil

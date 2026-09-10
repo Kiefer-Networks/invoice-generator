@@ -3,12 +3,13 @@ package documents
 import (
 	"context"
 	"errors"
-	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
-	"github.com/kiefer-networks/invoice-generator/internal/render"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
+	"github.com/kiefer-networks/invoice-generator/internal/render"
 )
 
 func TestGenerateFailureRetryDoesNotExposePartialDocument(t *testing.T) {

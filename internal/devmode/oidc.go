@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/go-jose/go-jose/v4"
 	"html/template"
 	"net"
 	"net/http"
@@ -20,6 +19,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
 )
 
 const ClientID = "invoice-development"

@@ -7,8 +7,6 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
-	"github.com/kiefer-networks/invoice-generator/internal/units"
 	"io"
 	"io/fs"
 	"os"
@@ -17,6 +15,9 @@ import (
 	"strings"
 	"text/template"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
+	"github.com/kiefer-networks/invoice-generator/internal/units"
 )
 
 //go:embed schema/*.xsd schema/Validate.java exact.xml
@@ -48,7 +49,7 @@ func GenerateSnapshot(s invoicing.Snapshot) ([]byte, error) {
 // ValidateCII performs actual UNECE D16B XSD validation with the pinned official
 // schemas. A Java 17+ JDK is required; absence fails closed. This is schema
 // validation, not a claim of certification or full EN16931 Schematron compliance.
-func ValidateCII(ctx context.Context, data []byte) error {
+func ValidateCII(ctx context.Context, data []byte) (err error) {
 	if len(data) > 4<<20 {
 		return errors.New("CII too large")
 	}
@@ -69,7 +70,7 @@ func ValidateCII(ctx context.Context, data []byte) error {
 	if e != nil {
 		return e
 	}
-	defer os.RemoveAll(dir)
+	defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
 	e = fs.WalkDir(exactResources, "schema", func(path string, d fs.DirEntry, e error) error {
 		if e != nil {
 			return e
@@ -91,7 +92,7 @@ func ValidateCII(ctx context.Context, data []byte) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "java", "-Xmx128m", filepath.Join(dir, "Validate.java"), filepath.Join(dir, "CrossIndustryInvoice_100pD16B.xsd"), filepath.Join(dir, "invoice.xml"))
+	cmd := exec.CommandContext(ctx, "java", "-Xmx128m", filepath.Join(dir, "Validate.java"), filepath.Join(dir, "CrossIndustryInvoice_100pD16B.xsd"), filepath.Join(dir, "invoice.xml")) // #nosec G204 -- Fixed Java validator and heap bound; all arguments are fixed filenames inside a private directory containing embedded trusted code/schema.
 	if e = cmd.Run(); e != nil {
 		return errors.New("CII schema validation failed (Java 17+ JDK required)")
 	}

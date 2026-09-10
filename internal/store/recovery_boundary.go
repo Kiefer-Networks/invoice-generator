@@ -31,12 +31,12 @@ func bindRecoveryDatabase(path string, missing bool) (*recoveryDatabase, error) 
 		return b, nil
 	}
 	if e != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		root.Close()
+		_ = root.Close() // Releasing a read-only identity handle cannot change validation.
 		return nil, ErrBackup
 	}
 	b.file, e = root.Open(filepath.Base(path))
 	if e != nil {
-		root.Close()
+		_ = root.Close() // Releasing a read-only identity handle cannot change validation.
 		return nil, e
 	}
 	opened, e := b.file.Stat()
@@ -52,16 +52,16 @@ func bindRecoveryDatabase(path string, missing bool) (*recoveryDatabase, error) 
 }
 func (b *recoveryDatabase) close() {
 	if b.file != nil {
-		b.file.Close()
+		_ = b.file.Close() // Releasing a read-only identity handle cannot change validation.
 	}
-	b.root.Close()
+	_ = b.root.Close() // Releasing a read-only identity handle cannot change validation.
 }
 func sameRecoveryDirectory(path string, root *os.Root) error {
 	current, e := safeRoot(path)
 	if e != nil {
 		return e
 	}
-	defer current.Close()
+	defer func() { _ = current.Close() }() // Read-only handle cleanup; operations report their own errors.
 	a, e := root.Stat(".")
 	if e != nil {
 		return e
@@ -102,7 +102,7 @@ func (b *recoveryDatabase) check() error {
 		}
 		j, e := f.Stat()
 		valid := e == nil && os.SameFile(i, j) && singleRecoveryLink(f)
-		f.Close()
+		_ = f.Close() // Preserve the operation result while releasing its handle.
 		if !valid {
 			return ErrBackup
 		}
@@ -131,7 +131,7 @@ func newRecoveryStage(parent *os.Root, parentPath, prefix string) (*recoveryStag
 	}
 	i, e := root.Stat(".")
 	if e != nil {
-		root.Close()
+		_ = root.Close() // Releasing a read-only identity handle cannot change validation.
 		return nil, e
 	}
 	s := &recoveryStage{path: path, name: filepath.Base(path), root: root, parent: parent, info: i}
@@ -153,7 +153,7 @@ func (s *recoveryStage) check() error {
 }
 func (s *recoveryStage) cleanup() {
 	if s.published {
-		s.root.Close()
+		_ = s.root.Close() // Releasing a read-only identity handle cannot change validation.
 		return
 	}
 	// Remove only our held directory's contents. Never recursively delete a
@@ -161,14 +161,14 @@ func (s *recoveryStage) cleanup() {
 	f, e := s.root.Open(".")
 	if e == nil {
 		entries, e := f.ReadDir(-1)
-		f.Close()
+		_ = f.Close() // Preserve the operation result while releasing its handle.
 		if e == nil {
 			for _, entry := range entries {
 				_ = s.root.RemoveAll(entry.Name())
 			}
 		}
 	}
-	s.root.Close()
+	_ = s.root.Close() // Releasing a read-only identity handle cannot change validation.
 	if i, e := s.parent.Lstat(s.name); e == nil && os.SameFile(i, s.info) {
 		_ = s.parent.Remove(s.name)
 	}
@@ -190,7 +190,7 @@ func acquireRecoveryService(path string) (*recoveryDatabase, func(), error) {
 		return nil, nil, ErrBackup
 	}
 	lockInfo, e := f.Stat()
-	f.Close()
+	_ = f.Close() // Preserve the operation result while releasing its handle.
 	if e != nil {
 		b.close()
 		return nil, nil, e
@@ -199,7 +199,7 @@ func acquireRecoveryService(path string) (*recoveryDatabase, func(), error) {
 	release := func() {
 		once.Do(func() {
 			if i, e := b.root.Lstat(name); e == nil && os.SameFile(i, lockInfo) {
-				b.root.Remove(name)
+				_ = b.root.Remove(name) // Best-effort lease cleanup; a leftover lock prevents reopening.
 			}
 			b.close()
 		})
@@ -242,7 +242,7 @@ func openServiceWithHook(ctx context.Context, path string, afterLease func()) (*
 		return nil, nil, e
 	}
 	if e = b.check(); e != nil {
-		db.Close()
+		_ = db.Close() // Preserve the operation result while releasing its handle.
 		release()
 		return nil, nil, e
 	}

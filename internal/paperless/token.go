@@ -25,11 +25,11 @@ func ReadToken(path string) (string, error) {
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
 		return "", invalid
 	}
-	f, e := os.Open(path)
+	f, e := os.Open(path) // #nosec G304 -- Administrator-configured token mount; protected regular-file type and opened identity are checked.
 	if e != nil {
 		return "", invalid
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Read-only credential file; read errors are checked below.
 	opened, e := f.Stat()
 	if e != nil || !os.SameFile(info, opened) {
 		return "", invalid

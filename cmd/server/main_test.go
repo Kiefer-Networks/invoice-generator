@@ -54,7 +54,9 @@ func TestRecoveryCommandsRoundtripAndIntegrity(t *testing.T) {
 	root := t.TempDir()
 	database := filepath.Join(root, "live.sqlite")
 	docs := filepath.Join(root, "documents")
-	os.Mkdir(docs, 0700)
+	if err := os.Mkdir(docs, 0700); err != nil {
+		t.Error(err)
+	}
 	s, e := store.Open(ctx, database)
 	if e != nil {
 		t.Fatal(e)
@@ -62,9 +64,11 @@ func TestRecoveryCommandsRoundtripAndIntegrity(t *testing.T) {
 	if e = s.Migrate(ctx); e != nil {
 		t.Fatal(e)
 	}
-	s.Close()
+	_ = s.Close()
 	key := filepath.Join(root, "key")
-	os.WriteFile(key, bytes.Repeat([]byte{9}, 32), 0600)
+	if err := os.WriteFile(key, bytes.Repeat([]byte{9}, 32), 0600); err != nil {
+		t.Error(err)
+	}
 	archive := filepath.Join(root, "backup.enc")
 	target := filepath.Join(root, "recovered")
 	commands := [][]string{
@@ -203,7 +207,7 @@ func TestRevokeAllSessions(t *testing.T) {
 func testConfig(t *testing.T) Config {
 	t.Helper()
 	return Config{
-		DocumentRoot: t.TempDir(),
+		DocumentRoot: privateDocumentRoot(t),
 		Listen:       "127.0.0.1:8443", AllowedHosts: []string{"app.example.test"},
 		TLSCertFile: "cert.pem", TLSKeyFile: "key.pem", Database: filepath.Join(t.TempDir(), "app.db"),
 		PocketIDIssuer: "https://id.example.test", PocketIDClientID: "invoice-generator",
@@ -211,6 +215,17 @@ func testConfig(t *testing.T) Config {
 		TransactionKeyFile: writeSecret(t, encodedKey("zyxwvutsrqponmlkjihgfedcba987654")), CallbackURL: "https://app.example.test/auth/callback",
 		RequiredGroup: "invoice-admins", BodyLimit: 1 << 20,
 	}
+}
+
+func privateDocumentRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	// Match production provisioning explicitly; do not rely on the test
+	// runner's temporary-directory mode or the process umask.
+	if err := os.Chmod(root, 0700); err != nil { // #nosec G302 -- Owner-only directory traversal requires 0700.
+		t.Fatal(err)
+	}
+	return root
 }
 
 func encodedKey(value string) string { return base64.RawStdEncoding.EncodeToString([]byte(value)) }

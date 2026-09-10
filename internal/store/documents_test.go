@@ -92,7 +92,9 @@ func TestDocumentMigrationUpgrade(t *testing.T) {
 		}
 	}
 	var before int
-	s.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&before)
+	if err := s.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&before); err != nil {
+		t.Error(err)
+	}
 	if before != 9 {
 		t.Fatalf("expected actual pre010 DB, got %d", before)
 	}

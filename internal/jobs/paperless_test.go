@@ -2,11 +2,9 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/kiefer-networks/invoice-generator/internal/documents"
-	"github.com/kiefer-networks/invoice-generator/internal/paperless"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +13,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/documents"
+	"github.com/kiefer-networks/invoice-generator/internal/paperless"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func paperlessFixture(t *testing.T) (*store.Store, *documents.Storage, store.Document) {
@@ -24,7 +26,7 @@ func paperlessFixture(t *testing.T) (*store.Store, *documents.Storage, store.Doc
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	if e = s.Migrate(ctx); e != nil {
 		t.Fatal(e)
 	}
@@ -36,7 +38,7 @@ func paperlessFixture(t *testing.T) (*store.Store, *documents.Storage, store.Doc
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 	a, e := st.Put(strings.NewReader("%PDF-test"))
 	if e != nil {
 		t.Fatal(e)
@@ -73,16 +75,21 @@ func TestPaperlessRestartReconcilesWithoutSecondUpload(t *testing.T) {
 				switch r.URL.Path {
 				case "/api/documents/":
 					if visible {
-						fmt.Fprintf(w, `{"count":1,"results":[{"id":42,"title":%q}]}`, title)
+						_, _ = fmt.Fprintf(w, `{"count":1,"results":[{"id":42,"title":%q}]}`, title)
 					} else {
-						fmt.Fprint(w, `{"count":0,"results":[]}`)
+						_, _ = fmt.Fprint(w, `{"count":0,"results":[]}`)
 					}
 				case "/api/tags/":
-					fmt.Fprintf(w, `{"count":1,"results":[{"id":1,"name":%q}]}`, r.URL.Query().Get("name__iexact"))
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]any{"count": 1, "results": []map[string]any{{"id": 1, "name": r.URL.Query().Get("name__iexact")}}})
 				case "/api/documents/post_document/":
 					uploads++
 					if loseResponse {
-						if e := r.ParseMultipartForm(1 << 20); e != nil {
+						r.Body = http.MaxBytesReader(w, r.Body, 21<<20)
+						if e := r.ParseMultipartForm(1 << 20); e != nil { // #nosec G120 -- MaxBytesReader above bounds the total mock upload body.
 							t.Error(e)
 							return
 						}
@@ -91,9 +98,9 @@ func TestPaperlessRestartReconcilesWithoutSecondUpload(t *testing.T) {
 							t.Error(e)
 							return
 						}
-						conn.Close() // accepted bytes, lost response after the write
+						_ = conn.Close() // accepted bytes, lost response after the write
 					} else {
-						fmt.Fprint(w, `"task-123"`)
+						_, _ = fmt.Fprint(w, `"task-123"`)
 					}
 				case "/api/tasks/":
 					if visible {
@@ -102,12 +109,12 @@ func TestPaperlessRestartReconcilesWithoutSecondUpload(t *testing.T) {
 						paperlessTaskResponse(w, "started", 0)
 					}
 				case "/api/documents/42/":
-					fmt.Fprintf(w, `{"id":42,"title":%q}`, title)
+					_, _ = fmt.Fprintf(w, `{"id":42,"title":%q}`, title)
 				case "/api/documents/42/download/":
 					if r.URL.Query().Get("original") != "true" {
 						t.Error("archive requested instead of original")
 					}
-					fmt.Fprint(w, "%PDF-test")
+					_, _ = fmt.Fprint(w, "%PDF-test")
 				default:
 					w.WriteHeader(404)
 				}
@@ -142,7 +149,7 @@ func TestPaperlessRestartReconcilesWithoutSecondUpload(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			t.Cleanup(func() { s.Close() })
+			t.Cleanup(func() { _ = s.Close() })
 			if e = s.Migrate(ctx); e != nil {
 				t.Fatal(e)
 			}
@@ -206,23 +213,27 @@ func TestPaperlessExplicitRejectionCanRetryUpload(t *testing.T) {
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/documents/":
-			fmt.Fprint(w, `{"count":0,"results":[]}`)
+			_, _ = fmt.Fprint(w, `{"count":0,"results":[]}`)
 		case "/api/tags/":
-			fmt.Fprintf(w, `{"count":1,"results":[{"id":1,"name":%q}]}`, r.URL.Query().Get("name__iexact"))
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"count": 1, "results": []map[string]any{{"id": 1, "name": r.URL.Query().Get("name__iexact")}}})
 		case "/api/documents/post_document/":
 			uploads++
 			if uploads == 1 {
 				w.WriteHeader(429)
-				fmt.Fprint(w, "secret")
+				_, _ = fmt.Fprint(w, "secret")
 			} else {
-				fmt.Fprint(w, `"task-123"`)
+				_, _ = fmt.Fprint(w, `"task-123"`)
 			}
 		case "/api/tasks/":
 			paperlessTaskResponse(w, "success", 42)
 		case "/api/documents/42/":
-			fmt.Fprintf(w, `{"id":42,"title":%q}`, paperless.Title("PL-1", d.ID))
+			_, _ = fmt.Fprintf(w, `{"id":42,"title":%q}`, paperless.Title("PL-1", d.ID))
 		case "/api/documents/42/download/":
-			fmt.Fprint(w, "%PDF-test")
+			_, _ = fmt.Fprint(w, "%PDF-test")
 		}
 	}))
 	defer remote.Close()
@@ -275,17 +286,17 @@ func TestPaperlessKnownTaskAndContentRequiredForAdoption(t *testing.T) {
 					}
 				case "/api/documents/":
 					if mode == "duplicate" {
-						fmt.Fprintf(w, `{"count":2,"results":[{"id":42,"title":%q},{"id":43,"title":%q}]}`, title, title)
+						_, _ = fmt.Fprintf(w, `{"count":2,"results":[{"id":42,"title":%q},{"id":43,"title":%q}]}`, title, title)
 					} else {
-						fmt.Fprintf(w, `{"count":1,"results":[{"id":42,"title":%q}]}`, title)
+						_, _ = fmt.Fprintf(w, `{"count":1,"results":[{"id":42,"title":%q}]}`, title)
 					}
 				case "/api/documents/42/":
-					fmt.Fprintf(w, `{"id":42,"title":%q}`, title)
+					_, _ = fmt.Fprintf(w, `{"id":42,"title":%q}`, title)
 				case "/api/documents/42/download/":
 					if mode == "wrong_bytes" {
-						fmt.Fprint(w, "%PDF-evil")
+						_, _ = fmt.Fprint(w, "%PDF-evil")
 					} else {
-						fmt.Fprint(w, "%PDF-test")
+						_, _ = fmt.Fprint(w, "%PDF-test")
 					}
 				default:
 					w.WriteHeader(404)
@@ -333,22 +344,26 @@ func TestPaperlessPreSendFailureAfterTagsRetriesOnce(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/documents/":
-			fmt.Fprint(w, `{"count":0,"results":[]}`)
+			_, _ = fmt.Fprint(w, `{"count":0,"results":[]}`)
 		case "/api/tags/":
 			tags++
 			if tags == 6 {
-				remote.Listener.Close()
+				_ = remote.Listener.Close()
 			}
-			fmt.Fprintf(w, `{"count":1,"results":[{"id":1,"name":%q}]}`, r.URL.Query().Get("name__iexact"))
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"count": 1, "results": []map[string]any{{"id": 1, "name": r.URL.Query().Get("name__iexact")}}})
 		case "/api/documents/post_document/":
 			uploads++
-			fmt.Fprint(w, `"task-123"`)
+			_, _ = fmt.Fprint(w, `"task-123"`)
 		case "/api/tasks/":
 			paperlessTaskResponse(w, "success", 42)
 		case "/api/documents/42/":
-			fmt.Fprintf(w, `{"id":42,"title":%q}`, title)
+			_, _ = fmt.Fprintf(w, `{"id":42,"title":%q}`, title)
 		case "/api/documents/42/download/":
-			fmt.Fprint(w, "%PDF-test")
+			_, _ = fmt.Fprint(w, "%PDF-test")
 		default:
 			w.WriteHeader(404)
 		}
@@ -384,7 +399,7 @@ func TestPaperlessPreSendFailureAfterTagsRetriesOnce(t *testing.T) {
 		t.Fatal(e)
 	}
 	recovered := httptest.NewUnstartedServer(handler)
-	recovered.Listener.Close()
+	_ = recovered.Listener.Close()
 	recovered.Listener = ln
 	recovered.Start()
 	defer recovered.Close()
@@ -407,9 +422,13 @@ func TestPaperlessCancelledBeforeUploadPersistsSafeRetry(t *testing.T) {
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/documents/":
-			fmt.Fprint(w, `{"count":0,"results":[]}`)
+			_, _ = fmt.Fprint(w, `{"count":0,"results":[]}`)
 		case "/api/tags/":
-			fmt.Fprintf(w, `{"count":1,"results":[{"id":1,"name":%q}]}`, r.URL.Query().Get("name__iexact"))
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"count": 1, "results": []map[string]any{{"id": 1, "name": r.URL.Query().Get("name__iexact")}}})
 		default:
 			uploads++
 			w.WriteHeader(500)
@@ -446,7 +465,7 @@ func TestPaperlessIncompatibleAPIIsVisible(t *testing.T) {
 	s, st, d := paperlessFixture(t)
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(406)
-		fmt.Fprint(w, `{"detail":"secret-token"}`)
+		_, _ = fmt.Fprint(w, `{"detail":"secret-token"}`)
 	}))
 	defer remote.Close()
 	c, _ := paperless.NewClient(paperless.Config{URL: remote.URL, APIKey: "secret-token"}, remote.Client(), true)
@@ -476,5 +495,5 @@ func paperlessTaskResponse(w http.ResponseWriter, status string, id int64) {
 		result = fmt.Sprintf(`{"document_id":%d}`, id)
 		ids = fmt.Sprintf(`[%d]`, id)
 	}
-	fmt.Fprintf(w, `{"count":1,"next":null,"previous":null,"results":[{"id":7,"task_id":"task-123","task_type":"consume_file","trigger_source":"api_upload","status":%q,"result_data":%s,"related_document_ids":%s,"acknowledged":false}]}`, status, result, ids)
+	_, _ = fmt.Fprintf(w, `{"count":1,"next":null,"previous":null,"results":[{"id":7,"task_id":"task-123","task_type":"consume_file","trigger_source":"api_upload","status":%q,"result_data":%s,"related_document_ids":%s,"acknowledged":false}]}`, status, result, ids)
 }

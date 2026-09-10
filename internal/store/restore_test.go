@@ -39,11 +39,15 @@ func TestRestoreRoundtripPreservesSnapshotsAndDocuments(t *testing.T) {
 		t.Fatal(value, e)
 	}
 	var count int
-	db.db.QueryRow(`SELECT count(*) FROM sessions`).Scan(&count)
+	if err := db.db.QueryRow(`SELECT count(*) FROM sessions`).Scan(&count); err != nil {
+		t.Error(err)
+	}
 	if count != 0 {
 		t.Fatal("restored live sessions")
 	}
-	s.db.QueryRow(`SELECT count(*) FROM sessions`).Scan(&count)
+	if err := s.db.QueryRow(`SELECT count(*) FROM sessions`).Scan(&count); err != nil {
+		t.Error(err)
+	}
 	if count != 1 {
 		t.Fatal("source sessions changed")
 	}
@@ -53,7 +57,7 @@ func TestRestoreRoundtripPreservesSnapshotsAndDocuments(t *testing.T) {
 	if _, e = db.db.Exec(`UPDATE invoices SET frozen_snapshot='changed'`); e == nil {
 		t.Fatal("immutable guard absent")
 	}
-	data, e := os.ReadFile(filepath.Join(target, "documents", strings.Repeat("A", 52)))
+	data, e := os.ReadFile(filepath.Join(target, "documents", strings.Repeat("A", 52))) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if e != nil || string(data) != "%PDF-1.7 exact immutable test bytes" {
 		t.Fatal("artifact changed", e)
 	}
@@ -91,14 +95,22 @@ func TestRestorePreflightsTarBeforeExtensionParsing(t *testing.T) {
 		t.Run(fmt.Sprintf("type-%d", kind), func(t *testing.T) {
 			var b bytes.Buffer
 			tw := tar.NewWriter(&b)
-			tw.WriteHeader(&tar.Header{Name: "manifest.json", Typeflag: tar.TypeReg, Size: 1, Mode: 0600})
-			tw.Write([]byte("x"))
-			tw.Close()
+			if err := tw.WriteHeader(&tar.Header{Name: "manifest.json", Typeflag: tar.TypeReg, Size: 1, Mode: 0600}); err != nil {
+				t.Error(err)
+			}
+			if _, err := tw.Write([]byte("x")); err != nil {
+				t.Error(err)
+			}
+			if err := tw.Close(); err != nil {
+				t.Error(err)
+			}
 			data := b.Bytes()
 			data[156] = kind
 			path := filepath.Join(t.TempDir(), "tar")
-			os.WriteFile(path, data, 0600)
-			f, e := os.Open(path)
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Error(err)
+			}
+			f, e := os.Open(path) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -127,7 +139,9 @@ func TestRestoreVerifiesSchemaLedgerForeignKeysAndSnapshots(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			archive := mutateRecoveryArchive(t, o, func(m *backupManifest, files map[string][]byte) {
 				path := filepath.Join(t.TempDir(), "mutated.sqlite")
-				os.WriteFile(path, files["database.sqlite"], 0600)
+				if err := os.WriteFile(path, files["database.sqlite"], 0600); err != nil {
+					t.Error(err)
+				}
 				db, e := Open(context.Background(), path)
 				if e != nil {
 					t.Fatal(e)
@@ -143,7 +157,7 @@ func TestRestoreVerifiesSchemaLedgerForeignKeysAndSnapshots(t *testing.T) {
 					}
 				}
 				if _, e = db.db.Exec(query); e != nil {
-					db.Close()
+					_ = db.Close()
 					t.Fatal(e)
 				}
 				if savedTrigger != "" {
@@ -154,7 +168,7 @@ func TestRestoreVerifiesSchemaLedgerForeignKeysAndSnapshots(t *testing.T) {
 				if e = db.Close(); e != nil {
 					t.Fatal(e)
 				}
-				b, e := os.ReadFile(path)
+				b, e := os.ReadFile(path) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 				if e != nil {
 					t.Fatal(e)
 				}
@@ -222,8 +236,12 @@ func TestRestoreRefusesLiveExistingUnconfirmedAndInterruptedTargets(t *testing.T
 			opts := RestoreOptions{Archive: o.Output, Passphrase: o.Passphrase, TargetRoot: target, Confirm: true}
 			runctx := ctx
 			if kind == "existing" || kind == "live" {
-				os.Mkdir(target, 0700)
-				os.WriteFile(filepath.Join(target, "original"), []byte("preserve"), 0600)
+				if err := os.Mkdir(target, 0700); err != nil {
+					t.Error(err)
+				}
+				if err := os.WriteFile(filepath.Join(target, "original"), []byte("preserve"), 0600); err != nil {
+					t.Error(err)
+				}
 			}
 			if kind == "live" {
 				release, e := AcquireServiceLock(filepath.Join(target, "database.sqlite"))
@@ -247,7 +265,7 @@ func TestRestoreRefusesLiveExistingUnconfirmedAndInterruptedTargets(t *testing.T
 				t.Fatal("unsafe restore accepted")
 			}
 			if kind == "existing" || kind == "live" {
-				data, e := os.ReadFile(filepath.Join(target, "original"))
+				data, e := os.ReadFile(filepath.Join(target, "original")) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 				if e != nil || string(data) != "preserve" {
 					t.Fatal("source damaged")
 				}
@@ -277,7 +295,9 @@ func mutateRecoveryArchive(t *testing.T, o BackupOptions, mutate func(*backupMan
 		t.Fatal(e)
 	}
 	tr := tar.NewReader(bytes.NewReader(plain.Bytes()))
-	tr.Next()
+	if _, err := tr.Next(); err != nil {
+		t.Error(err)
+	}
 	encoded, _ := io.ReadAll(tr)
 	var m backupManifest
 	if e = json.Unmarshal(encoded, &m); e != nil {
@@ -306,23 +326,39 @@ func mutateRecoveryArchive(t *testing.T, o BackupOptions, mutate func(*backupMan
 	defer enc.clear()
 	tw := tar.NewWriter(enc)
 	encoded, _ = json.Marshal(m)
-	tw.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0600, Size: int64(len(encoded)), Typeflag: tar.TypeReg})
-	tw.Write(encoded)
+	if err := tw.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0600, Size: int64(len(encoded)), Typeflag: tar.TypeReg}); err != nil {
+		t.Error(err)
+	}
+	if _, err := tw.Write(encoded); err != nil {
+		t.Error(err)
+	}
 	for _, entry := range m.Files {
 		data, ok := files[entry.Name]
 		if !ok {
 			continue
 		}
-		tw.WriteHeader(&tar.Header{Name: entry.Name, Mode: 0600, Size: int64(len(data)), Typeflag: tar.TypeReg})
-		tw.Write(data)
+		if err := tw.WriteHeader(&tar.Header{Name: entry.Name, Mode: 0600, Size: int64(len(data)), Typeflag: tar.TypeReg}); err != nil {
+			t.Error(err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Error(err)
+		}
 	}
 	if extra != nil {
-		tw.WriteHeader(extra)
+		if err := tw.WriteHeader(extra); err != nil {
+			t.Error(err)
+		}
 	}
-	tw.Close()
-	enc.Close()
+	if err := tw.Close(); err != nil {
+		t.Error(err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Error(err)
+	}
 	path := filepath.Join(t.TempDir(), "malicious.enc")
-	os.WriteFile(path, output.Bytes(), 0600)
+	if err := os.WriteFile(path, output.Bytes(), 0600); err != nil {
+		t.Error(err)
+	}
 	return path
 }
 func TestRestoreRejectsMaliciousAuthenticatedArchives(t *testing.T) {
@@ -383,7 +419,9 @@ func TestRestoreRejectsMaliciousAuthenticatedArchives(t *testing.T) {
 func TestBackupProtectedKeyAndHardlinks(t *testing.T) {
 	_, o := backupFixture(t)
 	key := filepath.Join(t.TempDir(), "key")
-	os.WriteFile(key, bytes.Repeat([]byte{7}, 32), 0600)
+	if err := os.WriteFile(key, bytes.Repeat([]byte{7}, 32), 0600); err != nil {
+		t.Error(err)
+	}
 	o.KeyFile = key
 	o.Passphrase = nil
 	if _, e := Backup(context.Background(), o); e != nil {
@@ -397,6 +435,6 @@ func TestBackupProtectedKeyAndHardlinks(t *testing.T) {
 		t.Skip("hardlinks unavailable", e)
 	}
 	if e := VerifyBackup(context.Background(), VerifyOptions{Archive: o.Output, KeyFile: key}); e == nil {
-		t.Fatal("hardlinked archive accepted")
+		t.Fatal("hard-linked archive accepted")
 	}
 }

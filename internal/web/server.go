@@ -252,7 +252,7 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	}
 	a.protectCookie(transaction, http.SameSiteLaxMode)
 	http.SetCookie(w, transaction)
-	http.Redirect(w, r, destination, http.StatusFound)
+	http.Redirect(w, r, destination, http.StatusFound) // #nosec G710 -- Auth.Begin constructs the authorization URL from the validated provider endpoint; return_to is stored in the sealed transaction.
 }
 func (a *app) callback(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -294,7 +294,7 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unable to sign out", http.StatusInternalServerError)
 		return
 	}
-	deleted := &http.Cookie{Name: "invoice_session", Value: "", Path: "/", MaxAge: -1}
+	deleted := &http.Cookie{Name: "invoice_session", Value: "", Path: "/", MaxAge: -1} // #nosec G124 -- protectCookie applies Secure, HttpOnly and SameSite before SetCookie below.
 	a.protectCookie(deleted, http.SameSiteStrictMode)
 	http.SetCookie(w, deleted)
 	// End the form redirect on this origin. A redirect through the external
@@ -322,7 +322,7 @@ func (a *app) home(w http.ResponseWriter, r *http.Request) {
 		a.logger.Error("render page", "error", err)
 	}
 }
-func (a *app) protectCookie(c *http.Cookie, sameSite http.SameSite) {
+func (a *app) protectCookie(c *http.Cookie, sameSite http.SameSite) { // #nosec G124 -- Every caller supplies Lax or Strict; Secure is disabled only in validated loopback development mode.
 	c.Path = "/"
 	c.HttpOnly = true
 	c.SameSite = sameSite

@@ -13,7 +13,7 @@ func trustedRecoveryDirectory(f *os.File) bool {
 		return false
 	}
 	s, ok := i.Sys().(*syscall.Stat_t)
-	return ok && s.Uid == uint32(os.Geteuid())
+	return ok && int64(s.Uid) == int64(os.Geteuid())
 }
 
 func trustedRecoveryAncestor(f *os.File) bool {
@@ -22,7 +22,7 @@ func trustedRecoveryAncestor(f *os.File) bool {
 		return false
 	}
 	s, ok := i.Sys().(*syscall.Stat_t)
-	if !ok || (s.Uid != 0 && s.Uid != uint32(os.Geteuid())) {
+	if !ok || (s.Uid != 0 && int64(s.Uid) != int64(os.Geteuid())) {
 		return false
 	}
 	return i.Mode().Perm()&0022 == 0 || i.Mode()&os.ModeSticky != 0
@@ -34,7 +34,7 @@ func protectedRecoveryKey(f *os.File) bool {
 		return false
 	}
 	s, ok := i.Sys().(*syscall.Stat_t)
-	return ok && s.Uid == uint32(os.Geteuid())
+	return ok && int64(s.Uid) == int64(os.Geteuid())
 }
 
 func singleRecoveryLink(f *os.File) bool {
@@ -53,10 +53,10 @@ func protectRecoveryPath(path string, dir bool) error {
 	return os.Chmod(path, mode)
 }
 func syncRecoveryDirectory(path string) error {
-	f, e := os.Open(path)
+	f, e := os.Open(path) // #nosec G304 -- Internal durability barrier for a validated recovery directory, never an HTTP path.
 	if e != nil {
 		return e
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Sync below reports durability errors; closing a read-only directory adds no writes.
 	return f.Sync()
 }

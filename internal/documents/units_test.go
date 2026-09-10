@@ -3,11 +3,12 @@ package documents
 import (
 	"context"
 	"encoding/json"
-	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func TestGenerateHistoricalUnsupportedUnitFailsBeforeArtifact(t *testing.T) {

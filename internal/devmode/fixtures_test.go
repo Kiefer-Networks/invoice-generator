@@ -4,10 +4,11 @@ package devmode
 
 import (
 	"context"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func TestSeedIdempotentAndRestart(t *testing.T) {
@@ -20,7 +21,7 @@ func TestSeedIdempotentAndRestart(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	if e = db.Migrate(ctx); e != nil {
 		t.Fatal(e)
 	}
@@ -40,7 +41,7 @@ func TestSeedIdempotentAndRestart(t *testing.T) {
 	if _, e = db.DB().ExecContext(ctx, "UPDATE customers SET display_name='User edit' WHERE id='dev-customer-1'"); e != nil {
 		t.Fatal(e)
 	}
-	db.Close()
+	_ = db.Close()
 	db, e = store.Open(ctx, path)
 	if e != nil {
 		t.Fatal(e)

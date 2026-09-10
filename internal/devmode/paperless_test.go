@@ -6,11 +6,44 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/kiefer-networks/invoice-generator/internal/paperless"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/paperless"
 )
+
+func TestDevPaperlessRejectsOversizedMultipartBody(t *testing.T) {
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	file, err := form.CreateFormFile("document", "invoice.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = file.Write([]byte(strings.Repeat("x", 21<<20))); err != nil {
+		t.Fatal(err)
+	}
+	if err = form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/documents/post_document/", &body)
+	r.Header.Set("Authorization", "Token "+PaperlessToken)
+	r.Header.Set("Content-Type", form.FormDataContentType())
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+	p := &Paperless{state: "accepted"}
+	w := httptest.NewRecorder()
+	p.serve(w, r)
+	if w.Code != http.StatusBadRequest || len(p.docs) != 0 {
+		t.Fatalf("oversized body returned status %d and created %d documents", w.Code, len(p.docs))
+	}
+}
 
 func TestDevPaperlessStates(t *testing.T) {
 	for _, state := range []string{"accepted", "delayed", "rejected", "timeout"} {

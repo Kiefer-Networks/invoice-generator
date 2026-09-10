@@ -22,12 +22,12 @@ func TestProductionBinaryExcludesDevelopment(t *testing.T) {
 		}
 	}
 	binary := filepath.Join(t.TempDir(), "server")
-	cmd = exec.Command("go", "build", "-tags=production", "-trimpath", "-buildvcs=false", "-ldflags=-s -w -buildid=", "-o", binary, ".")
+	cmd = exec.Command("go", "build", "-tags=production", "-trimpath", "-buildvcs=false", "-ldflags=-s -w -buildid=", "-o", binary, ".") // #nosec G204 -- Fixed integration-test command; variable arguments are generated fixture paths or IDs, never request data.
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
 	if out, err = cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
-	data, err := os.ReadFile(binary)
+	data, err := os.ReadFile(binary) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,10 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/kiefer-networks/invoice-generator/internal/documents"
-	"github.com/kiefer-networks/invoice-generator/internal/jobs"
-	"github.com/kiefer-networks/invoice-generator/internal/paperless"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"net"
 	"net/http"
 	"os"
@@ -14,13 +10,18 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/documents"
+	"github.com/kiefer-networks/invoice-generator/internal/jobs"
+	"github.com/kiefer-networks/invoice-generator/internal/paperless"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func validateDocumentRoot(path string) error {
 	if e := documents.ValidateRoot(path); e != nil {
 		return e
 	}
-	info, e := os.Lstat(path)
+	info, e := os.Lstat(path) // #nosec G703 -- Startup-only administrator-configured root; ValidateRoot above rejects unsafe ancestry.
 	if e != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("document root must be a real directory")
 	}
@@ -51,13 +52,11 @@ func startDocumentsWithStorage(ctx context.Context, db *store.Store, cfg Config,
 	}
 	svc := documents.New(db, storage)
 	if e = svc.Recover(ctx); e != nil {
-		storage.Close()
-		return nil, nil, nil, e
+		return nil, nil, nil, errors.Join(e, storage.Close())
 	}
 	runner := jobs.New(db.DocumentRepository(), svc.Generate)
 	if e = runner.Start(ctx); e != nil {
-		storage.Close()
-		return nil, nil, nil, e
+		return nil, nil, nil, errors.Join(e, storage.Close())
 	}
 	paperlessWorker := jobs.NewPaperlessWorker(db, storage, func() (*paperless.Client, error) {
 		if cfg.Development && cfg.devPaperless != nil {
@@ -113,7 +112,7 @@ func serveHTTPWithGrace(ctx context.Context, server *http.Server, listen func() 
 		defer close(done)
 		select {
 		case <-ctx.Done():
-			drain, cancel := context.WithTimeout(context.Background(), grace)
+			drain, cancel := context.WithTimeout(context.WithoutCancel(ctx), grace)
 			defer cancel()
 			if e := server.Shutdown(drain); e != nil {
 				shutdownErr = errors.Join(e, server.Close())

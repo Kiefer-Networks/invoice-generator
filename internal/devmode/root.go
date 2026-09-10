@@ -46,7 +46,7 @@ func ValidateRoot(root string) error {
 	if e != nil || !info.Mode().IsRegular() || unsafePath(filepath.Join(root, ".development-only"), info) {
 		return errors.New("development root is not marked for synthetic data")
 	}
-	data, e := os.ReadFile(filepath.Join(root, ".development-only"))
+	data, e := os.ReadFile(filepath.Join(root, ".development-only")) // #nosec G304 -- Fixed marker under a validated development root; ancestry and marker links are rejected above.
 	if e != nil || string(data) != rootMarker {
 		return errors.New("development root marker is invalid")
 	}
@@ -99,7 +99,7 @@ func PrepareRoot(root string) (Secrets, error) {
 			}
 			data = []byte(base64.RawStdEncoding.EncodeToString(key))
 		}
-		f, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		f, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- Fixed secret names under the validated development root; exclusive creation prevents replacement.
 		if e != nil {
 			return Secrets{}, e
 		}

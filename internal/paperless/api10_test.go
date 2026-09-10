@@ -29,7 +29,7 @@ func TestPaperlessAPI10Tasks(t *testing.T) {
 					t.Error(r.URL)
 				}
 				w.Header().Set("X-Api-Version", "10")
-				fmt.Fprintf(w, `{"count":1,"next":null,"previous":null,"results":[{"id":7,"task_id":"task-123","task_type":"consume_file","trigger_source":"api_upload","status":%q,"result_data":%s,"related_document_ids":%s,"acknowledged":false}]}`, tc.status, tc.result, tc.ids)
+				_, _ = fmt.Fprintf(w, `{"count":1,"next":null,"previous":null,"results":[{"id":7,"task_id":"task-123","task_type":"consume_file","trigger_source":"api_upload","status":%q,"result_data":%s,"related_document_ids":%s,"acknowledged":false}]}`, tc.status, tc.result, tc.ids)
 			}))
 			defer s.Close()
 			c, _ := NewClient(Config{URL: s.URL, APIKey: "secret-token"}, s.Client(), true)
@@ -65,7 +65,7 @@ func TestPaperlessAPI10RejectsIncompatibleAndAmbiguousPages(t *testing.T) {
 				calls++
 				w.Header().Set("X-Api-Version", tc.version)
 				w.WriteHeader(tc.code)
-				fmt.Fprint(w, tc.body)
+				_, _ = fmt.Fprint(w, tc.body)
 			}))
 			defer s.Close()
 			c, _ := NewClient(Config{URL: s.URL, APIKey: "secret-token"}, s.Client(), true)
@@ -90,9 +90,9 @@ func TestPaperlessAPI10SubmissionAcceptedAndUnsupported(t *testing.T) {
 				w.Header().Set("X-Api-Version", "10")
 				w.WriteHeader(status)
 				if status == 200 {
-					fmt.Fprint(w, `"9266c16d-3632-4810-b48d-7c9c5bd54e0e"`)
+					_, _ = fmt.Fprint(w, `"9266c16d-3632-4810-b48d-7c9c5bd54e0e"`)
 				} else {
-					fmt.Fprint(w, `{"detail":"secret-token"}`)
+					_, _ = fmt.Fprint(w, `{"detail":"secret-token"}`)
 				}
 			}))
 			defer s.Close()

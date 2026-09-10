@@ -4,10 +4,11 @@ package devmode
 
 import (
 	"context"
-	"github.com/coreos/go-oidc/v3/oidc"
 	"net/http"
 	"net/url"
 	"testing"
+
+	"github.com/coreos/go-oidc/v3/oidc"
 )
 
 func TestDevOIDCDiscoveryAndRejectForeignCallback(t *testing.T) {
@@ -27,7 +28,7 @@ func TestDevOIDCDiscoveryAndRejectForeignCallback(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	r.Body.Close()
+	_ = r.Body.Close()
 	if r.StatusCode != 400 {
 		t.Fatal("foreign callback accepted")
 	}

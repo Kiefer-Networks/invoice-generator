@@ -7,12 +7,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/coreos/go-oidc/v3/oidc"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
 )
 
 func TestDevOIDCSignedTokensPKCEReplayAndUserinfo(t *testing.T) {
@@ -61,7 +62,7 @@ func TestDevOIDCSignedTokensPKCEReplayAndUserinfo(t *testing.T) {
 			Access string `json:"access_token"`
 		}
 		e = json.NewDecoder(r.Body).Decode(&tokens)
-		r.Body.Close()
+		_ = r.Body.Close()
 		if e != nil || r.StatusCode != 200 {
 			t.Fatal("token exchange failed", e)
 		}
@@ -87,24 +88,24 @@ func TestDevOIDCSignedTokensPKCEReplayAndUserinfo(t *testing.T) {
 		}
 		var info map[string]any
 		e = json.NewDecoder(user.Body).Decode(&info)
-		user.Body.Close()
+		_ = user.Body.Close()
 		if e != nil || info["sub"] != "dev-"+identity {
 			t.Fatal("userinfo mismatch")
 		}
 		replay := exchange(code, verifier)
-		replay.Body.Close()
+		_ = replay.Body.Close()
 		if replay.StatusCode != 400 {
 			t.Fatal("authorization code replay accepted")
 		}
 	}
 	code := authorize("admin")
 	rejected := exchange(code, "wrong-verifier")
-	rejected.Body.Close()
+	_ = rejected.Body.Close()
 	if rejected.StatusCode != 400 {
 		t.Fatal("invalid PKCE accepted")
 	}
 	replay := exchange(code, verifier)
-	replay.Body.Close()
+	_ = replay.Body.Close()
 	if replay.StatusCode != 400 {
 		t.Fatal("failed code was reusable")
 	}

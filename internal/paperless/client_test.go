@@ -2,6 +2,7 @@ package paperless
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -23,17 +24,19 @@ func TestPaperlessFixedTagsAndTask(t *testing.T) {
 		if r.URL.Path == "/api/tags/" {
 			name := r.URL.Query().Get("name__iexact")
 			seen = append(seen, name)
-			fmt.Fprintf(w, `{"count":1,"results":[{"id":%d,"name":%q}]}`, len(seen), name)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"count": 1, "results": []map[string]any{{"id": len(seen), "name": name}}})
 			return
 		}
 		if r.URL.Path == "/api/documents/post_document/" {
-			if e := r.ParseMultipartForm(1 << 20); e != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, 21<<20)
+			if e := r.ParseMultipartForm(1 << 20); e != nil { // #nosec G120 -- MaxBytesReader above bounds the total mock upload body.
 				t.Error(e)
 			}
 			if len(r.MultipartForm.Value["tags"]) != 6 || r.FormValue("title") != "Invoice PL-1 [invoice-generator:abc]" {
 				t.Error(r.Form)
 			}
-			fmt.Fprint(w, `"task-123"`)
+			_, _ = fmt.Fprint(w, `"task-123"`)
 			return
 		}
 		t.Error(r.URL)
@@ -63,7 +66,7 @@ func TestPaperlessRejectsUnsafeConfigAndResponses(t *testing.T) {
 		}
 	}
 	for _, body := range []string{strings.Repeat("x", (1<<20)+1), `{"results":[{"id":-1,"name":"Kiefer Networks"}]}`, `secret`, `{"results":[]} garbage`} {
-		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, body) }))
 		c, e := NewClient(Config{URL: s.URL, APIKey: "secret"}, s.Client(), true)
 		if e != nil {
 			t.Fatal(e)
@@ -101,7 +104,7 @@ func TestPaperlessTimeoutRedirectAndTLS(t *testing.T) {
 }
 
 func TestPaperlessCLISecretRedaction(t *testing.T) {
-	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500); fmt.Fprint(w, "secret-token") }))
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(500); _, _ = fmt.Fprint(w, "secret-token") }))
 	defer s.Close()
 	path := writeTemp(t, t.TempDir(), "document.pdf", "%PDF")
 	e := Upload(&Config{URL: s.URL, APIKey: "secret-token"}, path, "title")
@@ -171,7 +174,7 @@ func TestPaperlessInjectedTLSDialersCannotBypassPolicy(t *testing.T) {
 }
 func TestPaperlessPollingAndMaliciousResponses(t *testing.T) {
 	for _, body := range []string{`[{"task_id":"other","status":"SUCCESS","related_document":42}]`, `[{"task_id":"task-1","status":"SUCCESS","related_document":"https://host/secret"}]`, `[{"task_id":"task-1","status":"SUCCESS","related_document":-1}]`, `[{"task_id":"task-1","status":"secret"}]`, `[]`} {
-		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, body) }))
 		c, _ := NewClient(Config{URL: s.URL, APIKey: "secret"}, s.Client(), true)
 		if _, e := c.Poll(context.Background(), "task-1"); e == nil || strings.Contains(e.Error(), "secret") {
 			t.Fatal(e)
@@ -185,10 +188,10 @@ func TestPaperlessMalformedLookupCannotCreateDuplicateTag(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
 			created = true
-			fmt.Fprint(w, `{"id":1}`)
+			_, _ = fmt.Fprint(w, `{"id":1}`)
 			return
 		}
-		fmt.Fprint(w, `{"count":1,"results":[]}`)
+		_, _ = fmt.Fprint(w, `{"count":1,"results":[]}`)
 	}))
 	defer s.Close()
 	c, _ := NewClient(Config{URL: s.URL, APIKey: "secret"}, s.Client(), true)
@@ -197,7 +200,7 @@ func TestPaperlessMalformedLookupCannotCreateDuplicateTag(t *testing.T) {
 	}
 }
 func TestPaperlessEchoedTokenCannotBecomeTaskID(t *testing.T) {
-	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `"secret-token"`) }))
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `"secret-token"`) }))
 	defer s.Close()
 	c, _ := NewClient(Config{URL: s.URL, APIKey: "secret-token"}, s.Client(), true)
 	if _, e := c.Submit(context.Background(), strings.NewReader("%PDF"), 4, "title", nil); e == nil {

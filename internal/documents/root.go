@@ -42,25 +42,24 @@ func openProvisionedRoot(path string) (*os.Root, error) {
 		}
 		info, err := root.Lstat(part)
 		if err != nil {
-			root.Close()
+			_ = root.Close() // Release the handle without replacing the validation result.
 			if os.IsNotExist(err) {
 				return nil, fmt.Errorf("%w: %s", ErrRootNotProvisioned, path)
 			}
 			return nil, err
 		}
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			root.Close()
+			_ = root.Close() // Release the handle without replacing the validation result.
 			return nil, errors.New("document root and ancestors must be real directories")
 		}
 		next, err := root.OpenRoot(part)
-		root.Close()
+		_ = root.Close() // Release the handle without replacing the validation result.
 		if err != nil {
 			return nil, err
 		}
 		opened, err := next.Stat(".")
 		if err != nil || !os.SameFile(info, opened) {
-			next.Close()
-			return nil, errors.New("document root changed while opening")
+			return nil, errors.Join(errors.New("document root changed while opening"), next.Close())
 		}
 		root = next
 	}

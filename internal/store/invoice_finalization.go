@@ -24,11 +24,11 @@ func (r *InvoiceRepository) immediate(ctx context.Context, fn func(*sql.Conn) er
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }() // Return the connection after COMMIT or the rollback attempt.
 	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return err
 	}
-	defer conn.ExecContext(context.Background(), "ROLLBACK")
+	defer func() { _, _ = conn.ExecContext(context.Background(), "ROLLBACK") }() // Best effort after errors; after COMMIT SQLite reports no active transaction.
 	if err = fn(conn); err != nil {
 		return err
 	}
@@ -247,13 +247,13 @@ func (r *InvoiceRepository) MarkOverdue(ctx context.Context, now time.Time) (int
 		for rows.Next() {
 			var id string
 			if err = rows.Scan(&id); err != nil {
-				rows.Close()
+				_ = rows.Close() // Preserve the operation result while releasing its handle.
 				return err
 			}
 			ids = append(ids, id)
 		}
 		err = rows.Err()
-		rows.Close()
+		_ = rows.Close() // Preserve the operation result while releasing its handle.
 		if err != nil {
 			return err
 		}

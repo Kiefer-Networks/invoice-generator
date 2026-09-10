@@ -12,7 +12,7 @@ func TestGracefulShutdownKeepsWriteContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	started, finish := make(chan context.Context, 1), make(chan struct{})
-	srv := &http.Server{BaseContext: func(net.Listener) context.Context { return ctx }, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { started <- r.Context(); <-finish; w.WriteHeader(204) })}
+	srv := &http.Server{ReadHeaderTimeout: time.Second, BaseContext: func(net.Listener) context.Context { return ctx }, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { started <- r.Context(); <-finish; w.WriteHeader(204) })}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -22,7 +22,7 @@ func TestGracefulShutdownKeepsWriteContext(t *testing.T) {
 	go func() {
 		res, err := http.Get("http://" + listener.Addr().String())
 		if err == nil {
-			res.Body.Close()
+			_ = res.Body.Close()
 		}
 	}()
 	var request context.Context

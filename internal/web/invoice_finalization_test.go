@@ -3,14 +3,15 @@ package web
 import (
 	"context"
 	"fmt"
-	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func finalWebDraft(t *testing.T, s *store.Store) invoicing.Draft {
@@ -69,7 +70,9 @@ func TestInvoiceFinalizeReviewConfirmationAndFrozenDetail(t *testing.T) {
 		t.Fatalf("navigation=%d", code)
 	}
 	var number *string
-	s.DB().QueryRow(`SELECT number FROM invoices WHERE id=?`, d.ID).Scan(&number)
+	if err := s.DB().QueryRow(`SELECT number FROM invoices WHERE id=?`, d.ID).Scan(&number); err != nil {
+		t.Error(err)
+	}
 	if number != nil {
 		t.Fatal("invalid request wrote number")
 	}

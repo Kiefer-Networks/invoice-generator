@@ -78,15 +78,20 @@ func TestLoadMissingFile(t *testing.T) {
 func TestLoadTooLarge(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "huge.yaml")
-	f, err := os.Create(path)
+	f, err := os.Create(path) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if err != nil {
 		t.Fatalf("could not create file: %v", err)
 	}
+	// Reach the size check with a valid protected-file fixture on Linux.
+	if err := f.Chmod(0600); err != nil {
+		_ = f.Close()
+		t.Fatalf("could not protect file: %v", err)
+	}
 	if err := f.Truncate(maxConfigFileSize + 1); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("could not truncate file: %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	if _, err := Load(path); err == nil {
 		t.Error("expected error for oversized config file, got nil")
@@ -169,7 +174,8 @@ func TestUploadCreatesTagAndPostsDocument(t *testing.T) {
 	mux.HandleFunc("/api/documents/post_document/", func(w http.ResponseWriter, r *http.Request) {
 		sawUpload = true
 		uploadAuth = r.Header.Get("Authorization")
-		if err := r.ParseMultipartForm(10 << 20); err != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, 21<<20)
+		if err := r.ParseMultipartForm(10 << 20); err != nil { // #nosec G120 -- MaxBytesReader above bounds the total mock upload body.
 			t.Fatalf("failed to parse multipart form: %v", err)
 		}
 		uploadTitle = r.FormValue("title")
@@ -227,7 +233,8 @@ func TestUploadReusesExistingTag(t *testing.T) {
 		})
 	})
 	mux.HandleFunc("/api/documents/post_document/", func(w http.ResponseWriter, r *http.Request) {
-		_ = r.ParseMultipartForm(10 << 20)
+		r.Body = http.MaxBytesReader(w, r.Body, 21<<20)
+		_ = r.ParseMultipartForm(10 << 20) // #nosec G120 -- MaxBytesReader above bounds the total mock upload body.
 		if got := r.FormValue("tags"); got != "7" {
 			t.Errorf("expected existing tag id '7', got %q", got)
 		}
@@ -238,7 +245,9 @@ func TestUploadReusesExistingTag(t *testing.T) {
 
 	dir := t.TempDir()
 	docPath := filepath.Join(dir, "invoice.pdf")
-	os.WriteFile(docPath, []byte("%PDF-fake-content"), 0600)
+	if err := os.WriteFile(docPath, []byte("%PDF-fake-content"), 0600); err != nil {
+		t.Error(err)
+	}
 
 	cfg := &Config{URL: server.URL, APIKey: "test-key", Tags: []string{"Invoices"}}
 	if err := Upload(cfg, docPath, "title"); err != nil {
@@ -260,7 +269,9 @@ func TestUploadFailsOnServerError(t *testing.T) {
 
 	dir := t.TempDir()
 	docPath := filepath.Join(dir, "invoice.pdf")
-	os.WriteFile(docPath, []byte("%PDF-fake-content"), 0600)
+	if err := os.WriteFile(docPath, []byte("%PDF-fake-content"), 0600); err != nil {
+		t.Error(err)
+	}
 
 	cfg := &Config{URL: server.URL, APIKey: "test-key"}
 	if err := Upload(cfg, docPath, "title"); err == nil {

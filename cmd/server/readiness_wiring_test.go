@@ -4,10 +4,11 @@ package main
 
 import (
 	"context"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func TestReadinessActualServerWiring(t *testing.T) {

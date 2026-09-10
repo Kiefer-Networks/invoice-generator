@@ -15,9 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pdfcpu/pdfcpu/pkg/api"
-
 	"github.com/kiefer-networks/invoice-generator/internal/render"
+	"github.com/pdfcpu/pdfcpu/pkg/api"
 )
 
 var binPath string
@@ -35,7 +34,7 @@ func TestMain(m *testing.M) {
 	}
 	binPath = filepath.Join(dir, name)
 
-	cmd := exec.Command("go", "build", "-o", binPath, ".")
+	cmd := exec.Command("go", "build", "-o", binPath, ".") // #nosec G204 -- Fixed integration-test command; variable arguments are generated fixture paths or IDs, never request data.
 	cmd.Dir = mustGetwd()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -55,7 +54,7 @@ func mustGetwd() string {
 
 func run(t *testing.T, dir string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
-	cmd := exec.Command(binPath, args...)
+	cmd := exec.Command(binPath, args...) // #nosec G204 -- Fixed integration-test command; variable arguments are generated fixture paths or IDs, never request data.
 	cmd.Dir = dir
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf
@@ -310,7 +309,7 @@ func TestCLIZugferdKeepsHTMLTemplateRenderer(t *testing.T) {
 	if !strings.Contains(stdout, "rendered via HTML template + Chrome") {
 		t.Fatalf("expected HTML renderer with ZUGFeRD, got: %s", stdout)
 	}
-	f, err := os.Open(out)
+	f, err := os.Open(out) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if err != nil {
 		t.Fatal(err)
 	}

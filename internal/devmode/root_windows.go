@@ -3,8 +3,9 @@
 package devmode
 
 import (
-	"golang.org/x/sys/windows"
 	"os"
+
+	"golang.org/x/sys/windows"
 )
 
 func unsafePath(path string, info os.FileInfo) bool {
@@ -19,11 +20,11 @@ func unsafePath(path string, info os.FileInfo) bool {
 	if info.IsDir() {
 		return false
 	}
-	f, e := os.Open(path)
+	f, e := os.Open(path) // #nosec G304 -- Internal identity check of operator-selected development paths; the file handle is used only for link metadata.
 	if e != nil {
 		return true
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Read-only input; reads and validation report their own errors.
 	var metadata windows.ByHandleFileInformation
 	return windows.GetFileInformationByHandle(windows.Handle(f.Fd()), &metadata) != nil || metadata.NumberOfLinks != 1
 }

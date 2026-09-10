@@ -30,7 +30,9 @@ func TestDocumentRootMustBeProvisionedBeforeStartup(t *testing.T) {
 	}
 	svc, wake, stop, err := startDocuments(ctx, db, cfg)
 	if stop != nil {
-		stop(ctx)
+		if err := stop(ctx); err != nil {
+			t.Error(err)
+		}
 	}
 	if err == nil || svc != nil || wake != nil || stop != nil {
 		t.Fatal("unprovisioned storage started service/workers", err)
@@ -66,7 +68,9 @@ func TestDocumentInitializationFailureCannotStartWork(t *testing.T) {
 		return nil, failure
 	})
 	if stop != nil {
-		stop(ctx)
+		if err := stop(ctx); err != nil {
+			t.Error(err)
+		}
 	}
 	if !errors.Is(err, failure) || svc != nil || wake != nil || stop != nil {
 		t.Fatal("initialization failure exposed document service", err)
@@ -99,7 +103,9 @@ func TestDevelopmentDefaultRootRequiresExplicitProvisioning(t *testing.T) {
 	}
 	if _, _, stop, err := startDocuments(ctx, db, cfg); !errors.Is(err, documents.ErrRootNotProvisioned) {
 		if stop != nil {
-			stop(ctx)
+			if err := stop(ctx); err != nil {
+				t.Error(err)
+			}
 		}
 		t.Fatal("development silently provisioned its default root", err)
 	}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"net"
 	"net/http"
 	"os"
@@ -10,6 +9,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func TestDocumentProductionRootConfiguration(t *testing.T) {
@@ -20,13 +21,15 @@ func TestDocumentProductionRootConfiguration(t *testing.T) {
 			t.Fatalf("accepted root %q", root)
 		}
 	}
-	cfg.DocumentRoot = t.TempDir()
+	cfg.DocumentRoot = privateDocumentRoot(t)
 	if e := cfg.Validate(); e != nil {
 		t.Fatal(e)
 	}
 	if runtime.GOOS != "windows" {
-		os.Chmod(cfg.DocumentRoot, 0755)
-		defer os.Chmod(cfg.DocumentRoot, 0700)
+		if err := os.Chmod(cfg.DocumentRoot, 0755); err != nil { // #nosec G302 -- Deliberately broad permissions verify the production root guard rejects this fixture.
+			t.Error(err)
+		}
+		defer func() { _ = os.Chmod(cfg.DocumentRoot, 0700) }() // #nosec G302 -- Owner-only directory traversal requires 0700.
 		if e := cfg.Validate(); e == nil {
 			t.Fatal("broad permissions accepted")
 		}
@@ -43,7 +46,7 @@ func TestDocumentLifecycleStartRecoveryStop(t *testing.T) {
 		t.Fatal(e)
 	}
 	cfg := testConfig(t)
-	cfg.DocumentRoot = t.TempDir()
+	cfg.DocumentRoot = privateDocumentRoot(t)
 	svc, wake, stop, e := startDocuments(ctx, db, cfg)
 	if e != nil {
 		t.Fatal(e)
@@ -58,7 +61,9 @@ func TestDocumentLifecycleStartRecoveryStop(t *testing.T) {
 		t.Fatal(e)
 	}
 	cfg.DocumentRoot = filepath.Join(t.TempDir(), "file")
-	os.WriteFile(cfg.DocumentRoot, []byte("x"), 0600)
+	if err := os.WriteFile(cfg.DocumentRoot, []byte("x"), 0600); err != nil {
+		t.Error(err)
+	}
 	if _, _, _, e = startDocuments(ctx, db, cfg); e == nil {
 		t.Fatal("unsafe storage started")
 	}
@@ -68,7 +73,11 @@ func TestDocumentServerDrainsActiveRequestsBeforeStorageClose(t *testing.T) {
 	defer cancel()
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(entered); <-release; w.Write([]byte("done")) })}
+	srv := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		_, _ = w.Write([]byte("done"))
+	})}
 	listener, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		t.Fatal(e)
@@ -80,7 +89,7 @@ func TestDocumentServerDrainsActiveRequestsBeforeStorageClose(t *testing.T) {
 		defer close(requestDone)
 		resp, e := http.Get("http://" + listener.Addr().String())
 		if e == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 	}()
 	select {
@@ -112,7 +121,7 @@ func TestDocumentServerForcedShutdownTimeout(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(entered); <-release })}
+	srv := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(entered); <-release })}
 	ln, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		t.Fatal(e)
@@ -125,7 +134,7 @@ func TestDocumentServerForcedShutdownTimeout(t *testing.T) {
 	go func() {
 		resp, e := http.Get("http://" + ln.Addr().String())
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		requestDone <- e
 	}()

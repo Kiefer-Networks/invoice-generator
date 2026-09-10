@@ -2,11 +2,12 @@ package jobs
 
 import (
 	"context"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func TestRunnerBoundedWakeAndCancellation(t *testing.T) {
@@ -74,7 +75,9 @@ func TestRunnerBoundedWakeAndCancellation(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("restart failed")
 	}
-	r.Stop(ctx)
+	if err := r.Stop(ctx); err != nil {
+		t.Error(err)
+	}
 }
 func TestRunnerIdleWakeDoesNotBusyPoll(t *testing.T) {
 	ctx := context.Background()
@@ -104,7 +107,7 @@ func TestRunnerIdleWakeDoesNotBusyPoll(t *testing.T) {
 	if e = r.Start(ctx); e != nil {
 		t.Fatal(e)
 	}
-	defer r.Stop(ctx)
+	defer func() { _ = r.Stop(ctx) }() // Best-effort cleanup after assertions; explicit shutdown behavior has separate assertions.
 	for i := 0; i < 2; i++ {
 		select {
 		case <-initial:

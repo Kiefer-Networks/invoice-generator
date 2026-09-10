@@ -22,7 +22,7 @@ func TestContainerRecoveryDrill(t *testing.T) {
 	backups := data + "-backups"
 	run := func(args ...string) {
 		t.Helper()
-		c := exec.Command("docker", args...)
+		c := exec.Command("docker", args...) // #nosec G204 -- Fixed integration-test command; variable arguments are generated fixture paths or IDs, never request data.
 		c.Dir = root
 		if out, err := c.CombinedOutput(); err != nil {
 			t.Fatalf("docker %v: %v\n%s", args, err, out)

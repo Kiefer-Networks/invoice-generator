@@ -3,11 +3,12 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/kiefer-networks/invoice-generator/internal/jobs"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/jobs"
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func TestCleanupPropagatesActiveWorkerTimeout(t *testing.T) {

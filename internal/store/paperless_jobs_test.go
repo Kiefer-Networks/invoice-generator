@@ -314,7 +314,9 @@ func TestPaperlessRepairMigrationMakesExhaustedJobsRetryable(t *testing.T) {
 					t.Fatal("exhausted historical job stuck", got, e)
 				}
 				var after string
-				s.db.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=11`).Scan(&after)
+				if err := s.db.QueryRow(`SELECT checksum FROM schema_migrations WHERE version=11`).Scan(&after); err != nil {
+					t.Error(err)
+				}
 				if before != after {
 					t.Fatal("011 checksum changed")
 				}

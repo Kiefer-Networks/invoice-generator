@@ -9,7 +9,7 @@ import (
 
 func makeRecoveryParentUntrusted(t *testing.T, path string) {
 	t.Helper()
-	if e := os.Chmod(path, 0777); e != nil {
+	if e := os.Chmod(path, 0777); e != nil { // #nosec G302 -- Deliberately untrusted parent permissions must be rejected by recovery.
 		t.Fatal(e)
 	}
 }

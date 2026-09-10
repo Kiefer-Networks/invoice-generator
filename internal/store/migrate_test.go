@@ -460,7 +460,7 @@ func TestFinalizationMigrationUpgrades006AndPreservesChecksums(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	if err = s.ensureMigrationTable(ctx); err != nil {
 		t.Fatal(err)
 	}

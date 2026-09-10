@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func TestFinalizeUpdateOrReplaceCannotDeleteHistoricalRows(t *testing.T) {
@@ -70,7 +71,9 @@ func TestFinalizeReviewAndServiceDateContract(t *testing.T) {
 	// Deterministic former TOCTOU interleaving: review returns A, save B, submit A.
 	c, _ := s.CompanyRepository().Get(ctx)
 	c.LegalName = "Changed after review"
-	s.CompanyRepository().Save(ctx, c.CompanyInput)
+	if _, err := s.CompanyRepository().Save(ctx, c.CompanyInput); err != nil {
+		t.Error(err)
+	}
 	if _, err = svc.Finalize(ctx, d.ID, review.Key); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("unreviewed company accepted: %v", err)
 	}

@@ -23,14 +23,20 @@ func TestPaperlessTokenFileSafeAndReloadable(t *testing.T) {
 		}
 	}
 	for _, value := range []string{"", strings.Repeat("s", 4097), "secret\r\nother"} {
-		os.WriteFile(p, []byte(value), 0600)
+		if err := os.WriteFile(p, []byte(value), 0600); err != nil {
+			t.Error(err)
+		}
 		if _, e := ReadToken(p); e == nil || strings.Contains(e.Error(), "secret") {
 			t.Fatal(e)
 		}
 	}
 	if runtime.GOOS != "windows" {
-		os.WriteFile(p, []byte("secret"), 0600)
-		os.Chmod(p, 0644)
+		if err := os.WriteFile(p, []byte("secret"), 0600); err != nil {
+			t.Error(err)
+		}
+		if err := os.Chmod(p, 0644); err != nil { // #nosec G302 -- Deliberately insecure fixture permissions must be rejected by ReadToken.
+			t.Error(err)
+		}
 		if _, e := ReadToken(p); e == nil {
 			t.Fatal("permissions")
 		}
@@ -50,7 +56,7 @@ func TestPaperlessConfigRequiresProtectedRegularFile(t *testing.T) {
 	}
 	if runtime.GOOS != "windows" {
 		p := writeTemp(t, t.TempDir(), "paperless.yaml", "url: https://paperless.internal\napi_key: tok\n")
-		if e := os.Chmod(p, 0644); e != nil {
+		if e := os.Chmod(p, 0644); e != nil { // #nosec G302 -- Deliberately insecure fixture permissions; the test asserts configuration rejects them.
 			t.Fatal(e)
 		}
 		if _, e := Load(p); e == nil {

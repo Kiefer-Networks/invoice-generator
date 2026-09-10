@@ -43,7 +43,7 @@ func restoreWithHooks(ctx context.Context, o RestoreOptions, hooks recoveryHooks
 	if e != nil {
 		return e
 	}
-	defer parent.Close()
+	defer func() { _ = parent.Close() }() // Read-only handle cleanup; operations report their own errors.
 	name := filepath.Base(o.TargetRoot)
 	if _, e = parent.Lstat(name); !os.IsNotExist(e) {
 		return ErrBackup
@@ -52,8 +52,8 @@ func restoreWithHooks(ctx context.Context, o RestoreOptions, hooks recoveryHooks
 	if e != nil {
 		return e
 	}
-	lock.Close()
-	defer parent.Remove(name + ".restore-lock")
+	_ = lock.Close()                                             // Empty reservation file; no buffered data or durability promise.
+	defer func() { _ = parent.Remove(name + ".restore-lock") }() // Best-effort reservation cleanup; a leftover lock fails subsequent restores closed.
 	staging, e := newRecoveryStage(parent, filepath.Dir(o.TargetRoot), ".restore-")
 	if e != nil {
 		return e
@@ -125,7 +125,7 @@ func IntegrityCheck(ctx context.Context, database, documentRoot string) (err err
 	if e != nil {
 		return e
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }() // Statements and transaction commits determine the database outcome.
 	if e = source.check(); e != nil {
 		return e
 	}
@@ -156,7 +156,7 @@ func VerifyBackup(ctx context.Context, o VerifyOptions) (err error) {
 	if e != nil {
 		return e
 	}
-	defer parent.Close()
+	defer func() { _ = parent.Close() }() // Read-only handle cleanup; operations report their own errors.
 	staging, e := newRecoveryStage(parent, filepath.Dir(o.Archive), ".verify-")
 	if e != nil {
 		return e
@@ -173,13 +173,13 @@ func unpackRecovery(ctx context.Context, o VerifyOptions, stage string) error {
 	if e != nil {
 		return e
 	}
-	defer input.Close()
+	defer func() { _ = input.Close() }() // Read-only handle cleanup; operations report their own errors.
 	plainPath := filepath.Join(stage, "payload.tar")
-	plain, e := os.OpenFile(plainPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	plain, e := os.OpenFile(plainPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600) // #nosec G304 -- Fixed payload.tar name under a private recovery stage; exclusive creation prevents replacement.
 	if e != nil {
 		return e
 	}
-	defer func() { plain.Close(); os.Remove(plainPath) }()
+	defer func() { _ = plain.Close(); _ = os.Remove(plainPath) }() // The enclosing recovery stage also removes all private scratch files.
 	if e = decryptBackup(ctx, input, plain, o.Passphrase, o.KeyFile); e != nil {
 		return e
 	}
@@ -252,12 +252,12 @@ func unpackRecovery(ctx context.Context, o VerifyOptions, stage string) error {
 		if e != nil || h.Typeflag != tar.TypeReg || h.Name != entry.Name || h.Size != entry.Size || h.Linkname != "" || h.Format != tar.FormatUSTAR {
 			return ErrBackup
 		}
-		f, e := os.OpenFile(filepath.Join(stage, filepath.FromSlash(entry.Name)), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		f, e := os.OpenFile(filepath.Join(stage, filepath.FromSlash(entry.Name)), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600) // #nosec G304 -- Names are validated above as database.sqlite or documents/ plus 52 base32 characters; stage is private and creation exclusive.
 		if e != nil {
 			return e
 		}
 		hash := sha256.New()
-		n, e := io.Copy(io.MultiWriter(f, hash), tr)
+		n, e := io.Copy(io.MultiWriter(f, hash), io.LimitReader(tr, entry.Size+1))
 		if e == nil {
 			e = f.Sync()
 		}
@@ -284,7 +284,7 @@ func unpackRecovery(ctx context.Context, o VerifyOptions, stage string) error {
 	if e != nil {
 		return e
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }() // Statements and transaction commits determine the database outcome.
 	var sessions int
 	if e = db.QueryRowContext(ctx, `SELECT count(*) FROM sessions`).Scan(&sessions); e != nil || sessions != 0 {
 		return ErrBackup
@@ -331,9 +331,10 @@ func preflightRecoveryTar(ctx context.Context, f *os.File) error {
 		}
 		size, e := strconv.ParseInt(sizeText, 8, 64)
 		limit := backupMaxDocument
-		if count == 0 {
+		switch count {
+		case 0:
 			limit = backupMaxManifest
-		} else if count == 1 {
+		case 1:
 			limit = backupMaxDatabase
 		}
 		if e != nil || size <= 0 || size > limit {
@@ -353,7 +354,7 @@ func inspectRecovery(ctx context.Context, path, docs, work string) (backupManife
 	if e != nil {
 		return m, e
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }() // Statements and transaction commits determine the database outcome.
 	if e = checkRecoveryDatabase(ctx, db, work); e != nil {
 		return m, e
 	}
@@ -371,13 +372,13 @@ func inspectRecovery(ctx context.Context, path, docs, work string) (backupManife
 	if e != nil {
 		return m, e
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }() // Read-only handle cleanup; operations report their own errors.
 	rows, e := db.QueryContext(ctx, `SELECT storage_key,size_bytes,checksum_sha256 FROM documents WHERE status='ready' ORDER BY storage_key`)
 	if e != nil {
 		return m, e
 	}
-	defer rows.Close()
-	var total int64 = entry.Size
+	defer func() { _ = rows.Close() }() // Read-only query; rows.Err reports iteration errors.
+	total := entry.Size
 	for rows.Next() {
 		var key, sum string
 		var size int64
@@ -407,7 +408,7 @@ func hashRecoveryFile(ctx context.Context, path, name string, max int64) (backup
 	if e != nil {
 		return backupEntry{}, e
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Read-only input; reads and validation report their own errors.
 	h := sha256.New()
 	n, e := io.Copy(h, io.LimitReader(&recoveryReader{ctx: ctx, r: f}, max+1))
 	if e != nil || n <= 0 || n > max {
@@ -427,7 +428,7 @@ func checkRecoveryDatabase(ctx context.Context, db *sql.DB, work string) error {
 	}
 	bad := rows.Next()
 	e = rows.Err()
-	rows.Close()
+	_ = rows.Close() // Preserve the operation result while releasing its handle.
 	if e != nil || bad {
 		return ErrBackup
 	}
@@ -444,25 +445,29 @@ func checkRecoveryDatabase(ctx context.Context, db *sql.DB, work string) error {
 		var version int
 		var name, sum string
 		if e = rows.Scan(&version, &name, &sum); e != nil || n >= len(ms) || version != ms[n].version || name != ms[n].name || sum != ms[n].checksum {
-			rows.Close()
+			_ = rows.Close() // Preserve the operation result while releasing its handle.
 			return ErrBackup
 		}
 		n++
 	}
 	e = rows.Err()
-	rows.Close()
+	_ = rows.Close() // Preserve the operation result while releasing its handle.
 	if e != nil || n != len(ms) {
 		return ErrBackup
 	}
 	// Compare actual tables/indexes/triggers, not just the migration ledger. This
 	// detects removed immutability guards or a forged ledger in a damaged backup.
 	referencePath := filepath.Join(work, "reference.sqlite")
-	defer func() { os.Remove(referencePath); os.Remove(referencePath + "-wal"); os.Remove(referencePath + "-shm") }()
+	defer func() {
+		_ = os.Remove(referencePath)
+		_ = os.Remove(referencePath + "-wal")
+		_ = os.Remove(referencePath + "-shm")
+	}() // The enclosing recovery stage also cleans these scratch files.
 	reference, e := Open(ctx, referencePath)
 	if e != nil {
 		return e
 	}
-	defer reference.Close()
+	defer func() { _ = reference.Close() }() // Statements and transaction commits determine the database outcome.
 	if e = reference.Migrate(ctx); e != nil {
 		return e
 	}
@@ -488,7 +493,7 @@ func recoverySchema(ctx context.Context, db *sql.DB) ([]string, error) {
 	if e != nil {
 		return nil, e
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }() // Read-only query; rows.Err reports iteration errors.
 	var result []string
 	for rows.Next() {
 		var kind, name, table, ddl string

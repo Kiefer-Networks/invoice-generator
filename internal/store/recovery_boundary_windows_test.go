@@ -1,11 +1,12 @@
 package store
 
 import (
-	"golang.org/x/sys/windows"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 // Junctions exercise Windows reparse alias rejection without requiring the
@@ -16,11 +17,11 @@ func createRecoverySymlinkAlias(t *testing.T, source, alias string) string {
 		return alias
 	}
 	junction := alias + "-junction"
-	cmd := exec.Command("cmd", "/c", "mklink", "/J", junction, filepath.Dir(source))
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", junction, filepath.Dir(source)) // #nosec G204 -- Fixed integration-test command; variable arguments are generated fixture paths or IDs, never request data.
 	if output, e := cmd.CombinedOutput(); e != nil {
 		t.Fatalf("create junction: %v %s", e, output)
 	}
-	t.Cleanup(func() { os.Remove(junction) })
+	t.Cleanup(func() { _ = os.Remove(junction) })
 	return filepath.Join(junction, filepath.Base(source))
 }
 
@@ -40,10 +41,16 @@ func TestMain(m *testing.M) {
 	if e = protectRecoveryPath(root, true); e != nil {
 		panic(e)
 	}
-	os.Setenv("TMP", root)
-	os.Setenv("TEMP", root)
+	if err := os.Setenv("TMP", root); err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("TEMP", root); err != nil {
+		panic(err)
+	}
 	code := m.Run()
-	os.RemoveAll(root)
+	if err := os.RemoveAll(root); err != nil {
+		panic(err)
+	}
 	os.Exit(code)
 }
 

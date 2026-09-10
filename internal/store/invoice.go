@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/kiefer-networks/invoice-generator/internal/units"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/units"
 )
 
 // InvoiceLine is the editable snapshot of one draft position. Integer fields
@@ -118,7 +119,7 @@ func readInvoice(ctx context.Context, tx invoiceReader, id string) (InvoiceDraft
 	if err != nil {
 		return InvoiceDraft{}, fmt.Errorf("list invoice lines: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }() // Read-only query; rows.Err reports iteration errors.
 	for rows.Next() {
 		var line InvoiceLine
 		if err := rows.Scan(&line.ID, &line.CatalogItemID, &line.Position, &line.Title, &line.Description, &line.Unit, &line.QuantityScaled, &line.UnitPriceMinor, &line.DiscountBasisPoints, &line.TaxRateBasisPoints, &line.NetMinor, &line.TaxMinor, &line.GrossMinor); err != nil {
@@ -169,7 +170,7 @@ func (r *InvoiceRepository) ListDraftPage(ctx context.Context, options InvoiceLi
 	if err != nil {
 		return InvoicePage{}, fmt.Errorf("list invoice drafts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }() // Read-only query; rows.Err reports iteration errors.
 	var result []InvoiceDraft
 	for rows.Next() {
 		draft, err := scanInvoiceDraft(rows)

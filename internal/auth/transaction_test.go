@@ -69,7 +69,7 @@ func TestAuthorizationTransactionRejectsTamperingAndReplayBeforeExchange(t *test
 	provider.setNonce(u.Query().Get("nonce"))
 	callback, _ := url.Parse("https://app.example.test/auth/callback?code=code-1&state=" + state)
 
-	tampered := *cookie
+	tampered := *cookie // #nosec G124 -- Copy the already-protected cookie to corrupt only its signed value and test tamper rejection.
 	rawCookie, err := base64.RawURLEncoding.DecodeString(cookie.Value)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestAuthorizationTransactionRejectsNonCanonicalCookieWithoutConsumingTransa
 	provider.setNonce(u.Query().Get("nonce"))
 	callback, _ := url.Parse("https://app.example.test/auth/callback?code=code-1&state=" + u.Query().Get("state"))
 
-	nonCanonical := *cookie
+	nonCanonical := *cookie // #nosec G124 -- Request cookies carry only name/value; response-only security attributes are irrelevant to AddCookie.
 	nonCanonical.Value = alternateRawURLSpelling(t, cookie.Value)
 	if _, err := manager.Callback(context.Background(), callback, &nonCanonical); err == nil {
 		t.Fatal("noncanonical transaction cookie was accepted")
@@ -263,7 +263,7 @@ func newTestProvider(t *testing.T) *testProvider {
 			}
 			_, _ = w.Write([]byte(`{"access_token":"access","token_type":"Bearer","id_token":"` + idToken + `"}`))
 		case "/jwks":
-			n := base64.RawURLEncoding.EncodeToString(provider.key.PublicKey.N.Bytes())
+			n := base64.RawURLEncoding.EncodeToString(provider.key.N.Bytes())
 			_, _ = w.Write([]byte(`{"keys":[{"kty":"RSA","kid":"test-key","use":"sig","alg":"RS256","n":"` + n + `","e":"AQAB"}]}`))
 		default:
 			http.NotFound(w, r)

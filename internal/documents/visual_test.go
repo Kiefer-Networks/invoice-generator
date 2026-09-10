@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
-	"github.com/pdfcpu/pdfcpu/pkg/api"
-	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
+	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
 func TestGenerateMultiPageMixedTaxCorrection(t *testing.T) {
@@ -75,7 +76,7 @@ func TestGenerateMultiPageMixedTaxCorrection(t *testing.T) {
 		t.Fatal(e)
 	}
 	data, e := io.ReadAll(file)
-	file.Close()
+	_ = file.Close()
 	if e != nil {
 		t.Fatal(e)
 	}

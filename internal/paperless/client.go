@@ -93,7 +93,7 @@ func ValidateURL(raw string, fixture bool) error {
 	if e != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || u.RawPath != "" || strings.Contains(u.Path, "..") {
 		return errors.New("invalid Paperless URL")
 	}
-	if u.Scheme != "https" && !(fixture && u.Scheme == "http" && (u.Hostname() == "localhost" || isLoopback(u.Hostname()))) {
+	if u.Scheme != "https" && (!fixture || u.Scheme != "http" || (u.Hostname() != "localhost" && !isLoopback(u.Hostname()))) {
 		return errors.New("connection to Paperless requires HTTPS")
 	}
 	if ip, e := netip.ParseAddr(u.Hostname()); e == nil && !allowedIP(ip, fixture) {
@@ -109,6 +109,10 @@ func isLoopback(host string) bool { ip, e := netip.ParseAddr(host); return e == 
 // An injected client may supply a trusted test CA or shorter total timeout. Its
 // transport must be a standard transport, cloned and bounded by the same policy.
 func NewClient(cfg Config, injected *http.Client, fixture bool) (*Client, error) {
+	return newClientWithResolver(cfg, injected, fixture, net.DefaultResolver)
+}
+
+func newClientWithResolver(cfg Config, injected *http.Client, fixture bool, resolver *net.Resolver) (*Client, error) {
 	if e := ValidateURL(cfg.URL, fixture); e != nil {
 		return nil, e
 	}
@@ -157,7 +161,7 @@ func NewClient(cfg Config, injected *http.Client, fixture bool) (*Client, error)
 		if e != nil || !strings.EqualFold(host, u.Hostname()) {
 			return nil, ErrRequest
 		}
-		ips, e := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		ips, e := resolver.LookupNetIP(ctx, "ip", host)
 		if e != nil || len(ips) == 0 {
 			return nil, ErrRequest
 		}
@@ -219,7 +223,7 @@ func (c *Client) request(ctx context.Context, method, path, contentType string, 
 	if e != nil {
 		return ErrRequest
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Cleanup cannot change delivery certainty after a validated response.
 	if e = checkAPIVersion(resp); e != nil {
 		versionRejected = resp.StatusCode == http.StatusNotAcceptable
 		return e
@@ -439,7 +443,7 @@ func (c *Client) VerifyDocument(ctx context.Context, id int64, title, sum string
 	if e != nil {
 		return ErrRequest
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Cleanup cannot change delivery certainty after a validated response.
 	if e = checkAPIVersion(resp); e != nil {
 		return e
 	}

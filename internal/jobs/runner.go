@@ -4,9 +4,10 @@ package jobs
 import (
 	"context"
 	"errors"
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"sync"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 type Runner struct {

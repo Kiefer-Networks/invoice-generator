@@ -1,8 +1,9 @@
 package invoicing
 
 import (
-	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"testing"
+
+	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
 func TestFinalizationRejectsHistoricalUnsupportedUnit(t *testing.T) {

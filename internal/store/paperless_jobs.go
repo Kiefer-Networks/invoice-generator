@@ -60,7 +60,7 @@ func (r *PaperlessRepository) Claim(ctx context.Context, now time.Time, lease ti
 }
 func (r *PaperlessRepository) mutate(ctx context.Context, j PaperlessJob, set string, args ...any) error {
 	args = append(args, j.ID, j.DocumentID, j.Token)
-	res, e := r.store.db.ExecContext(ctx, `UPDATE paperless_jobs SET `+set+`,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND document_id=? AND state='leased' AND lease_token=? AND CAST(lease_expires_at AS INTEGER)>unixepoch()`, args...)
+	res, e := r.store.db.ExecContext(ctx, `UPDATE paperless_jobs SET `+set+`,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND document_id=? AND state='leased' AND lease_token=? AND CAST(lease_expires_at AS INTEGER)>unixepoch()`, args...) // #nosec G202 -- Private callers supply literal SET clauses; all external values are bound parameters.
 	if e != nil {
 		return e
 	}
@@ -129,7 +129,7 @@ func (r *PaperlessRepository) Fail(ctx context.Context, j PaperlessJob, now time
 		state = "failed"
 	}
 	base := int64(30) << min(max(j.Attempts-1, 0), 6)
-	delay := base + rand.Int64N(base/4+1)
+	delay := base + rand.Int64N(base/4+1) // #nosec G404 -- Retry jitter needs distribution, not secrecy; lease tokens use crypto/rand via newBusinessID.
 	return r.mutate(ctx, j, `state=?,next_attempt_at=?,lease_token='',lease_expires_at=0,last_error_code=?,last_error_summary=?`, state, now.Unix()+delay, code, PaperlessErrorSummary(code))
 }
 func (r *PaperlessRepository) Retry(ctx context.Context, id string) error {

@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strings"
+	"time"
+
 	"github.com/kiefer-networks/invoice-generator/internal/config"
 	"github.com/kiefer-networks/invoice-generator/internal/render"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 	"github.com/kiefer-networks/invoice-generator/internal/units"
-	"math"
-	"strings"
-	"time"
 )
 
 // Snapshot is a detached value decoded from immutable persisted JSON. Exact

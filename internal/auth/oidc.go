@@ -183,7 +183,7 @@ func configuredSecret(value, filename string, development bool, label string) (s
 		if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 			return "", fmt.Errorf("read %s: file permissions are too broad", label)
 		}
-		data, err := os.ReadFile(filename)
+		data, err := os.ReadFile(filename) // #nosec G304 -- Administrator-configured secret mount; regular-file type and owner-only permissions are checked above.
 		if err != nil {
 			return "", fmt.Errorf("read %s: %w", label, err)
 		}
@@ -232,7 +232,7 @@ func discover(ctx context.Context, client *http.Client, issuer *url.URL) (discov
 	if err != nil {
 		return discoveryDocument{}, fmt.Errorf("discovery for Pocket ID: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Response read/validation errors determine the outcome.
 	if resp.StatusCode != http.StatusOK {
 		return discoveryDocument{}, fmt.Errorf("discovery response from Pocket ID has status %d", resp.StatusCode)
 	}
@@ -321,7 +321,7 @@ func validateIssuer(raw string, development bool) (*url.URL, error) {
 	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.Fragment != "" {
 		return nil, errors.New("invalid Pocket ID issuer URL")
 	}
-	if u.Scheme != "https" && !(development && u.Scheme == "http" && isLoopback(u.Hostname())) {
+	if u.Scheme != "https" && (!development || u.Scheme != "http" || !isLoopback(u.Hostname())) {
 		return nil, errors.New("issuer for Pocket ID must use HTTPS")
 	}
 	return u, nil
@@ -331,7 +331,7 @@ func validateRedirect(raw string, development bool) (*url.URL, error) {
 	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.Fragment != "" {
 		return nil, errors.New("invalid fixed callback URL")
 	}
-	if u.Scheme != "https" && !(development && u.Scheme == "http" && isLoopback(u.Hostname())) {
+	if u.Scheme != "https" && (!development || u.Scheme != "http" || !isLoopback(u.Hostname())) {
 		return nil, errors.New("callback URL must use HTTPS")
 	}
 	if u.Path != "/auth/callback" || u.RawQuery != "" {
@@ -607,10 +607,10 @@ func (m *Manager) transactionCookie(value string, lifetime time.Duration) *http.
 	if lifetime < 0 {
 		maxAge = -1
 	}
-	return &http.Cookie{Name: transactionCookieName, Value: value, Path: "/", MaxAge: maxAge, Expires: m.now().Add(lifetime), HttpOnly: true, Secure: m.secureCookies, SameSite: http.SameSiteLaxMode}
+	return &http.Cookie{Name: transactionCookieName, Value: value, Path: "/", MaxAge: maxAge, Expires: m.now().Add(lifetime), HttpOnly: true, Secure: m.secureCookies, SameSite: http.SameSiteLaxMode} // #nosec G124 -- Secure is false only for the validated loopback HTTP development callback.
 }
 func (m *Manager) sessionCookie(value string, lifetime time.Duration) *http.Cookie {
-	return &http.Cookie{Name: sessionCookieName, Value: value, Path: "/", MaxAge: int(lifetime.Seconds()), Expires: m.now().Add(lifetime), HttpOnly: true, Secure: m.secureCookies, SameSite: http.SameSiteLaxMode}
+	return &http.Cookie{Name: sessionCookieName, Value: value, Path: "/", MaxAge: int(lifetime.Seconds()), Expires: m.now().Add(lifetime), HttpOnly: true, Secure: m.secureCookies, SameSite: http.SameSiteLaxMode} // #nosec G124 -- Secure is false only for the validated loopback HTTP development callback.
 }
 func safeReturnTo(value string) string {
 	if value == "" {

@@ -2,8 +2,6 @@ package render
 
 import (
 	"context"
-	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/chromedp"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,6 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/chromedp"
 )
 
 func TestSnapshotRendererCannotFetchNetworkAssets(t *testing.T) {

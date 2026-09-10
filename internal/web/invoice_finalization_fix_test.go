@@ -3,10 +3,11 @@ package web
 import (
 	"context"
 	"fmt"
-	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
 )
 
 func TestInvoiceServiceDateReviewAndCorrectionRendering(t *testing.T) {
@@ -76,7 +77,9 @@ func TestInvoiceMissingServiceDateCannotFinalizeAndRouteIsSecured(t *testing.T) 
 	d := finalWebDraft(t, s)
 	request := invoiceHTTP(t, h)
 	path := "/invoices/" + d.ID
-	s.DB().Exec(`UPDATE invoices SET service_date='' WHERE id=?`, d.ID)
+	if _, err := s.DB().Exec(`UPDATE invoices SET service_date='' WHERE id=?`, d.ID); err != nil {
+		t.Error(err)
+	}
 	code, _, body := request("GET", path+"/review", nil, false)
 	if code != 200 || strings.Contains(body, `name="idempotency_key"`) || !strings.Contains(body, "service or delivery date") {
 		t.Fatalf("incomplete review=%d %s", code, body)

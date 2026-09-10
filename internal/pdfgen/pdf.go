@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/go-pdf/fpdf"
-
 	"github.com/kiefer-networks/invoice-generator/internal/config"
 	"github.com/kiefer-networks/invoice-generator/internal/locale"
 )

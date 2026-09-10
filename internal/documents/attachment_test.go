@@ -2,14 +2,15 @@ package documents
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
+	"testing"
+
 	"github.com/go-pdf/fpdf"
 	"github.com/kiefer-networks/invoice-generator/internal/pdfattach"
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
-	"os"
-	"path/filepath"
-	"testing"
 )
 
 func TestGenerateRejectsMalformedAttachmentMetadata(t *testing.T) {
@@ -25,7 +26,7 @@ func TestGenerateRejectsMalformedAttachmentMetadata(t *testing.T) {
 	if e := pdfattach.EmbedFacturX(path, xml); e != nil {
 		t.Fatal(e)
 	}
-	original, e := os.ReadFile(path)
+	original, e := os.ReadFile(path) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -48,16 +49,17 @@ func TestGenerateRejectsMalformedAttachmentMetadata(t *testing.T) {
 				t.Fatal(e)
 			}
 			expected := xml
-			if field == "relationship" {
+			switch field {
+			case "relationship":
 				spec.Update("AFRelationship", types.Name("Data"))
-			} else if field == "mime" {
+			case "mime":
 				ref, _ := spec.DictEntry("EF").Find("F")
 				stream, _, e := ctx.DereferenceStreamDict(ref)
 				if e != nil {
 					t.Fatal(e)
 				}
 				stream.Update("Subtype", types.Name("application/octet-stream"))
-			} else {
+			default:
 				expected = []byte("<invoice>changed</invoice>")
 			}
 			var altered bytes.Buffer

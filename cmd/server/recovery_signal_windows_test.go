@@ -21,10 +21,16 @@ func TestMain(m *testing.M) {
 	if e != nil {
 		panic(e)
 	}
-	os.Setenv("TMP", root)
-	os.Setenv("TEMP", root)
+	if err := os.Setenv("TMP", root); err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("TEMP", root); err != nil {
+		panic(err)
+	}
 	code := m.Run()
-	os.RemoveAll(root)
+	if err := os.RemoveAll(root); err != nil {
+		panic(err)
+	}
 	os.Exit(code)
 }
 
@@ -32,7 +38,11 @@ func configureRecoverySignalChild(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x10, HideWindow: true}
 }
 func interruptRecoveryChild(cmd *exec.Cmd) error {
-	sender := exec.Command(os.Args[0], "-test.run=^TestRecoverySignalSender$")
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	sender := exec.Command(executable, "-test.run=^TestRecoverySignalSender$") // #nosec G204 -- Fixed integration-test command; variable arguments are generated fixture paths or IDs, never request data.
 	sender.Env = append(os.Environ(), "INVOICE_RECOVERY_SIGNAL_PID="+strconv.Itoa(cmd.Process.Pid))
 	sender.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	return sender.Run()
@@ -47,7 +57,7 @@ func TestRecoverySignalSender(t *testing.T) {
 		os.Exit(2)
 	}
 	kernel := syscall.NewLazyDLL("kernel32.dll")
-	kernel.NewProc("FreeConsole").Call()
+	_, _, _ = kernel.NewProc("FreeConsole").Call() // Detaching is best effort; AttachConsole below verifies the target.
 	ok, _, _ := kernel.NewProc("AttachConsole").Call(uintptr(pid))
 	if ok == 0 {
 		os.Exit(3)

@@ -33,7 +33,7 @@ func TestStorageAtomicContainedImmutable(t *testing.T) {
 		t.Fatal(e)
 	}
 	b, _ := io.ReadAll(f)
-	f.Close()
+	_ = f.Close()
 	if string(b) != "document" {
 		t.Fatal(string(b))
 	}
@@ -45,7 +45,7 @@ func TestStorageAtomicContainedImmutable(t *testing.T) {
 	}
 	for _, key := range []string{"../secret", "/etc/passwd", `..\secret`, a.Key + ":stream", "."} {
 		if f, e := s.Open(key, a.SHA256, a.Size); e == nil {
-			f.Close()
+			_ = f.Close()
 			t.Fatalf("accepted %q", key)
 		}
 	}
@@ -59,18 +59,18 @@ func TestStorageAtomicContainedImmutable(t *testing.T) {
 		t.Fatal(entries)
 	}
 	if f, e := s.Open(a.Key, strings.Repeat("0", 64), a.Size); e == nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal("bad checksum accepted")
 	}
 	if f, e := s.Open(a.Key, a.SHA256, a.Size+1); e == nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal("bad size accepted")
 	}
 	if e = os.WriteFile(filepath.Join(root, a.Key), []byte("tampered"), 0600); e != nil {
 		t.Fatal(e)
 	}
 	if f, e := s.Open(a.Key, a.SHA256, a.Size); e == nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal("tampering accepted")
 	}
 }
@@ -82,13 +82,15 @@ func TestStorageRejectSymlink(t *testing.T) {
 	}
 	defer s.Close()
 	target := filepath.Join(t.TempDir(), "private")
-	os.WriteFile(target, []byte("secret"), 0600)
+	if err := os.WriteFile(target, []byte("secret"), 0600); err != nil {
+		t.Error(err)
+	}
 	key := strings.Repeat("A", 52)
 	if e = os.Symlink(target, filepath.Join(root, key)); e != nil {
 		t.Skipf("symlink privilege unavailable: %v", e)
 	}
 	if f, e := s.Open(key, strings.Repeat("0", 64), 6); e == nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatal("symlink accepted")
 	}
 }

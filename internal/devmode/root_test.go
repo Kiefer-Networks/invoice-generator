@@ -18,7 +18,7 @@ func TestDevRootRejectsExistingProductionDirectory(t *testing.T) {
 	if _, e := PrepareRoot(root); e == nil {
 		t.Fatal("unmarked production root accepted")
 	}
-	data, e := os.ReadFile(filepath.Join(root, "production.sqlite"))
+	data, e := os.ReadFile(filepath.Join(root, "production.sqlite")) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if e != nil || string(data) != "untouched" {
 		t.Fatal("production data changed")
 	}
@@ -41,7 +41,7 @@ func TestDevRootRejectsHardlinkedSecrets(t *testing.T) {
 		t.Fatal(e)
 	}
 	if _, e = PrepareRoot(root); e == nil {
-		t.Fatal("hardlinked production secret accepted")
+		t.Fatal("hard-linked production secret accepted")
 	}
 }
 func TestDevRootRejectsLinkedSecretAndDocumentDirectories(t *testing.T) {
@@ -61,7 +61,7 @@ func TestDevRootRejectsLinkedSecretAndDocumentDirectories(t *testing.T) {
 				if runtime.GOOS != "windows" {
 					t.Fatal(e)
 				}
-				if output, e := exec.Command("cmd", "/c", "mklink", "/J", path, target).CombinedOutput(); e != nil {
+				if output, e := exec.Command("cmd", "/c", "mklink", "/J", path, target).CombinedOutput(); e != nil { // #nosec G204 -- Fixed integration-test command; variable arguments are generated fixture paths or IDs, never request data.
 					t.Fatalf("create fixture junction: %v %s", e, output)
 				}
 			}

@@ -3,11 +3,12 @@ package documents
 import (
 	"context"
 	"errors"
-	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
 )
 
 func TestStoragePublicationBarrierFailureRetainsUnpublishedFile(t *testing.T) {
@@ -24,7 +25,7 @@ func TestStoragePublicationBarrierFailureRetainsUnpublishedFile(t *testing.T) {
 			t.Fatal(e)
 		}
 		entries, e := dir.ReadDir(-1)
-		dir.Close()
+		_ = dir.Close()
 		if e != nil || len(entries) != 1 || entries[0].Name() != key {
 			t.Fatalf("barrier did not run after atomic rename: %v %v", entries, e)
 		}
@@ -93,7 +94,7 @@ func TestStorageNativePublicationBarrierPropagatesErrors(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	s.Close()
+	_ = s.Close()
 	if e = syncPublication(s.root, strings.Repeat("A", 52)); e == nil {
 		t.Fatal("native barrier hid an invalid handle")
 	}

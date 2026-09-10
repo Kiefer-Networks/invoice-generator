@@ -38,7 +38,9 @@ func TestFinalizationSQLUpdateReplaceCollision(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			conn.ExecContext(ctx, `PRAGMA recursive_triggers=OFF`)
+			if _, err := conn.ExecContext(ctx, `PRAGMA recursive_triggers=OFF`); err != nil {
+				t.Error(err)
+			}
 			if attack == "invoice" {
 				_, err = conn.ExecContext(ctx, `UPDATE OR REPLACE invoices SET id=? WHERE id=?`, d.ID, other.ID)
 			} else {
@@ -79,8 +81,10 @@ func TestFinalizationUpgradePreservesLegacyFinalizedAndUnsupportedCurrency(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
-	s.ensureMigrationTable(ctx)
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.ensureMigrationTable(ctx); err != nil {
+		t.Error(err)
+	}
 	ms, _ := embeddedMigrations()
 	for _, m := range ms[:6] {
 		if err = s.applyMigration(ctx, m); err != nil {
@@ -99,7 +103,9 @@ func TestFinalizationUpgradePreservesLegacyFinalizedAndUnsupportedCurrency(t *te
 	}
 	for _, m := range ms[:6] {
 		var checksum string
-		s.DB().QueryRow(`SELECT checksum FROM schema_migrations WHERE version=?`, m.version).Scan(&checksum)
+		if err := s.DB().QueryRow(`SELECT checksum FROM schema_migrations WHERE version=?`, m.version).Scan(&checksum); err != nil {
+			t.Error(err)
+		}
 		if checksum != m.checksum {
 			t.Fatal("old checksum changed")
 		}
@@ -127,12 +133,16 @@ func TestFinalizationReviewIsOneTransactionAndBindsMidnight(t *testing.T) {
 			t.Fatal(e)
 		}
 		defer conn.Close()
-		conn.ExecContext(ctx, `PRAGMA busy_timeout=0`)
+		if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout=0`); err != nil {
+			t.Error(err)
+		}
 		_, e = conn.ExecContext(ctx, `UPDATE companies SET legal_name='Unreviewed company'`)
 		if e == nil || !strings.Contains(e.Error(), "locked") {
 			t.Fatalf("review read did not hold transaction: %v", e)
 		}
-		conn.ExecContext(ctx, `PRAGMA busy_timeout=5000`)
+		if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout=5000`); err != nil {
+			t.Error(err)
+		}
 	}
 	beforeMidnight := time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)
 	review, err := repo.prepareReview(ctx, d.ID, d.Version, beforeMidnight)
@@ -153,7 +163,9 @@ func TestFinalizationReviewIsOneTransactionAndBindsMidnight(t *testing.T) {
 	}
 	var issued, finalized string
 	var due sql.NullString
-	s.DB().QueryRow(`SELECT issue_date,due_date,finalized_at FROM invoices WHERE id=?`, d.ID).Scan(&issued, &due, &finalized)
+	if err := s.DB().QueryRow(`SELECT issue_date,due_date,finalized_at FROM invoices WHERE id=?`, d.ID).Scan(&issued, &due, &finalized); err != nil {
+		t.Error(err)
+	}
 	if issued != beforeMidnight.Format(time.RFC3339Nano) || due.String != review.Draft.DueDate.Format(time.RFC3339Nano) || !strings.HasPrefix(finalized, time.Now().UTC().Format("2006-01-02")) {
 		t.Fatalf("dates=%s %s %s", issued, due.String, finalized)
 	}
@@ -164,8 +176,10 @@ func TestFinalizationLegacyCompanyCannotCreateUnsupportedCatalogPrices(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
-	s.ensureMigrationTable(ctx)
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.ensureMigrationTable(ctx); err != nil {
+		t.Error(err)
+	}
 	ms, _ := embeddedMigrations()
 	for _, m := range ms[:7] {
 		if err = s.applyMigration(ctx, m); err != nil {
@@ -185,7 +199,9 @@ func TestFinalizationLegacyCompanyCannotCreateUnsupportedCatalogPrices(t *testin
 		t.Fatalf("unsupported catalog update=%v", err)
 	}
 	var price int
-	s.DB().QueryRow(`SELECT net_unit_price_minor FROM catalog_items WHERE id='legacy-item'`).Scan(&price)
+	if err := s.DB().QueryRow(`SELECT net_unit_price_minor FROM catalog_items WHERE id='legacy-item'`).Scan(&price); err != nil {
+		t.Error(err)
+	}
 	if price != 123 {
 		t.Fatal("historical catalog amount reinterpreted")
 	}
@@ -199,8 +215,10 @@ func TestFinalization008Preserves007SnapshotAndInvalidatesUndatedKeys(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
-	s.ensureMigrationTable(ctx)
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.ensureMigrationTable(ctx); err != nil {
+		t.Error(err)
+	}
 	ms, _ := embeddedMigrations()
 	for _, m := range ms[:7] {
 		if err = s.applyMigration(ctx, m); err != nil {
@@ -223,7 +241,9 @@ func TestFinalization008Preserves007SnapshotAndInvalidatesUndatedKeys(t *testing
 	}
 	for _, m := range ms[:7] {
 		var checksum string
-		s.DB().QueryRow(`SELECT checksum FROM schema_migrations WHERE version=?`, m.version).Scan(&checksum)
+		if err := s.DB().QueryRow(`SELECT checksum FROM schema_migrations WHERE version=?`, m.version).Scan(&checksum); err != nil {
+			t.Error(err)
+		}
 		if checksum != m.checksum {
 			t.Fatal("earlier checksum changed")
 		}
@@ -231,7 +251,9 @@ func TestFinalization008Preserves007SnapshotAndInvalidatesUndatedKeys(t *testing
 	// An old key without a reviewed date is invalid; no date is silently invented.
 	company, _ := s.CompanyRepository().Get(ctx)
 	encoded, _ := json.Marshal(company.CompanyInput)
-	s.DB().Exec(`UPDATE invoice_finalization_keys SET company_snapshot=? WHERE key='undated'`, string(encoded))
+	if _, err := s.DB().Exec(`UPDATE invoice_finalization_keys SET company_snapshot=? WHERE key='undated'`, string(encoded)); err != nil {
+		t.Error(err)
+	}
 	_, err = s.InvoiceRepository().Finalize(ctx, "draft", "undated", func(InvoiceDraft, Company, string, time.Time) (string, InvoiceTotals, []InvoiceLine, error) {
 		t.Fatal("undated key reached allocation")
 		return "", InvoiceTotals{}, nil, nil

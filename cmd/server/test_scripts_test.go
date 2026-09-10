@@ -41,7 +41,7 @@ func TestTestScriptsStopOnGitFailure(t *testing.T) {
 					body = "echo injected-git-failure >&2\nexit 42\n"
 					batch = "@echo off\r\necho injected-git-failure >&2\r\nexit /b 42\r\n"
 				}
-				if err := os.WriteFile(filepath.Join(bin, command), []byte("#!/usr/bin/env bash\n"+body), 0700); err != nil {
+				if err := os.WriteFile(filepath.Join(bin, command), []byte("#!/usr/bin/env bash\n"+body), 0700); err != nil { // #nosec G306 -- Executable fixture requires owner-only 0700; contents are fixed test code.
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(filepath.Join(bin, command+".cmd"), []byte(batch), 0600); err != nil {
@@ -53,7 +53,7 @@ func TestTestScriptsStopOnGitFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			marker := filepath.Join(root, "later-stage")
-			cmd := exec.Command(tc.executable, append(tc.args, filepath.ToSlash(script))...)
+			cmd := exec.Command(tc.executable, append(tc.args, filepath.ToSlash(script))...) // #nosec G204 -- Fixed integration-test command; variable arguments are generated fixture paths or IDs, never request data.
 			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "RUNNER_SENTINEL="+marker)
 			if tc.name == "test.sh" && runtime.GOOS == "windows" {
 				// Git Bash prepends its own tools to PATH during startup.

@@ -8,13 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
+	"time"
+
 	"github.com/kiefer-networks/invoice-generator/internal/documents"
 	"github.com/kiefer-networks/invoice-generator/internal/invoicing"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 	fixtures "github.com/kiefer-networks/invoice-generator/testdata/dev"
-	"path/filepath"
-	"strings"
-	"time"
 )
 
 const fixtureDate = "2026-01-15T12:00:00Z"
@@ -22,7 +23,7 @@ const fixtureDate = "2026-01-15T12:00:00Z"
 // Seed inserts deterministic business records transactionally, then generates
 // one genuine PDF for the failed-delivery example before workers start. The
 // completion marker preserves edits and jobs on subsequent process restarts.
-func Seed(ctx context.Context, s *store.Store) error {
+func Seed(ctx context.Context, s *store.Store) (err error) {
 	var seq int
 	var name, path string
 	if e := s.DB().QueryRowContext(ctx, "PRAGMA database_list").Scan(&seq, &name, &path); e != nil {
@@ -49,7 +50,7 @@ func Seed(ctx context.Context, s *store.Store) error {
 	if e != nil {
 		return e
 	}
-	defer storage.Close()
+	defer func() { err = errors.Join(err, storage.Close()) }()
 	svc := documents.New(s, storage)
 	doc, e := s.DocumentRepository().ForInvoice(ctx, "dev-invoice-finalized-0001")
 	if e != nil {
@@ -81,12 +82,16 @@ func Seed(ctx context.Context, s *store.Store) error {
 	return e
 }
 
-func seedBusiness(ctx context.Context, s *store.Store) error {
+func seedBusiness(ctx context.Context, s *store.Store) (err error) {
 	tx, e := s.DB().BeginTx(ctx, nil)
 	if e != nil {
 		return e
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = errors.Join(err, rollbackErr)
+		}
+	}()
 	if _, e = tx.ExecContext(ctx, "PRAGMA defer_foreign_keys=ON"); e != nil {
 		return e
 	}

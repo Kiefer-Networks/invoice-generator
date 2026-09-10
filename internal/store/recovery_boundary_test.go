@@ -50,7 +50,7 @@ func TestRecoveryServiceRejectsDatabaseAliases(t *testing.T) {
 
 func TestRecoveryServiceRejectsLinkedJournal(t *testing.T) {
 	s, o := backupFixture(t)
-	s.Close()
+	_ = s.Close()
 	secret := filepath.Join(filepath.Dir(o.Database), "unrelated")
 	if e := os.WriteFile(secret, []byte("preserve unrelated bytes"), 0600); e != nil {
 		t.Fatal(e)
@@ -63,7 +63,7 @@ func TestRecoveryServiceRejectsLinkedJournal(t *testing.T) {
 		release()
 		t.Fatal("linked rollback journal accepted")
 	}
-	data, e := os.ReadFile(secret)
+	data, e := os.ReadFile(secret) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if e != nil || string(data) != "preserve unrelated bytes" {
 		t.Fatal("unrelated file changed", e)
 	}
@@ -78,24 +78,27 @@ func TestRecoveryRejectsUntrustedParents(t *testing.T) {
 			}
 			unsafe := t.TempDir()
 			makeRecoveryParentUntrusted(t, unsafe)
-			if kind == "database" {
-				s.Close()
+			switch kind {
+			case "database":
+				_ = s.Close()
 				data, e := os.ReadFile(o.Database)
 				if e != nil {
 					t.Fatal(e)
 				}
 				o.Database = filepath.Join(unsafe, "source.sqlite")
-				os.WriteFile(o.Database, data, 0600)
+				if err := os.WriteFile(o.Database, data, 0600); err != nil { // #nosec G703 -- Deliberately corrupt this test's temporary backup/database fixture to verify fail-closed validation.
+					t.Error(err)
+				}
 				o.Output = filepath.Join(t.TempDir(), "new.enc")
 				if _, e = Backup(context.Background(), o); e == nil {
 					t.Fatal("untrusted source parent accepted")
 				}
-			} else if kind == "output" {
+			case "output":
 				o.Output = filepath.Join(unsafe, "new.enc")
 				if _, e := Backup(context.Background(), o); e == nil {
 					t.Fatal("untrusted output parent accepted")
 				}
-			} else {
+			default:
 				target := filepath.Join(unsafe, "restored")
 				if e := Restore(context.Background(), RestoreOptions{Archive: o.Output, Passphrase: o.Passphrase, TargetRoot: target, Confirm: true}); e == nil {
 					t.Fatal("untrusted restore parent accepted")
@@ -156,15 +159,19 @@ func TestRecoveryRestoreFailuresAndTargetCreation(t *testing.T) {
 			}
 			if kind == "target-created" {
 				hooks.beforeActivation = func(string) {
-					os.Mkdir(target, 0700)
-					os.WriteFile(filepath.Join(target, "original"), []byte("preserve"), 0600)
+					if err := os.Mkdir(target, 0700); err != nil {
+						t.Error(err)
+					}
+					if err := os.WriteFile(filepath.Join(target, "original"), []byte("preserve"), 0600); err != nil {
+						t.Error(err)
+					}
 				}
 			}
 			if e := restoreWithHooks(context.Background(), RestoreOptions{Archive: o.Output, Passphrase: o.Passphrase, TargetRoot: target, Confirm: true}, hooks); e == nil {
 				t.Fatal("unsafe activation succeeded")
 			}
 			if kind == "target-created" {
-				data, e := os.ReadFile(filepath.Join(target, "original"))
+				data, e := os.ReadFile(filepath.Join(target, "original")) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 				if e != nil || string(data) != "preserve" {
 					t.Fatal("newly created target overwritten")
 				}
@@ -198,7 +205,7 @@ func TestRecoveryRejectsReplaceableAncestor(t *testing.T) {
 
 func TestRecoverySnapshotSourceReplacementFailsClosed(t *testing.T) {
 	s, o := backupFixture(t)
-	s.Close()
+	_ = s.Close()
 	original, e := os.ReadFile(o.Database)
 	if e != nil {
 		t.Fatal(e)
@@ -208,7 +215,7 @@ func TestRecoverySnapshotSourceReplacementFailsClosed(t *testing.T) {
 		if e := os.Rename(o.Database, moved); e != nil {
 			t.Fatal(e)
 		}
-		if e := os.WriteFile(o.Database, original, 0600); e != nil {
+		if e := os.WriteFile(o.Database, original, 0600); e != nil { // #nosec G703 -- The test substitutes only its own temporary fixture path to verify recovery identity checks.
 			t.Fatal(e)
 		}
 	}})
@@ -218,7 +225,7 @@ func TestRecoverySnapshotSourceReplacementFailsClosed(t *testing.T) {
 	if _, e = os.Stat(o.Output); !os.IsNotExist(e) {
 		t.Fatal("replaced source published")
 	}
-	data, e := os.ReadFile(moved)
+	data, e := os.ReadFile(moved) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if e != nil || !bytes.Equal(data, original) {
 		t.Fatal("original altered", e)
 	}
@@ -229,7 +236,9 @@ func TestRecoveryServiceRejectsReplacementDuringStartup(t *testing.T) {
 		t.Run(map[bool]string{false: "new", true: "existing"}[exists], func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "database.sqlite")
 			if exists {
-				os.WriteFile(path, []byte("original"), 0600)
+				if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
+					t.Error(err)
+				}
 			}
 			db, release, e := openServiceWithHook(context.Background(), path, func() {
 				if exists {
@@ -242,11 +251,11 @@ func TestRecoveryServiceRejectsReplacementDuringStartup(t *testing.T) {
 				}
 			})
 			if e == nil {
-				db.Close()
+				_ = db.Close()
 				release()
 				t.Fatal("substitute opened for service")
 			}
-			data, e := os.ReadFile(path)
+			data, e := os.ReadFile(path) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 			if e != nil || string(data) != "substitute" {
 				t.Fatal("substitute mutated by SQLite", e)
 			}

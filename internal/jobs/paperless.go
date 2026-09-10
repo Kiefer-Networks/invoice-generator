@@ -3,10 +3,11 @@ package jobs
 import (
 	"context"
 	"errors"
+	"time"
+
 	"github.com/kiefer-networks/invoice-generator/internal/documents"
 	"github.com/kiefer-networks/invoice-generator/internal/paperless"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
-	"time"
 )
 
 // PaperlessWorker has one active upload at a time. SQLite leases fence concurrent
@@ -98,7 +99,7 @@ func (w *PaperlessWorker) Process(ctx context.Context, j store.PaperlessJob) err
 	if e != nil {
 		return errors.New("document_invalid")
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // Read-only input; reads and validation report their own errors.
 	tags, e := client.ResolveTags(ctx)
 	if e != nil {
 		return deliveryError(e, "request_failed")

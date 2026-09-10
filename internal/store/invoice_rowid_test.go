@@ -54,7 +54,7 @@ func invoiceRowidState(t *testing.T, conn *sql.Conn) map[string][][]any {
 	t.Helper()
 	out := map[string][][]any{}
 	for _, table := range []string{"invoices", "invoice_items", "invoice_finalization_keys"} {
-		rows, err := conn.QueryContext(context.Background(), `SELECT rowid,* FROM `+table+` ORDER BY rowid`)
+		rows, err := conn.QueryContext(context.Background(), `SELECT rowid,* FROM `+table+` ORDER BY rowid`) // #nosec G202 -- Table name comes from the three literal invoice table names in the loop; no external value enters SQL.
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -76,7 +76,7 @@ func invoiceRowidState(t *testing.T, conn *sql.Conn) map[string][][]any {
 		if err = rows.Err(); err != nil {
 			t.Fatal(err)
 		}
-		rows.Close()
+		_ = rows.Close()
 	}
 	return out
 }
@@ -136,7 +136,9 @@ func TestFinalizationRowidGuardsPreserveAutomaticAndExplicitDraftOperations(t *t
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			conn.ExecContext(ctx, `PRAGMA recursive_triggers=OFF`)
+			if _, err := conn.ExecContext(ctx, `PRAGMA recursive_triggers=OFF`); err != nil {
+				t.Error(err)
+			}
 			for _, q := range []string{
 				`INSERT INTO invoices(id,customer_id,state,currency) VALUES('new-draft','customer','draft','EUR')`,
 				`UPDATE invoices SET _rowid_=1000 WHERE id='new-draft'`,
@@ -159,7 +161,7 @@ func TestFinalizationRowidMigrationUpgrades008WithoutChangingHistory(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	if err = s.ensureMigrationTable(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +180,7 @@ func TestFinalizationRowidMigrationUpgrades008WithoutChangingHistory(t *testing.
 		t.Fatal(err)
 	}
 	before := invoiceRowidState(t, conn)
-	conn.Close()
+	_ = conn.Close()
 	for i := 0; i < 2; i++ {
 		if err = s.Migrate(ctx); err != nil {
 			t.Fatal(err)
@@ -195,7 +197,9 @@ func TestFinalizationRowidMigrationUpgrades008WithoutChangingHistory(t *testing.
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	conn.ExecContext(ctx, `PRAGMA recursive_triggers=OFF`)
+	if _, err := conn.ExecContext(ctx, `PRAGMA recursive_triggers=OFF`); err != nil {
+		t.Error(err)
+	}
 	if !reflect.DeepEqual(before, invoiceRowidState(t, conn)) {
 		t.Fatal("upgrade changed historical bytes or rowids")
 	}

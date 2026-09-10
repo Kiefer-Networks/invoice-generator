@@ -2,7 +2,10 @@
 
 package documents
 
-import "os"
+import (
+	"errors"
+	"os"
+)
 
 // Windows has no POSIX directory-fsync API. FlushFileBuffers on the file's
 // reopened, writable handle flushes its post-rename metadata. Go File.Sync uses
@@ -16,6 +19,6 @@ func syncPublication(root *os.Root, key string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-	return file.Sync()
+	err = file.Sync()
+	return errors.Join(err, file.Close())
 }

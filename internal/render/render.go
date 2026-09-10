@@ -19,7 +19,6 @@ import (
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
-
 	"github.com/kiefer-networks/invoice-generator/internal/config"
 	"github.com/kiefer-networks/invoice-generator/internal/locale"
 )
@@ -301,14 +300,14 @@ func HTML(cfg *config.Config, loc *locale.Locale, docType config.DocType, tmplPa
 // Priority: 1) explicit path, 2) template.html next to config, 3) embedded default.
 func loadTemplateSrc(tmplPath, configDir string) (string, error) {
 	if tmplPath != "" {
-		data, err := os.ReadFile(tmplPath)
+		data, err := os.ReadFile(tmplPath) // #nosec G304 -- Explicit administrator-selected CLI template; server FromSnapshot uses only the embedded template.
 		if err != nil {
 			return "", fmt.Errorf("template not found: %s", tmplPath)
 		}
 		return string(data), nil
 	}
 	local := filepath.Join(configDir, "template.html")
-	if data, err := os.ReadFile(local); err == nil {
+	if data, err := os.ReadFile(local); err == nil { // #nosec G304 -- Fixed template.html beside administrator-selected CLI configuration; server rendering does not call this helper.
 		return string(data), nil
 	}
 	return defaultTemplateHTML, nil
@@ -319,8 +318,8 @@ func loadTemplateSrc(tmplPath, configDir string) (string, error) {
 // per-OS installation locations (Linux, macOS, Windows).
 func FindChrome() string {
 	if p := os.Getenv("INVOICE_CHROME"); p != "" {
-		if _, err := os.Stat(p); err == nil {
-			return p
+		if executable, err := exec.LookPath(p); err == nil {
+			return executable
 		}
 	}
 
@@ -366,8 +365,8 @@ func FindChrome() string {
 		}
 	}
 	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p
+		if executable, err := exec.LookPath(p); err == nil {
+			return executable
 		}
 	}
 	return ""
