@@ -16,10 +16,15 @@ FROM build AS development-build
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o /out/development ./cmd/server && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -trimpath -o /out/browser.test ./internal/web
 
+FROM build AS visual-build
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -tags=visual -c -trimpath -o /out/visual.test ./internal/render
+
 FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS runtime
 RUN apk add --no-cache ca-certificates=20260611-r0 chromium=152.0.7977.82-r0 openjdk21-jdk=21.0.12_p8-r0 font-liberation=2.1.5-r2 curl=8.22.0-r0 libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 && \
     mkdir -p /data/database /data/documents /backup /config /development && \
     chown -R 65532:65532 /data /backup /development && chmod 0700 /data /data/database /data/documents /backup /development
+COPY docker/visual-fonts.conf /etc/fonts/local.conf
+RUN fc-cache -f && test "$(fc-match system-ui -f '%{family}')" = 'Liberation Sans'
 ENV HOME=/tmp INVOICE_CHROME=/usr/bin/chromium
 COPY --chmod=0555 docker/entrypoint docker/healthcheck /usr/local/bin/
 COPY LICENSE /usr/share/doc/invoice-generator/LICENSE
@@ -37,6 +42,16 @@ COPY --from=development-build --chmod=0555 /out/browser.test /usr/local/bin/brow
 COPY internal/web/templates /development-assets/templates
 COPY internal/web/static /development-assets/static
 CMD ["serve", "-dev", "-dev-root", "/development/state", "-dev-assets", "/development-assets"]
+
+FROM runtime AS visual
+USER root
+RUN apk add --no-cache poppler-utils=25.12.0-r1
+COPY --from=visual-build --chmod=0555 /out/visual.test /usr/local/bin/visual.test
+COPY internal/render/testdata/visual /golden
+ENV INVOICE_VISUAL_RUNTIME=alpine-3.24.1-chromium-152 TZ=UTC LANG=C.UTF-8
+USER 65532:65532
+WORKDIR /tmp
+ENTRYPOINT ["/usr/local/bin/visual.test", "-test.run=^TestVisual", "-test.v", "-test.timeout=3m"]
 
 FROM runtime AS production
 COPY --from=build /out/licenses /usr/share/doc/invoice-generator/licenses

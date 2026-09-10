@@ -26,7 +26,7 @@ import (
 // A change to CSS spacing, pagination, print margins, font metrics or the
 // renderer's footer must fail this test before it can clip invoice amounts.
 func TestVisualInvoice(t *testing.T) {
-	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" || os.Getenv("INVOICE_VISUAL_RUNTIME") != "debian-20260906-chromium-152" {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" || os.Getenv("INVOICE_VISUAL_RUNTIME") != "alpine-3.24.1-chromium-152" {
 		t.Fatal("run visual tests with bash scripts/test-visual.sh (pinned runtime required)")
 	}
 	if os.Geteuid() == 0 {

@@ -16,7 +16,7 @@ case "${1:-}" in
     update=1 ;;
   *) echo 'Usage: scripts/test-visual.sh [--update-goldens]' >&2; exit 2 ;;
 esac
-docker build --platform linux/amd64 -f docker/visual.Dockerfile -t invoice-generator:visual .
+docker build --platform linux/amd64 --target visual -t invoice-generator:visual .
 args=(--rm --init --platform linux/amd64 --network none --read-only --cap-drop ALL
   --security-opt no-new-privileges:true --security-opt seccomp=./docker/seccomp.json
   --pids-limit 256 --memory 1g --cpus 2
