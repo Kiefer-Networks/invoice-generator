@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+case "${1:-}" in
+  amd64) apk_arch=x86_64; lock=/usr/local/share/apk-lock.amd64 ;;
+  arm64) apk_arch=aarch64; lock=/usr/local/share/apk-lock.arm64 ;;
+  *) echo "unsupported target architecture" >&2; exit 1 ;;
+esac
+
+test "$(apk --print-arch)" = "$apk_arch"
+printf '%s\n%s\n' \
+  https://dl-cdn.alpinelinux.org/alpine/v3.24/main \
+  https://dl-cdn.alpinelinux.org/alpine/v3.24/community \
+  > /etc/apk/repositories
+
+# Every requested package has an exact version. apk verifies repository indexes
+# and package signatures with the Alpine keys inherited from the pinned base.
+apk add --no-cache --no-progress $(cat "$lock")
+
+expected=$(mktemp)
+actual=$(mktemp)
+trap 'rm -f "$expected" "$actual"' EXIT
+awk -F= 'NF == 2 { print $1 "-" $2 }' "$lock" | sort > "$expected"
+apk info -v | sort > "$actual"
+cmp -s "$expected" "$actual"

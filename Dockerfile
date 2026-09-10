@@ -20,7 +20,10 @@ FROM build AS visual-build
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -tags=visual -c -trimpath -o /out/visual.test ./internal/render
 
 FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS runtime
-RUN apk add --no-cache ca-certificates=20260611-r0 chromium=152.0.7977.82-r0 openjdk21-jdk=21.0.12_p8-r0 font-liberation=2.1.5-r2 curl=8.22.0-r0 libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 && \
+ARG TARGETARCH
+COPY --chmod=0555 docker/install-locked-apks /usr/local/bin/install-locked-apks
+COPY docker/apk-lock.amd64 docker/apk-lock.arm64 /usr/local/share/
+RUN /usr/local/bin/install-locked-apks "$TARGETARCH" && \
     mkdir -p /data/database /data/documents /backup /config /development && \
     chown -R 65532:65532 /data /backup /development && chmod 0700 /data /data/database /data/documents /backup /development
 COPY docker/visual-fonts.conf /etc/fonts/local.conf
