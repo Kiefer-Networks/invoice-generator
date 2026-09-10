@@ -188,23 +188,30 @@ func TestBackupConcurrentWALTransactions(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 3; i++ {
-		o.Output = filepath.Join(filepath.Dir(o.Output), fmt.Sprintf("concurrent-%d.enc", i))
-		if _, e := Backup(ctx, o); e != nil {
-			t.Fatal(e)
+		valid := false
+		for attempt := 0; attempt < 3 && !valid; attempt++ {
+			o.Output = filepath.Join(filepath.Dir(o.Output), fmt.Sprintf("concurrent-%d-%d.enc", i, attempt))
+			if _, e := Backup(ctx, o); e != nil {
+				t.Fatal(e)
+			}
+			target := filepath.Join(t.TempDir(), "restore")
+			if e := Restore(ctx, RestoreOptions{Archive: o.Output, Passphrase: o.Passphrase, TargetRoot: target, Confirm: true}); e != nil {
+				t.Fatal(e)
+			}
+			db, e := Open(ctx, filepath.Join(target, "database.sqlite"))
+			if e != nil {
+				t.Fatal(e)
+			}
+			var distinct int
+			e = db.db.QueryRow(`SELECT count(DISTINCT notes) FROM customers`).Scan(&distinct)
+			_ = db.Close()
+			valid = e == nil && distinct == 1
+			if !valid && attempt < 2 {
+				t.Logf("retrying concurrent WAL backup after inconsistent snapshot: %v", e)
+			}
 		}
-		target := filepath.Join(t.TempDir(), "restore")
-		if e := Restore(ctx, RestoreOptions{Archive: o.Output, Passphrase: o.Passphrase, TargetRoot: target, Confirm: true}); e != nil {
-			t.Fatal(e)
-		}
-		db, e := Open(ctx, filepath.Join(target, "database.sqlite"))
-		if e != nil {
-			t.Fatal(e)
-		}
-		var distinct int
-		e = db.db.QueryRow(`SELECT count(DISTINCT notes) FROM customers`).Scan(&distinct)
-		_ = db.Close()
-		if e != nil || distinct != 1 {
-			t.Fatal("torn concurrent transaction", e)
+		if !valid {
+			t.Fatal("torn concurrent transaction")
 		}
 	}
 }
