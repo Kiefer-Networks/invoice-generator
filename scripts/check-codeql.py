@@ -11,7 +11,13 @@ for path in reports:
     if not data.get("runs"):
         raise SystemExit("CodeQL produced no analysis runs")
     for run in data["runs"]:
-        if run.get("results"):
+        results = run.get("results", [])
+        for result in results:
+            location = (result.get("locations") or [{}])[0].get("physicalLocation", {})
+            artifact = location.get("artifactLocation", {}).get("uri", "unknown")
+            line = location.get("region", {}).get("startLine", "unknown")
+            print(f"CodeQL finding: rule={result.get('ruleId', 'unknown')} file={artifact} line={line}", file=sys.stderr)
+        if results:
             raise SystemExit("CodeQL findings require review; raw report stays private")
         for invocation in run.get("invocations", []):
             if invocation.get("executionSuccessful") is False:

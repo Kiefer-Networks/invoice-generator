@@ -25,6 +25,25 @@ class ArtifactTests(unittest.TestCase):
             report.write_text(json.dumps({"runs": [{"results": [], "invocations": [{"executionSuccessful": True}]}]}), encoding="utf-8")
             self.assertEqual(check(), 0)
 
+    def test_codeql_reports_safe_location_without_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = pathlib.Path(directory, "go.sarif")
+            report.write_text(json.dumps({"runs": [{"results": [{
+                "ruleId": "go/example",
+                "message": {"text": "sensitive source detail"},
+                "locations": [{"physicalLocation": {
+                    "artifactLocation": {"uri": "internal/example.go"},
+                    "region": {"startLine": 42},
+                }}],
+            }]}]}), encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(pathlib.Path(__file__).with_name("check-codeql.py")), directory],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("rule=go/example file=internal/example.go line=42", result.stderr)
+            self.assertNotIn("sensitive source detail", result.stderr)
+
     def test_nested_paths(self):
         self.assertEqual(scrubber.scrub({"files": ["/home/runner/work/a", "C:\\Users\\Alice\\secret"]}), {"files": ["[REDACTED-PATH]", "[REDACTED-PATH]"]})
 
