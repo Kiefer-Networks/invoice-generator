@@ -204,6 +204,43 @@ func TestRevokeAllSessions(t *testing.T) {
 	}
 }
 
+func TestRevokeSpecificSession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app.db")
+	s, err := store.Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`INSERT INTO oidc_users (id,issuer,subject,display_name,active) VALUES ('u','https://issuer.test','subject','User',1)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"11111111111111111111111111111111", "22222222222222222222222222222222"} {
+		if _, err := s.DB().Exec(`INSERT INTO sessions (id,user_id,token_hash,csrf_secret_hash,authorization_expires_at,expires_at) VALUES (?,'u',?,?, '9999999999999999999','9999999999999999999')`, id, []byte(id+"token"), []byte(id+"csrf")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSessionCommand(context.Background(), []string{"revoke", "-database", path, "-id", "11111111111111111111111111111111"}, func(string) string { return "" }); err != nil {
+		t.Fatal(err)
+	}
+	check, err := store.Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	var count int
+	if err := check.DB().QueryRow(`SELECT count(*) FROM sessions`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("sessions remaining=%d, want 1", count)
+	}
+}
+
 func testConfig(t *testing.T) Config {
 	t.Helper()
 	return Config{

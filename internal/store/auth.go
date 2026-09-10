@@ -147,6 +147,18 @@ func (r *AuthRepository) DeleteAllSessions(ctx context.Context) error {
 	return err
 }
 
+func (r *AuthRepository) DeleteSessionByID(ctx context.Context, id string) (bool, error) {
+	if id == "" {
+		return false, errors.New("session identifier is required")
+	}
+	result, err := r.store.db.ExecContext(ctx, `DELETE FROM sessions WHERE id=?`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
 func (r *AuthRepository) SessionByTokenHash(ctx context.Context, tokenHash []byte, now time.Time) (StoredSession, OIDCUser, error) {
 	var session StoredSession
 	var user OIDCUser

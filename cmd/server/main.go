@@ -61,14 +61,8 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) >= 3 && os.Args[1] == "sessions" && os.Args[2] == "revoke-all" {
-		fs := flag.NewFlagSet("sessions revoke-all", flag.ContinueOnError)
-		database := fs.String("database", strings.TrimSpace(os.Getenv("INVOICE_DATABASE")), "SQLite database")
-		if err := fs.Parse(os.Args[3:]); err != nil || *database == "" {
-			fmt.Fprintln(os.Stderr, "usage: server sessions revoke-all -database PATH")
-			os.Exit(2)
-		}
-		if err := revokeAllSessions(context.Background(), *database); err != nil {
+	if len(os.Args) >= 3 && os.Args[1] == "sessions" {
+		if err := runSessionCommand(context.Background(), os.Args[2:], os.Getenv); err != nil {
 			fmt.Fprintln(os.Stderr, "server:", err)
 			os.Exit(1)
 		}
@@ -86,6 +80,34 @@ func main() {
 	if err := serve(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "server:", err)
 		os.Exit(1)
+	}
+}
+
+func runSessionCommand(ctx context.Context, args []string, getenv func(string) string) error {
+	if len(args) == 0 {
+		return errors.New("usage: server sessions {revoke|revoke-all} -database PATH")
+	}
+	command := args[0]
+	fs := flag.NewFlagSet("sessions "+command, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	database := fs.String("database", strings.TrimSpace(getenv("INVOICE_DATABASE")), "SQLite database")
+	id := fs.String("id", "", "opaque session identifier")
+	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 || *database == "" {
+		return errors.New("invalid session command")
+	}
+	switch command {
+	case "revoke-all":
+		if *id != "" {
+			return errors.New("session id is not accepted for revoke-all")
+		}
+		return revokeAllSessions(ctx, *database)
+	case "revoke":
+		if len(*id) != 32 {
+			return errors.New("session id must be 32 characters")
+		}
+		return revokeSessionByID(ctx, *database, *id)
+	default:
+		return errors.New("unknown session command")
 	}
 }
 
@@ -482,4 +504,23 @@ func revokeAllSessions(ctx context.Context, path string) error {
 	}
 	_, err = database.DB().ExecContext(ctx, "DELETE FROM sessions")
 	return err
+}
+
+func revokeSessionByID(ctx context.Context, path, id string) error {
+	database, err := store.Open(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = database.Close() }()
+	if err := database.Migrate(ctx); err != nil {
+		return err
+	}
+	deleted, err := database.AuthRepository().DeleteSessionByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return errors.New("session not found")
+	}
+	return nil
 }

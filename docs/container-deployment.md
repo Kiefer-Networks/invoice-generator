@@ -168,6 +168,18 @@ Revoke sessions after recovery or key compromise:
 docker compose exec -T invoice server sessions revoke-all -database /data/database/invoice.sqlite
 ```
 
+Authenticated users can review and revoke their own active sessions at
+`/settings/sessions`. The current session, a specific other session, or every
+session can be terminated there. The application permits at most five active
+sessions per Pocket ID identity and requires a fresh Pocket ID group check after
+15 minutes; local session handling never extends that authorization window.
+For targeted emergency administration, use the opaque identifier displayed in
+the session page:
+
+```sh
+docker compose exec -T invoice server sessions revoke -database /data/database/invoice.sqlite -id SESSION_ID
+```
+
 ## Development and verification
 
 ```sh
