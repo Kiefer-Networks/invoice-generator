@@ -2,12 +2,25 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
+
+func TestPaperlessMayRemainDisabledWithEmptyMountedSecret(t *testing.T) {
+	cfg := testConfig(t)
+	token := filepath.Join(t.TempDir(), "paperless-token")
+	if err := os.WriteFile(token, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.PaperlessTokenFile = token
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("disabled Paperless rejected empty mounted secret: %v", err)
+	}
+}
 
 func TestPaperlessServerConfigAndMissingToken(t *testing.T) {
 	cfg := testConfig(t)

@@ -267,8 +267,9 @@ func TestProductionTransportRequiresTLSOrTrustedHTTPSProxy(t *testing.T) {
 		name, remote, proto string
 		tls                 bool
 		want                int
+		wantHSTS            bool
 	}{
-		{"trusted https", "10.0.0.2:443", "https", false, http.StatusOK}, {"trusted http claim", "10.0.0.2:443", "http", false, http.StatusUpgradeRequired}, {"untrusted direct", "203.0.113.5:443", "https", false, http.StatusUpgradeRequired}, {"direct tls", "203.0.113.5:443", "", true, http.StatusOK},
+		{"trusted https", "10.0.0.2:443", "https", false, http.StatusOK, true}, {"trusted http claim", "10.0.0.2:443", "http", false, http.StatusUpgradeRequired, false}, {"untrusted direct", "203.0.113.5:443", "https", false, http.StatusUpgradeRequired, false}, {"direct tls", "203.0.113.5:443", "", true, http.StatusOK, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, "https://app.example.test/_health", nil)
@@ -283,6 +284,9 @@ func TestProductionTransportRequiresTLSOrTrustedHTTPSProxy(t *testing.T) {
 			h.ServeHTTP(w, r)
 			if w.Code != tc.want {
 				t.Fatalf("status=%d", w.Code)
+			}
+			if got := w.Header().Get("Strict-Transport-Security"); (got != "") != tc.wantHSTS {
+				t.Fatalf("HSTS=%q, want present=%t", got, tc.wantHSTS)
 			}
 		})
 	}
@@ -317,13 +321,13 @@ func TestSecurityHeadersAndAuthenticationFlow(t *testing.T) {
 		t.Fatal("application cookie is not protected with SameSite=Strict")
 	}
 	page := request(t, h, http.MethodGet, "/", "")
-	for key, want := range map[string]string{"Cache-Control": "no-store", "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "strict-origin-when-cross-origin", "Permissions-Policy": "camera=(), geolocation=(), microphone=(), payment=()"} {
+	for key, want := range map[string]string{"Cache-Control": "no-store", "Strict-Transport-Security": "max-age=63072000; includeSubDomains", "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "strict-origin-when-cross-origin", "Permissions-Policy": "camera=(), geolocation=(), microphone=(), payment=()"} {
 		if page.Header().Get(key) != want {
 			t.Errorf("%s = %q, want %q", key, page.Header().Get(key), want)
 		}
 	}
 	csp := page.Header().Get("Content-Security-Policy")
-	if !strings.Contains(csp, "'nonce-") || strings.Contains(csp, "unsafe-inline") {
+	if !strings.Contains(csp, "'nonce-") || !strings.Contains(csp, "frame-ancestors 'none'") || strings.Contains(csp, "unsafe-inline") {
 		t.Fatalf("unsafe CSP: %q", csp)
 	}
 	if !strings.Contains(page.Body.String(), `"allowEval":false`) || !strings.Contains(page.Body.String(), `"includeIndicatorStyles":false`) {

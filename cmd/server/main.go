@@ -232,10 +232,10 @@ func (c Config) Validate() error {
 		if e := paperless.ValidateURL(c.PaperlessURL, false); e != nil {
 			return e
 		}
-	}
-	if c.PaperlessTokenFile != "" {
-		if _, e := paperless.ReadToken(c.PaperlessTokenFile); e != nil && e.Error() != "configuration_missing" {
-			return e
+		if c.PaperlessTokenFile != "" {
+			if _, e := paperless.ReadToken(c.PaperlessTokenFile); e != nil && e.Error() != "configuration_missing" {
+				return e
+			}
 		}
 	}
 	if !c.Development || c.DocumentRoot != "" {
