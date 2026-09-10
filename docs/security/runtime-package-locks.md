@@ -22,8 +22,11 @@ repositories for each target architecture. The reviewed manifest hashes are:
 architecture name, replaces the repository list with those two official
 branches, and passes every locked package and exact version to `apk`. Alpine
 verifies the signed indexes and packages with the keys in the digest-pinned
-base image. The script then compares every installed package and version with
-the selected manifest and fails on any missing, additional, or changed entry.
+base image. An already installed exact entry is retained without asking the
+repository to serve it again; missing entries and explicit upgrades are
+installed at their locked versions. The script then compares every installed
+package and version with the selected manifest and fails on any missing,
+additional, or changed entry.
 
 Repository signing proves artifact origin; it does not guarantee that Alpine
 will retain an older package artifact indefinitely. If a locked artifact is no

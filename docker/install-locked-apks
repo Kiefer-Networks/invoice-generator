@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export LC_ALL=C
 
 case "${1:-}" in
   amd64) apk_arch=x86_64; lock=/usr/local/share/apk-lock.amd64 ;;
@@ -8,18 +9,49 @@ case "${1:-}" in
 esac
 
 test "$(apk --print-arch)" = "$apk_arch"
+if grep -Eqv '^[A-Za-z0-9][A-Za-z0-9+_.-]*=[A-Za-z0-9][A-Za-z0-9+_.:~-]*$' "$lock"; then
+  echo "invalid runtime package lock" >&2
+  exit 1
+fi
+sorted=$(mktemp)
+sort "$lock" > "$sorted"
+cmp -s "$lock" "$sorted"
 printf '%s\n%s\n' \
   https://dl-cdn.alpinelinux.org/alpine/v3.24/main \
   https://dl-cdn.alpinelinux.org/alpine/v3.24/community \
   > /etc/apk/repositories
 
-# Every requested package has an exact version. apk verifies repository indexes
-# and package signatures with the Alpine keys inherited from the pinned base.
-apk add --no-cache --no-progress $(cat "$lock")
-
+installed=$(mktemp)
+missing=$(mktemp)
 expected=$(mktemp)
 actual=$(mktemp)
-trap 'rm -f "$expected" "$actual"' EXIT
-awk -F= 'NF == 2 { print $1 "-" $2 }' "$lock" | sort > "$expected"
-apk info -v | sort > "$actual"
+trap 'rm -f "$sorted" "$installed" "$missing" "$expected" "$actual"' EXIT
+
+installed_packages() {
+  awk -v RS='' -F '\n' '{
+    package=""; version=""
+    for (i=1; i<=NF; i++) {
+      if (substr($i,1,2)=="P:") package=substr($i,3)
+      if (substr($i,1,2)=="V:") version=substr($i,3)
+    }
+    if (package!="" && version!="") print package "=" version
+  }' /lib/apk/db/installed | sort
+}
+
+installed_packages > "$installed"
+while IFS= read -r entry; do
+  if grep -Fqx "$entry" "$installed"; then
+    continue
+  fi
+  printf '%s\n' "$entry" >> "$missing"
+done < "$lock"
+
+# apk verifies repository indexes and package signatures with the Alpine keys
+# inherited from the digest-pinned base image.
+if test -s "$missing"; then
+  apk add --no-cache --no-progress -- $(cat "$missing")
+fi
+
+cp "$lock" "$expected"
+installed_packages > "$actual"
 cmp -s "$expected" "$actual"

@@ -63,7 +63,10 @@ func RuntimeAPKLocks(dockerfile, installer, amd64, arm64 []byte) error {
 		`test "$(apk --print-arch)" = "$apk_arch"`,
 		"https://dl-cdn.alpinelinux.org/alpine/v3.24/main",
 		"https://dl-cdn.alpinelinux.org/alpine/v3.24/community",
-		`apk add --no-cache --no-progress $(cat "$lock")`,
+		`/lib/apk/db/installed`,
+		`grep -Eqv '^[A-Za-z0-9][A-Za-z0-9+_.-]*=[A-Za-z0-9][A-Za-z0-9+_.:~-]*$' "$lock"`,
+		`grep -Fqx "$entry" "$installed"`,
+		`apk add --no-cache --no-progress -- $(cat "$missing")`,
 		`cmp -s "$expected" "$actual"`,
 	} {
 		if !strings.Contains(s, required) {
