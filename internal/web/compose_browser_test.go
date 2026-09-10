@@ -118,7 +118,7 @@ func TestComposeBrowserPersistence(t *testing.T) {
 func waitComposeDelivery(ui browserUI) {
 	for i := 0; i < 120; i++ {
 		var delivered bool
-		ui.run("actual delivery state", chromedp.Evaluate(`document.body.innerText.includes('Paperless: delivered') && document.body.innerText.includes('Download PDF with ZUGFeRD')`, &delivered))
+		ui.run("actual delivery state", chromedp.Evaluate(`document.body.innerText.includes('Paperless: delivered') && !!document.querySelector('a[aria-label="Download PDF with ZUGFeRD"]')`, &delivered))
 		if delivered {
 			return
 		}
@@ -130,7 +130,7 @@ func waitComposeDelivery(ui browserUI) {
 
 func checkComposePDF(ui browserUI) {
 	var download string
-	ui.run("actual PDF link", chromedp.AttributeValue(`//a[normalize-space(.)='Download PDF with ZUGFeRD']`, "href", &download, nil, chromedp.BySearch))
+	ui.run("actual PDF link", chromedp.AttributeValue(`//a[@aria-label='Download PDF with ZUGFeRD']`, "href", &download, nil, chromedp.BySearch))
 	raw, _ := json.Marshal(download)
 	var valid bool
 	ui.run("actual durable PDF", chromedp.Evaluate(`(async()=>{const r=await fetch(`+string(raw)+`);const b=new Uint8Array(await r.arrayBuffer());return r.status===200&&r.headers.get('content-type')==='application/pdf'&&b.length>1000&&new TextDecoder().decode(b.slice(0,5))==='%PDF-'})()`, &valid, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {

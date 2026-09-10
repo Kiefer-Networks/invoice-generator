@@ -176,7 +176,7 @@ func TestBrowserWorkflow(t *testing.T) {
 		t.Fatal("persistent development banner unavailable after real OIDC login")
 	}
 	var createLink bool
-	if e := chromedp.Run(ctx, chromedp.Evaluate(`Array.from(document.querySelectorAll('a')).some(a=>a.textContent==='Create invoice'&&a.getAttribute('href')==='/invoices/new')`, &createLink)); e != nil {
+	if e := chromedp.Run(ctx, chromedp.Evaluate(`Array.from(document.querySelectorAll('a')).some(a=>a.getAttribute('aria-label')==='Create invoice'&&a.getAttribute('href')==='/invoices/new')`, &createLink)); e != nil {
 		t.Fatal(e)
 	}
 	if !createLink {
@@ -234,7 +234,7 @@ func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.S
 	ui.run("failed Paperless fixture", chromedp.Navigate(base+"/invoices/dev-invoice-finalized-0001"))
 	ui.waitText("Paperless: failed")
 	var retryURL string
-	ui.run("retry form action", chromedp.AttributeValue(`//form[button[normalize-space(.)='Retry Paperless delivery']]`, "action", &retryURL, nil, chromedp.BySearch))
+	ui.run("retry form action", chromedp.AttributeValue(`//form[button[@aria-label='Retry Paperless delivery']]`, "action", &retryURL, nil, chromedp.BySearch))
 	anonymous := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	res, e := anonymous.Post(base+retryURL, "application/x-www-form-urlencoded", nil)
 	if e != nil {
@@ -253,7 +253,7 @@ func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.S
 	}
 	ui.run("return to retry form", chromedp.Navigate(base+"/invoices/dev-invoice-finalized-0001"))
 	var previewStatus int
-	ui.run("fixture PDF preview", chromedp.Evaluate(`(async()=>{const a=Array.from(document.querySelectorAll('a')).find(a=>a.textContent==='Preview PDF');return (await fetch(a.href)).status})()`, &previewStatus, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+	ui.run("fixture PDF preview", chromedp.Evaluate(`(async()=>{const a=document.querySelector('a[aria-label="Preview PDF"]');return (await fetch(a.href)).status})()`, &previewStatus, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 		return p.WithAwaitPromise(true).WithReturnByValue(true)
 	}))
 	if previewStatus != 200 {
@@ -329,7 +329,6 @@ func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.S
 	t.Log("native full-page POST returned 400 with page shell, retained invalid values, and focused validation summary")
 	ui.fill("Currency", "EUR")
 	ui.click("Save customer")
-	ui.waitText("Edit customer")
 	var listed bool
 	ui.run("new customer list entry", chromedp.Evaluate(`Array.from(document.querySelectorAll('.list-pane a')).some(a=>a.textContent.includes('Browser customer'))`, &listed))
 	if !listed {
@@ -340,16 +339,15 @@ func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.S
 	ui.click("Save customer")
 	ui.waitText("Browser customer edited")
 	ui.click("Archive customer")
-	ui.waitText("Restore customer")
 	ui.click("Restore customer")
-	ui.waitText("Archive customer")
+	ui.run("archive control restored", chromedp.WaitVisible(`//*[@aria-label='Archive customer']`, chromedp.BySearch))
 	ui.click("Goods and services")
 	ui.click("New catalog item")
 	for _, field := range [][2]string{{"Item number", "BROWSER-S001"}, {"Kind", "service"}, {"Title", "Browser consulting"}, {"Unit", "hour"}, {"Net unit price", "125.00"}, {"Tax rate (%)", "19"}} {
 		ui.fill(field[0], field[1])
 	}
 	ui.click("Save catalog item")
-	ui.waitText("Edit catalog item")
+	ui.run("catalog edit control", chromedp.WaitVisible(`//*[@aria-label='Edit catalog item']`, chromedp.BySearch))
 	ui.click("Invoices")
 	ui.click("New invoice")
 	var customerID string
@@ -383,7 +381,7 @@ func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.S
 	ui.run("invoice URL", chromedp.Location(&invoiceURL))
 	for i := 0; i < 30; i++ {
 		var ready bool
-		ui.run("document state", chromedp.Evaluate(`document.body.innerText.includes('Download PDF with ZUGFeRD')`, &ready))
+		ui.run("document state", chromedp.Evaluate(`!!document.querySelector('a[aria-label="Download PDF with ZUGFeRD"]')`, &ready))
 		if ready {
 			break
 		}
@@ -394,7 +392,7 @@ func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.S
 		time.Sleep(200 * time.Millisecond)
 	}
 	var download string
-	ui.run("download link", chromedp.AttributeValue(`//a[normalize-space(.)='Download PDF with ZUGFeRD']`, "href", &download, nil, chromedp.BySearch))
+	ui.run("download link", chromedp.AttributeValue(`//a[@aria-label='Download PDF with ZUGFeRD']`, "href", &download, nil, chromedp.BySearch))
 	var pdfResult struct {
 		Status int
 		Type   string

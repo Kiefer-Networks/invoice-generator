@@ -72,7 +72,7 @@ func invoiceFormHTML(t *testing.T, body, suffix string) string {
 }
 func invoiceLink(t *testing.T, body, label string) string {
 	t.Helper()
-	m := regexp.MustCompile(`<a[^>]*href="([^"]+)"[^>]*>` + regexp.QuoteMeta(label) + `</a>`).FindStringSubmatch(body)
+	m := regexp.MustCompile(`<a[^>]*href="([^"]+)"[^>]*aria-label="` + regexp.QuoteMeta(label) + `"[^>]*>[^<]*</a>`).FindStringSubmatch(body)
 	if len(m) != 2 {
 		t.Fatalf("missing link %s", label)
 	}
