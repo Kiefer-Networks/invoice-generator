@@ -435,7 +435,7 @@ func TestSummary(data []byte) ([]byte, error) {
 		if v.Test != "" && v.Action != "skip" {
 			tests++
 		}
-		if !regexp.MustCompile(`^github.com/kiefer-networks/invoice-generator(/[A-Za-z0-9_/-]+)?$`).MatchString(v.Package) || !regexp.MustCompile(`^[A-Za-z0-9_]*$`).MatchString(v.Test) {
+		if !regexp.MustCompile(`^github\.com/kiefer-networks/invoice-generator(/[A-Za-z0-9_/-]+)?$`).MatchString(v.Package) || !regexp.MustCompile(`^[A-Za-z0-9_]*$`).MatchString(v.Test) {
 			return nil, fmt.Errorf("unsafe result identifier")
 		}
 		if err := json.NewEncoder(&out).Encode(v); err != nil {
@@ -457,7 +457,7 @@ func Coverage(data []byte) ([]byte, error) {
 	if len(lines) < 2 || lines[0] != "mode: atomic" {
 		return nil, fmt.Errorf("atomic coverage required")
 	}
-	pattern := regexp.MustCompile(`^github.com/kiefer-networks/invoice-generator/[A-Za-z0-9_/-]+\.go:[0-9]+\.[0-9]+,[0-9]+\.[0-9]+ [0-9]+ [0-9]+$`)
+	pattern := regexp.MustCompile(`^github\.com/kiefer-networks/invoice-generator/[A-Za-z0-9_/-]+\.go:[0-9]+\.[0-9]+,[0-9]+\.[0-9]+ [0-9]+ [0-9]+$`)
 	for _, line := range lines[1:] {
 		if !pattern.MatchString(line) {
 			return nil, fmt.Errorf("unsafe coverage path")

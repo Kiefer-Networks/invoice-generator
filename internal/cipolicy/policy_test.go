@@ -214,6 +214,12 @@ func TestScrub(t *testing.T) {
 	if _, err = Coverage([]byte("mode: atomic\n/home/alice/a.go:1.1,2.2 1 0\n")); err == nil {
 		t.Fatal("absolute path accepted")
 	}
+	if _, err = Coverage([]byte("mode: atomic\ngithubXcom/kiefer-networks/invoice-generator/internal/auth/a.go:1.1,2.2 1 0\n")); err == nil {
+		t.Fatal("lookalike coverage host accepted")
+	}
+	if _, err = TestSummary([]byte("{\"Action\":\"pass\",\"Package\":\"githubXcom/kiefer-networks/invoice-generator/internal/auth\",\"Test\":\"TestSecurity\"}\n")); err == nil {
+		t.Fatal("lookalike result host accepted")
+	}
 	if _, err = TestSummary([]byte("{\"Action\":\"pass\",\"Package\":\"github.com/kiefer-networks/invoice-generator/internal/auth\"}\n")); err == nil {
 		t.Fatal("no matching test accepted")
 	}
