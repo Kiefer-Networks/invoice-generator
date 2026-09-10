@@ -38,7 +38,10 @@ const (
 	allowedIssuedAtFuture  = 2 * time.Minute
 	oidcHTTPTimeout        = 10 * time.Second
 	maxPendingTransactions = 1024
+	maxConcurrentSessions  = 5
 )
+
+var errRequiredGroup = errors.New("identity from Pocket ID is not in invoice-admins")
 
 type Config struct {
 	IssuerURL, ClientID, ClientSecret, RedirectURL       string
@@ -66,9 +69,15 @@ type Manager struct {
 type Principal struct{ UserID, Issuer, Subject, DisplayName, Email string }
 
 type SessionResult struct {
-	Principal                        Principal
-	SessionCookie, TransactionCookie *http.Cookie
-	CSRFToken, ReturnTo              string
+	Principal                         Principal
+	SessionCookie, TransactionCookie  *http.Cookie
+	CSRFToken, ReturnTo, AuditSubject string
+}
+
+type Session struct {
+	ID                                                       string
+	AuthorizationExpiresAt, ExpiresAt, CreatedAt, LastSeenAt time.Time
+	Current                                                  bool
 }
 
 type oidcProvider interface {
@@ -472,7 +481,11 @@ func (m *Manager) Callback(ctx context.Context, callbackURL *url.URL, cookie *ht
 	}
 	identity, err := m.verifyIdentity(token, t.Nonce)
 	if err != nil {
-		return SessionResult{TransactionCookie: deleted}, err
+		result := SessionResult{TransactionCookie: deleted}
+		if errors.Is(err, errRequiredGroup) {
+			result.AuditSubject = m.auditSubject(identity.Subject)
+		}
+		return result, err
 	}
 	if m.repo == nil {
 		return SessionResult{TransactionCookie: deleted}, errors.New("authentication repository is required")
@@ -522,7 +535,7 @@ func (m *Manager) verifyIdentity(token *oidc.IDToken, nonce string) (identityCla
 		}
 	}
 	if !allowed {
-		return c, errors.New("identity from Pocket ID is not in invoice-admins")
+		return c, errRequiredGroup
 	}
 	return c, nil
 }
@@ -545,13 +558,13 @@ func (m *Manager) createSession(ctx context.Context, user store.OIDCUser) (*http
 	if err := m.repo.DeleteExpiredSessions(ctx, m.now(), 100); err != nil {
 		return nil, "", err
 	}
-	if err := m.repo.CreateSession(ctx, session); err != nil {
+	if err := m.repo.CreateSessionLimited(ctx, session, m.now(), maxConcurrentSessions); err != nil {
 		return nil, "", err
 	}
 	return m.sessionCookie(token+"."+csrf, sessionLifetime), csrf, nil
 }
 func (m *Manager) Authenticate(ctx context.Context, cookie *http.Cookie) (Principal, error) {
-	token, _, ok := splitSessionCookie(cookie)
+	token, _, ok := m.splitSessionCookie(cookie)
 	if !ok {
 		return Principal{}, errors.New("invalid session")
 	}
@@ -563,7 +576,7 @@ func (m *Manager) Authenticate(ctx context.Context, cookie *http.Cookie) (Princi
 	return principal(user), nil
 }
 func (m *Manager) Logout(ctx context.Context, cookie *http.Cookie) error {
-	token, _, ok := splitSessionCookie(cookie)
+	token, _, ok := m.splitSessionCookie(cookie)
 	if !ok {
 		return nil
 	}
@@ -572,15 +585,58 @@ func (m *Manager) Logout(ctx context.Context, cookie *http.Cookie) error {
 func (m *Manager) RevokeAll(ctx context.Context, p Principal) error {
 	return m.repo.DeleteSessionsForUser(ctx, p.UserID)
 }
+func (m *Manager) ListSessions(ctx context.Context, cookie *http.Cookie) ([]Session, error) {
+	token, _, ok := m.splitSessionCookie(cookie)
+	if !ok {
+		return nil, errors.New("invalid session")
+	}
+	current, user, err := m.repo.SessionByTokenHash(ctx, m.keyedHash(token), m.now())
+	if err != nil {
+		return nil, errors.New("invalid or expired session")
+	}
+	stored, err := m.repo.SessionsForUser(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Session, 0, len(stored))
+	for _, item := range stored {
+		out = append(out, Session{ID: item.ID, AuthorizationExpiresAt: item.AuthorizationExpiresAt, ExpiresAt: item.ExpiresAt, CreatedAt: item.CreatedAt, LastSeenAt: item.LastSeenAt, Current: item.ID == current.ID})
+	}
+	return out, nil
+}
+func (m *Manager) RevokeSession(ctx context.Context, cookie *http.Cookie, id string) error {
+	token, _, ok := m.splitSessionCookie(cookie)
+	if !ok || id == "" {
+		return errors.New("invalid session")
+	}
+	_, user, err := m.repo.SessionByTokenHash(ctx, m.keyedHash(token), m.now())
+	if err != nil {
+		return errors.New("invalid or expired session")
+	}
+	deleted, err := m.repo.DeleteSessionForUser(ctx, id, user.ID)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return errors.New("session not found")
+	}
+	return nil
+}
+func (m *Manager) RevokeAllSessions(ctx context.Context, cookie *http.Cookie) error {
+	if _, err := m.Authenticate(ctx, cookie); err != nil {
+		return err
+	}
+	return m.repo.DeleteAllSessions(ctx)
+}
 func (m *Manager) CSRFToken(cookie *http.Cookie) (string, error) {
-	_, csrf, ok := splitSessionCookie(cookie)
+	_, csrf, ok := m.splitSessionCookie(cookie)
 	if !ok {
 		return "", errors.New("invalid session")
 	}
 	return csrf, nil
 }
 func (m *Manager) ValidateCSRF(ctx context.Context, cookie *http.Cookie, token string) error {
-	sessionToken, _, ok := splitSessionCookie(cookie)
+	sessionToken, _, ok := m.splitSessionCookie(cookie)
 	if !ok || token == "" {
 		return errors.New("invalid csrf token")
 	}
@@ -602,15 +658,19 @@ func (m *Manager) keyedHash(value string) []byte {
 	_, _ = h.Write([]byte(value))
 	return h.Sum(nil)
 }
+
+func (m *Manager) auditSubject(subject string) string {
+	return "oidc-subject:v1:" + base64.RawURLEncoding.EncodeToString(m.keyedHash(m.issuer+"\x00"+subject))
+}
 func (m *Manager) transactionCookie(value string, lifetime time.Duration) *http.Cookie {
 	maxAge := int(lifetime.Seconds())
 	if lifetime < 0 {
 		maxAge = -1
 	}
-	return &http.Cookie{Name: transactionCookieName, Value: value, Path: "/", MaxAge: maxAge, Expires: m.now().Add(lifetime), HttpOnly: true, Secure: m.secureCookies, SameSite: http.SameSiteLaxMode} // #nosec G124 -- Secure is false only for the validated loopback HTTP development callback.
+	return &http.Cookie{Name: TransactionCookieNameForSecure(m.secureCookies), Value: value, Path: "/", MaxAge: maxAge, Expires: m.now().Add(lifetime), HttpOnly: true, Secure: m.secureCookies, SameSite: http.SameSiteLaxMode} // #nosec G124 -- Secure is false only for the validated loopback HTTP development callback.
 }
 func (m *Manager) sessionCookie(value string, lifetime time.Duration) *http.Cookie {
-	return &http.Cookie{Name: sessionCookieName, Value: value, Path: "/", MaxAge: int(lifetime.Seconds()), Expires: m.now().Add(lifetime), HttpOnly: true, Secure: m.secureCookies, SameSite: http.SameSiteLaxMode} // #nosec G124 -- Secure is false only for the validated loopback HTTP development callback.
+	return &http.Cookie{Name: SessionCookieNameForSecure(m.secureCookies), Value: value, Path: "/", MaxAge: int(lifetime.Seconds()), Expires: m.now().Add(lifetime), HttpOnly: true, Secure: m.secureCookies, SameSite: http.SameSiteLaxMode} // #nosec G124 -- Secure is false only for the validated loopback HTTP development callback.
 }
 func safeReturnTo(value string) string {
 	if value == "" {
@@ -634,7 +694,7 @@ func (m *Manager) sealTransaction(t transaction) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(append(nonce, m.transactionAEAD.Seal(nil, nonce, plain, nil)...)), nil
 }
 func (m *Manager) openTransaction(cookie *http.Cookie) (transaction, error) {
-	if cookie == nil || cookie.Name != transactionCookieName || cookie.Value == "" {
+	if cookie == nil || cookie.Name != TransactionCookieNameForSecure(m.secureCookies) || cookie.Value == "" {
 		return transaction{}, errors.New("missing authorization transaction")
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(cookie.Value)
@@ -668,7 +728,7 @@ func (m *Manager) cleanupTransactionsLocked(now time.Time) {
 }
 func hasDuplicate(values url.Values, key string) bool { return len(values[key]) > 1 }
 func splitSessionCookie(cookie *http.Cookie) (string, string, bool) {
-	if cookie == nil || cookie.Name != sessionCookieName {
+	if cookie == nil || (cookie.Name != SessionCookieName && cookie.Name != DevelopmentSessionCookieName) {
 		return "", "", false
 	}
 	parts := strings.Split(cookie.Value, ".")
@@ -676,6 +736,12 @@ func splitSessionCookie(cookie *http.Cookie) (string, string, bool) {
 		return "", "", false
 	}
 	return parts[0], parts[1], true
+}
+func (m *Manager) splitSessionCookie(cookie *http.Cookie) (string, string, bool) {
+	if cookie == nil || cookie.Name != SessionCookieNameForSecure(m.secureCookies) {
+		return "", "", false
+	}
+	return splitSessionCookie(cookie)
 }
 func newID() (string, error) {
 	b := make([]byte, 16)

@@ -39,6 +39,12 @@ type Authenticator interface {
 	Logout(context.Context, *http.Cookie) error
 }
 
+type sessionAdministrator interface {
+	ListSessions(context.Context, *http.Cookie) ([]auth.Session, error)
+	RevokeSession(context.Context, *http.Cookie, string) error
+	RevokeAllSessions(context.Context, *http.Cookie) error
+}
+
 type Config struct {
 	DevAssetsDir         string
 	AllowedHosts         []string
@@ -110,6 +116,7 @@ type pageData struct {
 	InvoiceServiceDateRaw, InvoiceManualRaw, InvoiceCatalogRaw         map[string]string
 	Errors                                                             map[string]string
 	Raw                                                                map[string]string
+	Sessions                                                           []auth.Session
 }
 
 func New(deps Dependencies) (http.Handler, error) {
@@ -151,7 +158,7 @@ func newWithFiles(deps Dependencies, assets fs.FS) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	t, err := template.New("pages").Funcs(templateFunctions()).ParseFS(assets, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html", "templates/catalog.html", "templates/catalog_detail.html", "templates/catalog_form.html", "templates/invoices.html", "templates/invoice_editor.html", "templates/invoice_items.html", "templates/invoice_review.html", "templates/invoice_detail.html")
+	t, err := template.New("pages").Funcs(templateFunctions()).ParseFS(assets, "templates/layout.html", "templates/login.html", "templates/company.html", "templates/customers.html", "templates/customer_detail.html", "templates/customer_form.html", "templates/catalog.html", "templates/catalog_detail.html", "templates/catalog_form.html", "templates/invoices.html", "templates/invoice_editor.html", "templates/invoice_items.html", "templates/invoice_review.html", "templates/invoice_detail.html", "templates/sessions.html")
 	if err != nil {
 		return nil, err
 	}
@@ -213,6 +220,10 @@ func (a *app) routes(w http.ResponseWriter, r *http.Request) {
 		a.logout(w, r)
 	case "/settings/company":
 		a.company(w, r)
+	case "/settings/sessions":
+		a.sessions(w, r)
+	case "/settings/sessions/revoke-all":
+		a.revokeAllSessions(w, r)
 	case "/customers":
 		a.customers(w, r)
 	case "/customers/new":
@@ -226,6 +237,10 @@ func (a *app) routes(w http.ResponseWriter, r *http.Request) {
 	case "/invoices/new":
 		a.invoiceNew(w, r)
 	default:
+		if strings.HasPrefix(r.URL.Path, "/settings/sessions/") {
+			a.sessionRoute(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/assets/") {
 			if r.Method != http.MethodGet {
 				methodNotAllowed(w, http.MethodGet)
@@ -295,13 +310,13 @@ func (a *app) callback(w http.ResponseWriter, r *http.Request) {
 		scheme = r.URL.Scheme
 	}
 	callback := &url.URL{Scheme: scheme, Host: r.Host, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
-	result, err := a.auth.Callback(r.Context(), callback, cookie(r, "invoice_oidc_transaction"))
+	result, err := a.auth.Callback(r.Context(), callback, cookie(r, auth.TransactionCookieName))
 	if result.TransactionCookie != nil {
 		a.protectCookie(result.TransactionCookie, http.SameSiteLaxMode)
 		http.SetCookie(w, result.TransactionCookie)
 	}
 	if err != nil {
-		if auditErr := a.audit(r, "", "auth.callback", "authentication", "", "failure"); auditErr != nil {
+		if auditErr := a.audit(r, result.AuditSubject, "auth.callback", "authentication", "", "failure"); auditErr != nil {
 			a.logger.Error("persist authentication audit", "action", "auth.callback")
 			http.Error(w, "sign-in unavailable", http.StatusServiceUnavailable)
 			return
@@ -333,7 +348,7 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
-	session := cookie(r, "invoice_session")
+	session := cookie(r, auth.SessionCookieName)
 	err := a.auth.Logout(r.Context(), session)
 	if auditErr := a.audit(r, "", "auth.logout", "authentication", "", auditResult(err)); auditErr != nil {
 		a.logger.Error("persist authentication audit", "action", "auth.logout")
@@ -344,7 +359,7 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unable to sign out", http.StatusInternalServerError)
 		return
 	}
-	deleted := &http.Cookie{Name: "invoice_session", Value: "", Path: "/", MaxAge: -1} // #nosec G124 -- protectCookie applies Secure, HttpOnly and SameSite before SetCookie below.
+	deleted := &http.Cookie{Name: auth.SessionCookieNameForSecure(!a.config.Development), Value: "", Path: "/", MaxAge: -1} // #nosec G124 -- protectCookie applies Secure, HttpOnly and SameSite before SetCookie below.
 	a.protectCookie(deleted, http.SameSiteStrictMode)
 	http.SetCookie(w, deleted)
 	// End the form redirect on this origin. A redirect through the external
@@ -353,7 +368,7 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 }
 func (a *app) home(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFromContext(r.Context())
-	session := cookie(r, "invoice_session")
+	session := cookie(r, auth.SessionCookieName)
 	csrf, err := a.auth.CSRFToken(session)
 	if err != nil {
 		http.Error(w, "sign-in required", http.StatusUnauthorized)
@@ -382,7 +397,19 @@ func methodNotAllowed(w http.ResponseWriter, allowed string) {
 	w.Header().Set("Allow", allowed)
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 }
-func cookie(r *http.Request, name string) *http.Cookie { c, _ := r.Cookie(name); return c }
+func cookie(r *http.Request, name string) *http.Cookie {
+	c, _ := r.Cookie(name)
+	if c != nil {
+		return c
+	}
+	switch name {
+	case auth.SessionCookieName:
+		c, _ = r.Cookie(auth.DevelopmentSessionCookieName)
+	case auth.TransactionCookieName:
+		c, _ = r.Cookie(auth.DevelopmentTransactionCookieName)
+	}
+	return c
+}
 func safeReturnTo(value string) string {
 	u, err := url.Parse(value)
 	if err != nil || value == "" || u.IsAbs() || u.Host != "" || !strings.HasPrefix(u.Path, "/") || strings.HasPrefix(u.Path, "//") {

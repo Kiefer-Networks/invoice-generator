@@ -3,9 +3,48 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestCreateSessionLimitedEnforcesMaximumAtomically(t *testing.T) {
+	t.Parallel()
+	s := openMigratedStore(t)
+	repo := s.AuthRepository()
+	ctx := context.Background()
+	user, err := repo.UpsertUser(ctx, OIDCUser{Issuer: "https://issuer.example.test", Subject: "limited"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	const attempts, maximum = 12, 3
+	var wg sync.WaitGroup
+	errs := make(chan error, attempts)
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			h := sha256.Sum256([]byte(string(rune('a' + i))))
+			errs <- repo.CreateSessionLimited(ctx, StoredSession{ID: fmt.Sprintf("session-%d", i), UserID: user.ID, TokenHash: h[:], CSRFSecretHash: h[:], AuthorizationExpiresAt: now.Add(time.Minute), ExpiresAt: now.Add(time.Minute)}, now, maximum)
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	accepted := 0
+	for err := range errs {
+		if err == nil {
+			accepted++
+		} else if !errors.Is(err, ErrSessionLimit) {
+			t.Fatal(err)
+		}
+	}
+	if accepted != maximum {
+		t.Fatalf("accepted %d sessions, want %d", accepted, maximum)
+	}
+}
 
 func TestAuthRepositoryKeepsIssuerSubjectIdentityWhenEmailChanges(t *testing.T) {
 	t.Parallel()

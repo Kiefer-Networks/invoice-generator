@@ -29,6 +29,13 @@ type StoredSession struct {
 	AuthorizationExpiresAt, ExpiresAt time.Time
 }
 
+var ErrSessionLimit = errors.New("concurrent session limit reached")
+
+type SessionInfo struct {
+	ID                                                       string
+	AuthorizationExpiresAt, ExpiresAt, CreatedAt, LastSeenAt time.Time
+}
+
 func (r *AuthRepository) UpsertUser(ctx context.Context, user OIDCUser) (OIDCUser, error) {
 	if user.Issuer == "" || user.Subject == "" {
 		return OIDCUser{}, errors.New("issuer and subject are required")
@@ -74,14 +81,70 @@ func (r *AuthRepository) UserByIssuerSubject(ctx context.Context, issuer, subjec
 }
 
 func (r *AuthRepository) CreateSession(ctx context.Context, session StoredSession) error {
+	return r.CreateSessionLimited(ctx, session, time.Time{}, 0)
+}
+
+func (r *AuthRepository) CreateSessionLimited(ctx context.Context, session StoredSession, now time.Time, maximum int) error {
 	if session.ID == "" || session.UserID == "" || len(session.TokenHash) == 0 || len(session.CSRFSecretHash) == 0 || session.ExpiresAt.IsZero() || session.AuthorizationExpiresAt.IsZero() {
 		return errors.New("incomplete session")
 	}
-	_, err := r.store.db.ExecContext(ctx, `INSERT INTO sessions (id,user_id,token_hash,csrf_secret_hash,authorization_expires_at,expires_at) VALUES (?,?,?,?,?,?)`, session.ID, session.UserID, session.TokenHash, session.CSRFSecretHash, formatSessionTime(session.AuthorizationExpiresAt), formatSessionTime(session.ExpiresAt))
+	query := `INSERT INTO sessions (id,user_id,token_hash,csrf_secret_hash,authorization_expires_at,expires_at) VALUES (?,?,?,?,?,?)`
+	args := []any{session.ID, session.UserID, session.TokenHash, session.CSRFSecretHash, formatSessionTime(session.AuthorizationExpiresAt), formatSessionTime(session.ExpiresAt)}
+	if maximum > 0 {
+		query = `INSERT INTO sessions (id,user_id,token_hash,csrf_secret_hash,authorization_expires_at,expires_at)
+SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM sessions WHERE user_id=? AND CAST(expires_at AS INTEGER)>? AND CAST(authorization_expires_at AS INTEGER)>?) < ?`
+		args = append(args, session.UserID, now.UTC().UnixNano(), now.UTC().UnixNano(), maximum)
+	}
+	result, err := r.store.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
+	if maximum > 0 {
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return ErrSessionLimit
+		}
+	}
 	return nil
+}
+
+func (r *AuthRepository) SessionsForUser(ctx context.Context, userID string) ([]SessionInfo, error) {
+	rows, err := r.store.db.QueryContext(ctx, `SELECT id,authorization_expires_at,expires_at,created_at,last_seen_at FROM sessions WHERE user_id=? ORDER BY created_at DESC,id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionInfo
+	for rows.Next() {
+		var item SessionInfo
+		var authorization, expiry, created, seen string
+		if err := rows.Scan(&item.ID, &authorization, &expiry, &created, &seen); err != nil {
+			return nil, err
+		}
+		item.AuthorizationExpiresAt = parseSessionTime(authorization)
+		item.ExpiresAt = parseSessionTime(expiry)
+		item.CreatedAt = parseAuthTime(created)
+		item.LastSeenAt = parseAuthTime(seen)
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (r *AuthRepository) DeleteSessionForUser(ctx context.Context, id, userID string) (bool, error) {
+	result, err := r.store.db.ExecContext(ctx, `DELETE FROM sessions WHERE id=? AND user_id=?`, id, userID)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
+}
+
+func (r *AuthRepository) DeleteAllSessions(ctx context.Context) error {
+	_, err := r.store.db.ExecContext(ctx, `DELETE FROM sessions`)
+	return err
 }
 
 func (r *AuthRepository) SessionByTokenHash(ctx context.Context, tokenHash []byte, now time.Time) (StoredSession, OIDCUser, error) {
