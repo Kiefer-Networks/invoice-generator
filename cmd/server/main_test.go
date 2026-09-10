@@ -216,7 +216,7 @@ func TestRevokeSpecificSession(t *testing.T) {
 	if _, err := s.DB().Exec(`INSERT INTO oidc_users (id,issuer,subject,display_name,active) VALUES ('u','https://issuer.test','subject','User',1)`); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"11111111111111111111111111111111", "22222222222222222222222222222222"} {
+	for _, id := range []string{"EREREREREREREREREREREQ", "IiIiIiIiIiIiIiIiIiIiIg"} {
 		if _, err := s.DB().Exec(`INSERT INTO sessions (id,user_id,token_hash,csrf_secret_hash,authorization_expires_at,expires_at) VALUES (?,'u',?,?, '9999999999999999999','9999999999999999999')`, id, []byte(id+"token"), []byte(id+"csrf")); err != nil {
 			t.Fatal(err)
 		}
@@ -224,7 +224,7 @@ func TestRevokeSpecificSession(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := runSessionCommand(context.Background(), []string{"revoke", "-database", path, "-id", "11111111111111111111111111111111"}, func(string) string { return "" }); err != nil {
+	if err := runSessionCommand(context.Background(), []string{"revoke", "-database", path, "-id", "EREREREREREREREREREREQ"}, func(string) string { return "" }); err != nil {
 		t.Fatal(err)
 	}
 	check, err := store.Open(context.Background(), path)

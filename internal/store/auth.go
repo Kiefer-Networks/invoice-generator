@@ -111,8 +111,8 @@ SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM sessions WHERE user_id=? AND CAST
 	return nil
 }
 
-func (r *AuthRepository) SessionsForUser(ctx context.Context, userID string) ([]SessionInfo, error) {
-	rows, err := r.store.db.QueryContext(ctx, `SELECT id,authorization_expires_at,expires_at,created_at,last_seen_at FROM sessions WHERE user_id=? ORDER BY created_at DESC,id`, userID)
+func (r *AuthRepository) SessionsForUser(ctx context.Context, userID string, now time.Time) ([]SessionInfo, error) {
+	rows, err := r.store.db.QueryContext(ctx, `SELECT id,authorization_expires_at,expires_at,created_at,last_seen_at FROM sessions WHERE user_id=? AND CAST(expires_at AS INTEGER)>? AND CAST(authorization_expires_at AS INTEGER)>? ORDER BY created_at DESC,id`, userID, now.UTC().UnixNano(), now.UTC().UnixNano())
 	if err != nil {
 		return nil, err
 	}

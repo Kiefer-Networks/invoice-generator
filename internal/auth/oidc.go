@@ -594,7 +594,7 @@ func (m *Manager) ListSessions(ctx context.Context, cookie *http.Cookie) ([]Sess
 	if err != nil {
 		return nil, errors.New("invalid or expired session")
 	}
-	stored, err := m.repo.SessionsForUser(ctx, user.ID)
+	stored, err := m.repo.SessionsForUser(ctx, user.ID, m.now())
 	if err != nil {
 		return nil, err
 	}
@@ -670,7 +670,7 @@ func (m *Manager) transactionCookie(value string, lifetime time.Duration) *http.
 	return &http.Cookie{Name: TransactionCookieNameForSecure(m.secureCookies), Value: value, Path: "/", MaxAge: maxAge, Expires: m.now().Add(lifetime), HttpOnly: true, Secure: m.secureCookies, SameSite: http.SameSiteLaxMode} // #nosec G124 -- Secure is false only for the validated loopback HTTP development callback.
 }
 func (m *Manager) sessionCookie(value string, lifetime time.Duration) *http.Cookie {
-	return &http.Cookie{Name: SessionCookieNameForSecure(m.secureCookies), Value: value, Path: "/", MaxAge: int(lifetime.Seconds()), Expires: m.now().Add(lifetime), HttpOnly: true, Secure: m.secureCookies, SameSite: http.SameSiteLaxMode} // #nosec G124 -- Secure is false only for the validated loopback HTTP development callback.
+	return &http.Cookie{Name: SessionCookieNameForSecure(m.secureCookies), Value: value, Path: "/", MaxAge: int(lifetime.Seconds()), Expires: m.now().Add(lifetime), HttpOnly: true, Secure: m.secureCookies, SameSite: http.SameSiteStrictMode} // #nosec G124 -- Secure is false only for the validated loopback HTTP development callback.
 }
 func safeReturnTo(value string) string {
 	if value == "" {

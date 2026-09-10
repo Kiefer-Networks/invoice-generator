@@ -31,7 +31,7 @@ func (s *sessionAuth) RevokeAllSessions(context.Context, *http.Cookie) error {
 }
 
 func TestSessionPageDoesNotExposeSecretsAndRevokesSpecificSession(t *testing.T) {
-	id := "11111111111111111111111111111111"
+	id := "EREREREREREREREREREREQ"
 	a := &sessionAuth{fakeAuth: &fakeAuth{}, sessions: []auth.Session{{ID: id, CreatedAt: time.Now(), AuthorizationExpiresAt: time.Now().Add(time.Minute)}}}
 	h, err := New(Dependencies{Auth: a, Config: Config{AllowedHosts: []string{"app.example.test"}, BodyLimit: 1 << 20}})
 	if err != nil {

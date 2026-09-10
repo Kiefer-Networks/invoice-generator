@@ -1,7 +1,7 @@
 package web
 
 import (
-	"encoding/hex"
+	"encoding/base64"
 	"net/http"
 	"strings"
 
@@ -37,8 +37,8 @@ func (a *app) sessionRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), suffix)
-	decoded, decodeErr := hex.DecodeString(id)
-	if decodeErr != nil || len(decoded) != 16 {
+	decoded, decodeErr := base64.RawURLEncoding.DecodeString(id)
+	if decodeErr != nil || len(decoded) != 16 || base64.RawURLEncoding.EncodeToString(decoded) != id {
 		http.NotFound(w, r)
 		return
 	}

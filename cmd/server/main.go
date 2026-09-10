@@ -102,8 +102,9 @@ func runSessionCommand(ctx context.Context, args []string, getenv func(string) s
 		}
 		return revokeAllSessions(ctx, *database)
 	case "revoke":
-		if len(*id) != 32 {
-			return errors.New("session id must be 32 characters")
+		decoded, err := base64.RawURLEncoding.DecodeString(*id)
+		if err != nil || len(decoded) != 16 || base64.RawURLEncoding.EncodeToString(decoded) != *id {
+			return errors.New("session id is invalid")
 		}
 		return revokeSessionByID(ctx, *database, *id)
 	default:
