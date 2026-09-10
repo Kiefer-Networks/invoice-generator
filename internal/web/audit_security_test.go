@@ -58,7 +58,7 @@ func TestAuthenticationOutcomesAreDurablyAudited(t *testing.T) {
 	logout := httptest.NewRequest(http.MethodPost, "https://app.example.test/auth/logout", strings.NewReader("csrf_token=csrf"))
 	logout.Host = "app.example.test"
 	logout.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	logout.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"})
+	logout.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"}) // #nosec G124 -- Request-only fixture; response cookie attributes do not apply to AddCookie.
 	h.ServeHTTP(httptest.NewRecorder(), logout)
 
 	rows, err := db.DB().Query(`SELECT action,result,actor_subject,change_summary FROM audit_events ORDER BY created_at,id`)
@@ -102,7 +102,7 @@ func TestConfigurationCRUDWritesActorAndObjectAudits(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "https://app.example.test/customers/new", strings.NewReader(form.Encode()+"&csrf_token=csrf"))
 	r.Host = "app.example.test"
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"})
+	r.AddCookie(&http.Cookie{Name: "invoice_session", Value: "session"}) // #nosec G124 -- Request-only fixture; response cookie attributes do not apply to AddCookie.
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusSeeOther {
