@@ -5,8 +5,6 @@ const (
 	DevelopmentSessionCookieName = "invoice_session_dev"
 )
 
-const sessionCookieName = SessionCookieName
-
 func SessionCookieNameForSecure(secure bool) string {
 	if secure {
 		return SessionCookieName

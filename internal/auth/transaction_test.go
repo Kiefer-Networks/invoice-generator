@@ -30,7 +30,7 @@ func TestAuthorizationTransactionUsesPKCEAndSafeReturnPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cookie == nil || cookie.Name != transactionCookieName || cookie.MaxAge <= 0 || !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode {
+	if cookie == nil || cookie.Name != TransactionCookieName || cookie.MaxAge <= 0 || !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("unsafe transaction cookie: %#v", cookie)
 	}
 	u, err := url.Parse(redirect)
