@@ -181,6 +181,11 @@ func visualBrowser(t *testing.T) (context.Context, context.CancelFunc) {
 		chromedp.Flag("disable-gpu-compositing", true),
 		chromedp.Flag("disable-software-rasterizer", true),
 		chromedp.Flag("use-gl", "disabled"),
+		// The pinned Alpine Chromium build's GPU child rejects pwritev2 in its
+		// internal filter. The test container still has nonroot, no-capability,
+		// network-none and outer seccomp isolation, so disable only this nested
+		// filter for the deterministic screenshot process.
+		chromedp.Flag("disable-seccomp-filter-sandbox", true),
 		chromedp.CombinedOutput(os.Stderr),
 	)
 	alloc, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
