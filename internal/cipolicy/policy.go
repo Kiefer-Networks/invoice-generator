@@ -236,6 +236,15 @@ func Workflows(dir string) error {
 				return fmt.Errorf("required gate must reject failed, skipped and cancelled dependencies")
 			}
 		}
+		if file == "security.yml" {
+			freshness, ok := w.Jobs["freshness"]
+			if !ok {
+				return fmt.Errorf("security.yml/freshness: job is missing")
+			}
+			if err := RuntimeFreshnessSteps(freshness.Steps); err != nil {
+				return fmt.Errorf("security.yml/freshness: %w", err)
+			}
+		}
 		if file == "release.yml" {
 			for _, name := range []string{"trust", "ci", "security", "container", "candidate", "candidate-runtime", "promote"} {
 				if _, ok := w.Jobs[name]; !ok {
@@ -294,6 +303,46 @@ func Workflows(dir string) error {
 					}
 				}
 			}
+		}
+	}
+	return nil
+}
+
+// RuntimeFreshnessSteps ensures mutable upstream state is checked as a required,
+// fail-closed operation rather than merely reported by the scheduled workflow.
+func RuntimeFreshnessSteps(steps []map[string]any) error {
+	for _, step := range steps {
+		run, _ := step["run"].(string)
+		if strings.Contains(run, "python3 scripts/check-runtime-fresh.py") {
+			if _, conditional := step["if"]; conditional || step["continue-on-error"] != nil {
+				return fmt.Errorf("runtime freshness verification must run unconditionally")
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("runtime freshness verification is missing")
+}
+
+// RuntimeFreshnessScript protects the roots of trust and verification calls in
+// the stdlib-only runtime checker from accidental weakening.
+func RuntimeFreshnessScript(data []byte) error {
+	script := string(data)
+	for _, required := range []string{
+		"https://registry-1.docker.io",
+		"https://auth.docker.io/token",
+		"https://dl-cdn.alpinelinux.org/alpine",
+		"https://alpinelinux.org/keys",
+		"207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f",
+		"d11f6b21c61b4274e182eb888883a8ba8acdbf820dcc7a6d82a7d9fc2fd2836d",
+		"ARCHITECTURES = (\"x86_64\", \"aarch64\")",
+		"REPOSITORIES = (\"main\", \"community\")",
+		"verify_manifest(manifest, headers, expected_digest)",
+		"_verify_pkcs1_sha1(index_stream, signatures[names[0]], key)",
+		"direct_pins = select_direct_pins(pin.packages_by_arch)",
+		"check_package_pins(direct_pins, fetch_package_indexes(pin.branch))",
+	} {
+		if !strings.Contains(script, required) {
+			return fmt.Errorf("runtime freshness safeguard missing: %s", required)
 		}
 	}
 	return nil

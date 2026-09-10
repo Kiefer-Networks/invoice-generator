@@ -128,6 +128,32 @@ func TestBuildxChecksumCannotBeRemoved(t *testing.T) {
 	}
 }
 
+func TestRuntimeFreshnessPolicy(t *testing.T) {
+	script, err := os.ReadFile("../../scripts/check-runtime-fresh.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RuntimeFreshnessScript(script); err != nil {
+		t.Fatal(err)
+	}
+	for _, from := range []string{
+		"207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f",
+		"d11f6b21c61b4274e182eb888883a8ba8acdbf820dcc7a6d82a7d9fc2fd2836d",
+		"https://registry-1.docker.io",
+		"https://dl-cdn.alpinelinux.org/alpine",
+		"verify_manifest(manifest, headers, expected_digest)",
+		"_verify_pkcs1_sha1(index_stream, signatures[names[0]], key)",
+	} {
+		changed := strings.Replace(string(script), from, "removed", 1)
+		if changed == string(script) {
+			t.Fatal("fixture not mutated")
+		}
+		if RuntimeFreshnessScript([]byte(changed)) == nil {
+			t.Fatalf("runtime freshness safeguard accepted after removing %q", from)
+		}
+	}
+}
+
 func TestWorkflowPrivilegeAndGateMutations(t *testing.T) {
 	for _, tc := range []struct{ name, file, from, to string }{
 		{"privileged-pr", "ci.yml", "  contents: read", "  contents: write"},
@@ -145,6 +171,7 @@ func TestWorkflowPrivilegeAndGateMutations(t *testing.T) {
 		{"unverified-container-buildx", "container.yml", "bash scripts/install-ci-tool.sh buildx", "docker buildx version"},
 		{"unverified-release-buildx", "release.yml", "bash scripts/install-ci-tool.sh buildx", "docker buildx version"},
 		{"unverified-visual-buildx", "ci.yml", "bash scripts/install-ci-tool.sh buildx", "docker buildx version"},
+		{"missing-runtime-freshness", "security.yml", "python3 scripts/check-runtime-fresh.py", "echo runtime-check-removed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

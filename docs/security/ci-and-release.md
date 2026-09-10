@@ -32,9 +32,15 @@ and never piped into a shell. Staticcheck v0.8.1 (2026.2.1) and govulncheck v1.7
 use exact Go module versions with the public Go checksum database. Action pins
 carry upstream version comments and were resolved from upstream release commits
 on 2026-09-06. Dependabot proposes module/action/base changes. The weekly Security
-schedule reruns the scanners and direct dependency freshness check even if source
-has not changed. A newer release is a review signal; production is never updated
-automatically. The Docker scanner databases intentionally refresh for new advisories.
+schedule reruns the scanners and fail-closed freshness checks even if source has
+not changed. The runtime check compares the exact Alpine tag's current Docker Hub
+manifest digest with the Dockerfile pin, requires Linux AMD64 and ARM64 manifests,
+verifies the embedded RSA signatures in the official v3.24 main and community
+indexes for both architectures against reviewed Alpine key hashes, and requires
+every direct runtime package pin to equal the current signed index version on both.
+Network, response-schema, signature and key-rollover errors fail the gate. A newer
+release is a review signal; production is never updated automatically. The Docker
+scanner databases intentionally refresh for new advisories.
 
 Uploaded test artifacts contain only validated result fields and repository-relative
 atomic coverage; arbitrary test output is discarded. SBOM/license JSON passes the

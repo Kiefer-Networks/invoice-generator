@@ -7,8 +7,9 @@ synthetic JSON, banners and asset reload are absent from its binary. The separat
 digests and the Dockerfile frontend. APK verifies repository signatures; every
 security-sensitive direct runtime package is version-pinned. The generated SBOM
 and provenance record the resolved closure for each immutable image digest.
-Update the runtime versions and digests together after review; the CI freshness
-and vulnerability gates reject stale or vulnerable runtime inputs.
+Update the runtime versions, architecture lock files and digests together after
+review; the CI freshness and vulnerability gates reject stale or vulnerable
+runtime inputs.
 The JDK is required for Java source launch of the embedded official CII schemas;
 their manifest/license and Alpine package metadata are retained. Go runtime
 and compiled module licenses/notices are under

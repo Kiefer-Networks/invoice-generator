@@ -137,7 +137,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - run: bash scripts/check-deps-fresh.sh
+      - name: Verify current application and runtime pins
+        run: |
+          bash scripts/check-deps-fresh.sh
+          python3 scripts/check-runtime-fresh.py
   required:
     name: Security required
     if: always()
