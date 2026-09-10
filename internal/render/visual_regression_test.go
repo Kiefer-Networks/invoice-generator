@@ -58,7 +58,7 @@ func TestVisualInvoice(t *testing.T) {
 		chromedp.Navigate("file://"+htmlPath),
 		chromedp.Poll(`document.fonts.status === 'loaded'`, nil),
 		chromedp.Evaluate(visualBoundsJS, &violations), chromedp.FullScreenshot(&screenshot, 100)); err != nil {
-		t.Fatal("capture synthetic HTML failed")
+		t.Fatalf("capture synthetic HTML failed: %v", err)
 	}
 	if len(violations) != 0 {
 		t.Fatalf("HTML layout violations: %v", violations)
@@ -175,7 +175,7 @@ func visualInvoice() *TplData {
 func visualBrowser(t *testing.T) (context.Context, context.CancelFunc) {
 	t.Helper()
 	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
-	opts = append(opts, chromedp.ExecPath(FindChrome()), chromedp.DisableGPU)
+	opts = append(opts, chromedp.ExecPath(FindChrome()), chromedp.DisableGPU, chromedp.CombinedOutput(os.Stderr))
 	alloc, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
 	ctx, cancelBrowser := chromedp.NewContext(alloc)
 	ctx, cancelTimeout := context.WithTimeout(ctx, time.Minute)
