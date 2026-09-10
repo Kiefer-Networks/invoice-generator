@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kiefer-networks/invoice-generator/internal/auth"
 	"github.com/kiefer-networks/invoice-generator/internal/store"
 )
 
@@ -43,11 +44,8 @@ func (a *app) customerNew(w http.ResponseWriter, r *http.Request) {
 		input, err := customerInputFromRequest(r)
 		if err == nil {
 			var customer store.Customer
-			customer, err = a.store.CustomerRepository().Create(r.Context(), input)
+			customer, err = a.store.CustomerRepository().CreateAudited(r.Context(), input, mutationAuditEvent(r, "customer.created", "customer"))
 			if err == nil {
-				if !a.auditMutation(w, r, "customer.created", "customer", customer.ID, nil) {
-					return
-				}
 				a.customerSaved(w, r, customer)
 				return
 			}
@@ -144,11 +142,8 @@ func (a *app) customerEdit(w http.ResponseWriter, r *http.Request, id string) {
 		}
 		if err == nil {
 			var c store.Customer
-			c, err = a.store.CustomerRepository().Update(r.Context(), id, version, input)
+			c, err = a.store.CustomerRepository().UpdateAudited(r.Context(), id, version, input, mutationAuditEvent(r, "customer.updated", "customer"))
 			if err == nil {
-				if !a.auditMutation(w, r, "customer.updated", "customer", c.ID, nil) {
-					return
-				}
 				a.customerSaved(w, r, c)
 				return
 			}
@@ -180,21 +175,15 @@ func (a *app) customerState(w http.ResponseWriter, r *http.Request, id string, a
 	if err == nil {
 		if active {
 			var c store.Customer
-			c, err = a.store.CustomerRepository().Restore(r.Context(), id, version)
+			c, err = a.store.CustomerRepository().RestoreAudited(r.Context(), id, version, mutationAuditEvent(r, actionForState(active, "customer"), "customer"))
 			if err == nil {
-				if !a.auditMutation(w, r, actionForState(active, "customer"), "customer", c.ID, nil) {
-					return
-				}
 				a.customerSaved(w, r, c)
 				return
 			}
 		} else {
 			var c store.Customer
-			c, err = a.store.CustomerRepository().Archive(r.Context(), id, version)
+			c, err = a.store.CustomerRepository().ArchiveAudited(r.Context(), id, version, mutationAuditEvent(r, actionForState(active, "customer"), "customer"))
 			if err == nil {
-				if !a.auditMutation(w, r, actionForState(active, "customer"), "customer", c.ID, nil) {
-					return
-				}
 				a.customerSaved(w, r, c)
 				return
 			}
@@ -278,7 +267,7 @@ func errorFields(err error) map[string]string {
 func (a *app) withPageData(r *http.Request, data pageData) pageData {
 	data.Development = a.config.Development
 	p, _ := principalFromContext(r.Context())
-	csrf, _ := a.auth.CSRFToken(cookie(r, "invoice_session"))
+	csrf, _ := a.auth.CSRFToken(cookie(r, auth.SessionCookieName))
 	data.Nonce = nonceFromContext(r.Context())
 	data.CSRFToken = csrf
 	data.DisplayName = p.DisplayName

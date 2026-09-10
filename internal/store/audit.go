@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"regexp"
 )
 
@@ -24,6 +26,14 @@ func (s *Store) RecordAudit(ctx context.Context, event AuditEvent) error {
 	if s == nil || s.db == nil {
 		return errors.New("audit storage is unavailable")
 	}
+	return recordAudit(ctx, s.db, event)
+}
+
+type auditExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func recordAudit(ctx context.Context, executor auditExecutor, event AuditEvent) error {
 	if !auditNamePattern.MatchString(event.Action) || !auditNamePattern.MatchString(event.TargetType) || (event.Result != "success" && event.Result != "failure") {
 		return errors.New("invalid audit event")
 	}
@@ -34,6 +44,32 @@ func (s *Store) RecordAudit(ctx context.Context, event AuditEvent) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO audit_events(id,actor_subject,action,target_type,target_id,result,request_id,change_summary) VALUES(?,?,?,?,?,?,?,'{}')`, id, event.ActorSubject, event.Action, event.TargetType, event.TargetID, event.Result, event.RequestID)
+	_, err = executor.ExecContext(ctx, `INSERT INTO audit_events(id,actor_subject,action,target_type,target_id,result,request_id,change_summary) VALUES(?,?,?,?,?,?,?,'{}')`, id, event.ActorSubject, event.Action, event.TargetType, event.TargetID, event.Result, event.RequestID)
 	return err
+}
+
+func auditedMutation[T any](ctx context.Context, s *Store, event AuditEvent, mutate func(*sql.Tx) (T, string, error)) (result T, err error) {
+	if s == nil || s.db == nil {
+		return result, errors.New("audit storage is unavailable")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, fmt.Errorf("begin audited mutation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, event.TargetID, err = mutate(tx)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	event.Result = "success"
+	if err = recordAudit(ctx, tx, event); err != nil {
+		var zero T
+		return zero, fmt.Errorf("record mutation audit: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		var zero T
+		return zero, fmt.Errorf("commit audited mutation: %w", err)
+	}
+	return result, nil
 }

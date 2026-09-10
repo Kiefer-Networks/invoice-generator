@@ -27,9 +27,9 @@ func (a *app) company(w http.ResponseWriter, r *http.Request) {
 		input, err := companyInputFromRequest(r)
 		var company store.Company
 		if err == nil {
-			company, err = a.store.CompanyRepository().Save(r.Context(), input)
+			company, err = a.store.CompanyRepository().SaveAudited(r.Context(), input, mutationAuditEvent(r, "company.saved", "company"))
 		}
-		if !a.auditMutation(w, r, "company.saved", "company", company.ID, err) {
+		if err != nil && !a.auditMutation(w, r, "company.saved", "company", company.ID, err) {
 			return
 		}
 		if err != nil {

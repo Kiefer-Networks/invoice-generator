@@ -48,11 +48,8 @@ func (a *app) catalogNew(w http.ResponseWriter, r *http.Request) {
 		input, err := catalogInputFromRequest(r)
 		if err == nil {
 			var item store.CatalogItem
-			item, err = a.store.CatalogRepository().Create(r.Context(), input)
+			item, err = a.store.CatalogRepository().CreateAudited(r.Context(), input, mutationAuditEvent(r, "catalog.created", "catalog_item"))
 			if err == nil {
-				if !a.auditMutation(w, r, "catalog.created", "catalog_item", item.ID, nil) {
-					return
-				}
 				a.catalogSaved(w, r, item)
 				return
 			}
@@ -150,11 +147,8 @@ func (a *app) catalogEdit(w http.ResponseWriter, r *http.Request, id string) {
 		}
 		if err == nil {
 			var item store.CatalogItem
-			item, err = a.store.CatalogRepository().Update(r.Context(), id, version, input)
+			item, err = a.store.CatalogRepository().UpdateAudited(r.Context(), id, version, input, mutationAuditEvent(r, "catalog.updated", "catalog_item"))
 			if err == nil {
-				if !a.auditMutation(w, r, "catalog.updated", "catalog_item", item.ID, nil) {
-					return
-				}
 				a.catalogSaved(w, r, item)
 				return
 			}
@@ -188,21 +182,15 @@ func (a *app) catalogState(w http.ResponseWriter, r *http.Request, id string, ac
 	if err == nil {
 		if active {
 			var item store.CatalogItem
-			item, err = a.store.CatalogRepository().Restore(r.Context(), id, version)
+			item, err = a.store.CatalogRepository().RestoreAudited(r.Context(), id, version, mutationAuditEvent(r, actionForState(active, "catalog"), "catalog_item"))
 			if err == nil {
-				if !a.auditMutation(w, r, actionForState(active, "catalog"), "catalog_item", item.ID, nil) {
-					return
-				}
 				a.catalogSaved(w, r, item)
 				return
 			}
 		} else {
 			var item store.CatalogItem
-			item, err = a.store.CatalogRepository().Archive(r.Context(), id, version)
+			item, err = a.store.CatalogRepository().ArchiveAudited(r.Context(), id, version, mutationAuditEvent(r, actionForState(active, "catalog"), "catalog_item"))
 			if err == nil {
-				if !a.auditMutation(w, r, actionForState(active, "catalog"), "catalog_item", item.ID, nil) {
-					return
-				}
 				a.catalogSaved(w, r, item)
 				return
 			}

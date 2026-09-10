@@ -43,7 +43,21 @@ type CustomerRepository struct{ store *Store }
 
 func (s *Store) CustomerRepository() *CustomerRepository { return &CustomerRepository{store: s} }
 
+type customerDatabase interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func (r *CustomerRepository) Create(ctx context.Context, input CustomerInput) (Customer, error) {
+	return r.create(ctx, r.store.db, input)
+}
+func (r *CustomerRepository) CreateAudited(ctx context.Context, input CustomerInput, event AuditEvent) (Customer, error) {
+	return auditedMutation(ctx, r.store, event, func(tx *sql.Tx) (Customer, string, error) {
+		customer, err := r.create(ctx, tx, input)
+		return customer, customer.ID, err
+	})
+}
+func (r *CustomerRepository) create(ctx context.Context, db customerDatabase, input CustomerInput) (Customer, error) {
 	in, err := normalizeCustomer(input)
 	if err != nil {
 		return Customer{}, err
@@ -53,15 +67,18 @@ func (r *CustomerRepository) Create(ctx context.Context, input CustomerInput) (C
 		return Customer{}, err
 	}
 	searchKey, sortKey := customerKeys(in)
-	_, err = r.store.db.ExecContext(ctx, `INSERT INTO customers (id, number, display_name, legal_name, contact_name, email, address_line1, address_line2, postal_code, city, country, vat_identifier, preferred_language, currency, payment_terms_days, notes, active, version, search_key, sort_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`, id, in.Number, in.DisplayName, in.LegalName, in.ContactName, in.Email, in.AddressLine1, in.AddressLine2, in.PostalCode, in.City, in.Country, in.VATIdentifier, in.PreferredLanguage, in.Currency, in.PaymentTermsDays, in.Notes, searchKey, sortKey)
+	_, err = db.ExecContext(ctx, `INSERT INTO customers (id, number, display_name, legal_name, contact_name, email, address_line1, address_line2, postal_code, city, country, vat_identifier, preferred_language, currency, payment_terms_days, notes, active, version, search_key, sort_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`, id, in.Number, in.DisplayName, in.LegalName, in.ContactName, in.Email, in.AddressLine1, in.AddressLine2, in.PostalCode, in.City, in.Country, in.VATIdentifier, in.PreferredLanguage, in.Currency, in.PaymentTermsDays, in.Notes, searchKey, sortKey)
 	if err != nil {
 		return Customer{}, customerDBError(err)
 	}
-	return r.Get(ctx, id)
+	return r.get(ctx, db, id)
 }
 
 func (r *CustomerRepository) Get(ctx context.Context, id string) (Customer, error) {
-	row := r.store.db.QueryRowContext(ctx, `SELECT id, number, display_name, legal_name, contact_name, email, address_line1, address_line2, postal_code, city, country, vat_identifier, preferred_language, currency, payment_terms_days, notes, active, version, created_at, updated_at FROM customers WHERE id = ?`, id)
+	return r.get(ctx, r.store.db, id)
+}
+func (r *CustomerRepository) get(ctx context.Context, db customerDatabase, id string) (Customer, error) {
+	row := db.QueryRowContext(ctx, `SELECT id, number, display_name, legal_name, contact_name, email, address_line1, address_line2, postal_code, city, country, vat_identifier, preferred_language, currency, payment_terms_days, notes, active, version, created_at, updated_at FROM customers WHERE id = ?`, id)
 	c, err := scanCustomer(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Customer{}, ErrNotFound
@@ -130,6 +147,15 @@ func (r *CustomerRepository) List(ctx context.Context, options CustomerListOptio
 }
 
 func (r *CustomerRepository) Update(ctx context.Context, id string, version int, input CustomerInput) (Customer, error) {
+	return r.update(ctx, r.store.db, id, version, input)
+}
+func (r *CustomerRepository) UpdateAudited(ctx context.Context, id string, version int, input CustomerInput, event AuditEvent) (Customer, error) {
+	return auditedMutation(ctx, r.store, event, func(tx *sql.Tx) (Customer, string, error) {
+		customer, err := r.update(ctx, tx, id, version, input)
+		return customer, id, err
+	})
+}
+func (r *CustomerRepository) update(ctx context.Context, db customerDatabase, id string, version int, input CustomerInput) (Customer, error) {
 	in, err := normalizeCustomer(input)
 	if err != nil {
 		return Customer{}, err
@@ -138,23 +164,35 @@ func (r *CustomerRepository) Update(ctx context.Context, id string, version int,
 		return Customer{}, fieldError("version", "is invalid")
 	}
 	searchKey, sortKey := customerKeys(in)
-	result, err := r.store.db.ExecContext(ctx, `UPDATE customers SET number=?, display_name=?, legal_name=?, contact_name=?, email=?, address_line1=?, address_line2=?, postal_code=?, city=?, country=?, vat_identifier=?, preferred_language=?, currency=?, payment_terms_days=?, notes=?, search_key=?, sort_key=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=?`, in.Number, in.DisplayName, in.LegalName, in.ContactName, in.Email, in.AddressLine1, in.AddressLine2, in.PostalCode, in.City, in.Country, in.VATIdentifier, in.PreferredLanguage, in.Currency, in.PaymentTermsDays, in.Notes, searchKey, sortKey, id, version)
+	result, err := db.ExecContext(ctx, `UPDATE customers SET number=?, display_name=?, legal_name=?, contact_name=?, email=?, address_line1=?, address_line2=?, postal_code=?, city=?, country=?, vat_identifier=?, preferred_language=?, currency=?, payment_terms_days=?, notes=?, search_key=?, sort_key=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=?`, in.Number, in.DisplayName, in.LegalName, in.ContactName, in.Email, in.AddressLine1, in.AddressLine2, in.PostalCode, in.City, in.Country, in.VATIdentifier, in.PreferredLanguage, in.Currency, in.PaymentTermsDays, in.Notes, searchKey, sortKey, id, version)
 	if err != nil {
 		return Customer{}, customerDBError(err)
 	}
 	if n, _ := result.RowsAffected(); n == 0 {
-		return Customer{}, r.updateMissingOrConflict(ctx, id)
+		return Customer{}, r.updateMissingOrConflict(ctx, db, id)
 	}
-	return r.Get(ctx, id)
+	return r.get(ctx, db, id)
 }
 
 func (r *CustomerRepository) Archive(ctx context.Context, id string, version int) (Customer, error) {
-	return r.setActive(ctx, id, version, false)
+	return r.setActive(ctx, r.store.db, id, version, false)
 }
 func (r *CustomerRepository) Restore(ctx context.Context, id string, version int) (Customer, error) {
-	return r.setActive(ctx, id, version, true)
+	return r.setActive(ctx, r.store.db, id, version, true)
 }
-func (r *CustomerRepository) setActive(ctx context.Context, id string, version int, active bool) (Customer, error) {
+func (r *CustomerRepository) ArchiveAudited(ctx context.Context, id string, version int, event AuditEvent) (Customer, error) {
+	return r.setActiveAudited(ctx, id, version, false, event)
+}
+func (r *CustomerRepository) RestoreAudited(ctx context.Context, id string, version int, event AuditEvent) (Customer, error) {
+	return r.setActiveAudited(ctx, id, version, true, event)
+}
+func (r *CustomerRepository) setActiveAudited(ctx context.Context, id string, version int, active bool, event AuditEvent) (Customer, error) {
+	return auditedMutation(ctx, r.store, event, func(tx *sql.Tx) (Customer, string, error) {
+		customer, err := r.setActive(ctx, tx, id, version, active)
+		return customer, id, err
+	})
+}
+func (r *CustomerRepository) setActive(ctx context.Context, db customerDatabase, id string, version int, active bool) (Customer, error) {
 	if version < 1 {
 		return Customer{}, fieldError("version", "is invalid")
 	}
@@ -162,17 +200,17 @@ func (r *CustomerRepository) setActive(ctx context.Context, id string, version i
 	if active {
 		value = 1
 	}
-	result, err := r.store.db.ExecContext(ctx, `UPDATE customers SET active=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=?`, value, id, version)
+	result, err := db.ExecContext(ctx, `UPDATE customers SET active=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=?`, value, id, version)
 	if err != nil {
 		return Customer{}, fmt.Errorf("change customer state: %w", err)
 	}
 	if n, _ := result.RowsAffected(); n == 0 {
-		return Customer{}, r.updateMissingOrConflict(ctx, id)
+		return Customer{}, r.updateMissingOrConflict(ctx, db, id)
 	}
-	return r.Get(ctx, id)
+	return r.get(ctx, db, id)
 }
-func (r *CustomerRepository) updateMissingOrConflict(ctx context.Context, id string) error {
-	_, err := r.Get(ctx, id)
+func (r *CustomerRepository) updateMissingOrConflict(ctx context.Context, db customerDatabase, id string) error {
+	_, err := r.get(ctx, db, id)
 	if errors.Is(err, ErrNotFound) {
 		return ErrNotFound
 	}

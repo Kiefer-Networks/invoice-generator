@@ -53,7 +53,16 @@ type CompanyRepository struct{ store *Store }
 func (s *Store) CompanyRepository() *CompanyRepository { return &CompanyRepository{store: s} }
 
 func (r *CompanyRepository) Get(ctx context.Context) (Company, error) {
-	row := r.store.db.QueryRowContext(ctx, `SELECT id, legal_name, contact_name, email, phone, address_line1, address_line2, postal_code, city, country, tax_number, vat_identifier, bank_name, iban, bic, logo_key, brand_color, default_language, currency, payment_terms_days, invoice_prefix, next_invoice_sequence, standard_notes, created_at, updated_at FROM companies WHERE singleton = 1 AND active = 1`)
+	return r.get(ctx, r.store.db)
+}
+
+type companyDatabase interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func (r *CompanyRepository) get(ctx context.Context, db companyDatabase) (Company, error) {
+	row := db.QueryRowContext(ctx, `SELECT id, legal_name, contact_name, email, phone, address_line1, address_line2, postal_code, city, country, tax_number, vat_identifier, bank_name, iban, bic, logo_key, brand_color, default_language, currency, payment_terms_days, invoice_prefix, next_invoice_sequence, standard_notes, created_at, updated_at FROM companies WHERE singleton = 1 AND active = 1`)
 	company, err := scanCompany(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Company{}, ErrNotFound
@@ -65,6 +74,17 @@ func (r *CompanyRepository) Get(ctx context.Context) (Company, error) {
 }
 
 func (r *CompanyRepository) Save(ctx context.Context, input CompanyInput) (Company, error) {
+	return r.save(ctx, r.store.db, input)
+}
+
+func (r *CompanyRepository) SaveAudited(ctx context.Context, input CompanyInput, event AuditEvent) (Company, error) {
+	return auditedMutation(ctx, r.store, event, func(tx *sql.Tx) (Company, string, error) {
+		company, err := r.save(ctx, tx, input)
+		return company, company.ID, err
+	})
+}
+
+func (r *CompanyRepository) save(ctx context.Context, db companyDatabase, input CompanyInput) (Company, error) {
 	normalized, err := normalizeCompany(input)
 	if err != nil {
 		return Company{}, err
@@ -73,12 +93,12 @@ func (r *CompanyRepository) Save(ctx context.Context, input CompanyInput) (Compa
 	if err != nil {
 		return Company{}, err
 	}
-	_, err = r.store.db.ExecContext(ctx, `INSERT INTO companies (id, singleton, legal_name, contact_name, email, phone, address_line1, address_line2, postal_code, city, country, tax_number, vat_identifier, bank_name, iban, bic, logo_key, brand_color, default_language, currency, payment_terms_days, invoice_prefix, standard_notes) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET legal_name=excluded.legal_name, contact_name=excluded.contact_name, email=excluded.email, phone=excluded.phone, address_line1=excluded.address_line1, address_line2=excluded.address_line2, postal_code=excluded.postal_code, city=excluded.city, country=excluded.country, tax_number=excluded.tax_number, vat_identifier=excluded.vat_identifier, bank_name=excluded.bank_name, iban=excluded.iban, bic=excluded.bic, logo_key=excluded.logo_key, brand_color=excluded.brand_color, default_language=excluded.default_language, currency=excluded.currency, payment_terms_days=excluded.payment_terms_days, invoice_prefix=excluded.invoice_prefix, standard_notes=excluded.standard_notes, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+	_, err = db.ExecContext(ctx, `INSERT INTO companies (id, singleton, legal_name, contact_name, email, phone, address_line1, address_line2, postal_code, city, country, tax_number, vat_identifier, bank_name, iban, bic, logo_key, brand_color, default_language, currency, payment_terms_days, invoice_prefix, standard_notes) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET legal_name=excluded.legal_name, contact_name=excluded.contact_name, email=excluded.email, phone=excluded.phone, address_line1=excluded.address_line1, address_line2=excluded.address_line2, postal_code=excluded.postal_code, city=excluded.city, country=excluded.country, tax_number=excluded.tax_number, vat_identifier=excluded.vat_identifier, bank_name=excluded.bank_name, iban=excluded.iban, bic=excluded.bic, logo_key=excluded.logo_key, brand_color=excluded.brand_color, default_language=excluded.default_language, currency=excluded.currency, payment_terms_days=excluded.payment_terms_days, invoice_prefix=excluded.invoice_prefix, standard_notes=excluded.standard_notes, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
 		id, normalized.LegalName, normalized.ContactName, normalized.Email, normalized.Phone, normalized.AddressLine1, normalized.AddressLine2, normalized.PostalCode, normalized.City, normalized.Country, normalized.TaxNumber, normalized.VATIdentifier, normalized.BankName, normalized.IBAN, normalized.BIC, normalized.LogoKey, normalized.BrandColor, normalized.DefaultLanguage, normalized.Currency, normalized.PaymentTermsDays, normalized.InvoicePrefix, normalized.StandardNotes)
 	if err != nil {
 		return Company{}, fmt.Errorf("save company: %w", err)
 	}
-	return r.Get(ctx)
+	return r.get(ctx, db)
 }
 
 func scanCompany(row *sql.Row) (Company, error) {

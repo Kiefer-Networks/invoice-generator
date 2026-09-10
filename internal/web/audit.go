@@ -19,6 +19,15 @@ func (a *app) audit(r *http.Request, actor, action, targetType, targetID, result
 	return a.store.RecordAudit(r.Context(), store.AuditEvent{ActorSubject: actor, Action: action, TargetType: targetType, TargetID: targetID, Result: result, RequestID: requestID})
 }
 
+func mutationAuditEvent(r *http.Request, action, targetType string) store.AuditEvent {
+	requestID, _ := r.Context().Value(requestIDKey).(string)
+	actor := ""
+	if principal, ok := principalFromContext(r.Context()); ok {
+		actor = principal.Subject
+	}
+	return store.AuditEvent{ActorSubject: actor, Action: action, TargetType: targetType, Result: "success", RequestID: requestID}
+}
+
 func auditResult(err error) string {
 	if err != nil {
 		return "failure"

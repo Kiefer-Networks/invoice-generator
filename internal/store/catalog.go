@@ -42,7 +42,21 @@ type CatalogRepository struct{ store *Store }
 
 func (s *Store) CatalogRepository() *CatalogRepository { return &CatalogRepository{store: s} }
 
+type catalogDatabase interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func (r *CatalogRepository) Create(ctx context.Context, input CatalogInput) (CatalogItem, error) {
+	return r.create(ctx, r.store.db, input)
+}
+func (r *CatalogRepository) CreateAudited(ctx context.Context, input CatalogInput, event AuditEvent) (CatalogItem, error) {
+	return auditedMutation(ctx, r.store, event, func(tx *sql.Tx) (CatalogItem, string, error) {
+		item, err := r.create(ctx, tx, input)
+		return item, item.ID, err
+	})
+}
+func (r *CatalogRepository) create(ctx context.Context, db catalogDatabase, input CatalogInput) (CatalogItem, error) {
 	in, err := normalizeCatalog(input)
 	if err != nil {
 		return CatalogItem{}, err
@@ -52,15 +66,18 @@ func (r *CatalogRepository) Create(ctx context.Context, input CatalogInput) (Cat
 		return CatalogItem{}, err
 	}
 	searchKey, sortKey := catalogKeys(in)
-	_, err = r.store.db.ExecContext(ctx, `INSERT INTO catalog_items (id, number, kind, title, description, unit, net_unit_price_minor, tax_rate_scaled, active, version, search_key, sort_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`, id, in.Number, in.Kind, in.Title, in.Description, in.Unit, in.UnitPriceMinor, in.TaxRateBasisPoints, searchKey, sortKey)
+	_, err = db.ExecContext(ctx, `INSERT INTO catalog_items (id, number, kind, title, description, unit, net_unit_price_minor, tax_rate_scaled, active, version, search_key, sort_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`, id, in.Number, in.Kind, in.Title, in.Description, in.Unit, in.UnitPriceMinor, in.TaxRateBasisPoints, searchKey, sortKey)
 	if err != nil {
 		return CatalogItem{}, catalogDBError(err)
 	}
-	return r.Get(ctx, id)
+	return r.get(ctx, db, id)
 }
 
 func (r *CatalogRepository) Get(ctx context.Context, id string) (CatalogItem, error) {
-	item, err := scanCatalog(r.store.db.QueryRowContext(ctx, `SELECT id, number, kind, title, description, unit, net_unit_price_minor, tax_rate_scaled, active, version, created_at, updated_at FROM catalog_items WHERE id=?`, id))
+	return r.get(ctx, r.store.db, id)
+}
+func (r *CatalogRepository) get(ctx context.Context, db catalogDatabase, id string) (CatalogItem, error) {
+	item, err := scanCatalog(db.QueryRowContext(ctx, `SELECT id, number, kind, title, description, unit, net_unit_price_minor, tax_rate_scaled, active, version, created_at, updated_at FROM catalog_items WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return CatalogItem{}, ErrNotFound
 	}
@@ -128,6 +145,15 @@ func (r *CatalogRepository) List(ctx context.Context, options CatalogListOptions
 }
 
 func (r *CatalogRepository) Update(ctx context.Context, id string, version int, input CatalogInput) (CatalogItem, error) {
+	return r.update(ctx, r.store.db, id, version, input)
+}
+func (r *CatalogRepository) UpdateAudited(ctx context.Context, id string, version int, input CatalogInput, event AuditEvent) (CatalogItem, error) {
+	return auditedMutation(ctx, r.store, event, func(tx *sql.Tx) (CatalogItem, string, error) {
+		item, err := r.update(ctx, tx, id, version, input)
+		return item, id, err
+	})
+}
+func (r *CatalogRepository) update(ctx context.Context, db catalogDatabase, id string, version int, input CatalogInput) (CatalogItem, error) {
 	in, err := normalizeCatalog(input)
 	if err != nil {
 		return CatalogItem{}, err
@@ -136,22 +162,34 @@ func (r *CatalogRepository) Update(ctx context.Context, id string, version int, 
 		return CatalogItem{}, fieldError("version", "is invalid")
 	}
 	searchKey, sortKey := catalogKeys(in)
-	result, err := r.store.db.ExecContext(ctx, `UPDATE catalog_items SET number=?, kind=?, title=?, description=?, unit=?, net_unit_price_minor=?, tax_rate_scaled=?, search_key=?, sort_key=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=?`, in.Number, in.Kind, in.Title, in.Description, in.Unit, in.UnitPriceMinor, in.TaxRateBasisPoints, searchKey, sortKey, id, version)
+	result, err := db.ExecContext(ctx, `UPDATE catalog_items SET number=?, kind=?, title=?, description=?, unit=?, net_unit_price_minor=?, tax_rate_scaled=?, search_key=?, sort_key=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=?`, in.Number, in.Kind, in.Title, in.Description, in.Unit, in.UnitPriceMinor, in.TaxRateBasisPoints, searchKey, sortKey, id, version)
 	if err != nil {
 		return CatalogItem{}, catalogDBError(err)
 	}
 	if n, _ := result.RowsAffected(); n == 0 {
-		return CatalogItem{}, r.updateMissingOrConflict(ctx, id)
+		return CatalogItem{}, r.updateMissingOrConflict(ctx, db, id)
 	}
-	return r.Get(ctx, id)
+	return r.get(ctx, db, id)
 }
 func (r *CatalogRepository) Archive(ctx context.Context, id string, version int) (CatalogItem, error) {
-	return r.setActive(ctx, id, version, false)
+	return r.setActive(ctx, r.store.db, id, version, false)
 }
 func (r *CatalogRepository) Restore(ctx context.Context, id string, version int) (CatalogItem, error) {
-	return r.setActive(ctx, id, version, true)
+	return r.setActive(ctx, r.store.db, id, version, true)
 }
-func (r *CatalogRepository) setActive(ctx context.Context, id string, version int, active bool) (CatalogItem, error) {
+func (r *CatalogRepository) ArchiveAudited(ctx context.Context, id string, version int, event AuditEvent) (CatalogItem, error) {
+	return r.setActiveAudited(ctx, id, version, false, event)
+}
+func (r *CatalogRepository) RestoreAudited(ctx context.Context, id string, version int, event AuditEvent) (CatalogItem, error) {
+	return r.setActiveAudited(ctx, id, version, true, event)
+}
+func (r *CatalogRepository) setActiveAudited(ctx context.Context, id string, version int, active bool, event AuditEvent) (CatalogItem, error) {
+	return auditedMutation(ctx, r.store, event, func(tx *sql.Tx) (CatalogItem, string, error) {
+		item, err := r.setActive(ctx, tx, id, version, active)
+		return item, id, err
+	})
+}
+func (r *CatalogRepository) setActive(ctx context.Context, db catalogDatabase, id string, version int, active bool) (CatalogItem, error) {
 	if version < 1 {
 		return CatalogItem{}, fieldError("version", "is invalid")
 	}
@@ -159,17 +197,17 @@ func (r *CatalogRepository) setActive(ctx context.Context, id string, version in
 	if active {
 		value = 1
 	}
-	result, err := r.store.db.ExecContext(ctx, `UPDATE catalog_items SET active=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=?`, value, id, version)
+	result, err := db.ExecContext(ctx, `UPDATE catalog_items SET active=?, version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND version=?`, value, id, version)
 	if err != nil {
 		return CatalogItem{}, fmt.Errorf("change catalog state: %w", err)
 	}
 	if n, _ := result.RowsAffected(); n == 0 {
-		return CatalogItem{}, r.updateMissingOrConflict(ctx, id)
+		return CatalogItem{}, r.updateMissingOrConflict(ctx, db, id)
 	}
-	return r.Get(ctx, id)
+	return r.get(ctx, db, id)
 }
-func (r *CatalogRepository) updateMissingOrConflict(ctx context.Context, id string) error {
-	_, err := r.Get(ctx, id)
+func (r *CatalogRepository) updateMissingOrConflict(ctx context.Context, db catalogDatabase, id string) error {
+	_, err := r.get(ctx, db, id)
 	if errors.Is(err, ErrNotFound) {
 		return ErrNotFound
 	}
