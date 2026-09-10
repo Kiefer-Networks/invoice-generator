@@ -6,6 +6,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	htmltemplate "html/template"
 	"math"
 	"os"
 	"os/exec"
@@ -15,9 +16,9 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
-
 	"github.com/kiefer-networks/invoice-generator/internal/config"
 	"github.com/kiefer-networks/invoice-generator/internal/locale"
 )
@@ -37,6 +38,12 @@ const chromeTimeout = 60 * time.Second
 
 // TplData holds pre-formatted values for the HTML template.
 type TplData struct {
+	ServiceDate, DocumentKind, CorrectionOf, CorrectionOfNumber string
+	CustDisplayName, CustContact, CustEmail, CustVATID          string
+	// Currency and TaxGroups allow integer-domain document adapters to retain
+	// exact preformatted totals, including invoices with multiple VAT rates.
+	Currency  string
+	TaxGroups []TplTaxGroup
 	Lang      string
 	Color     string
 	ColorDark string
@@ -45,6 +52,7 @@ type TplData struct {
 	LogoPath  string
 
 	// Company
+	CompanyTaxNumber string
 	CompanyName      string
 	CompanyAddr      string   // single-line (Street, ZIP City), for the footer's address column
 	CompanyAddrLines []string // Street / ZIP City / Country, for the "from" block
@@ -92,12 +100,15 @@ type TplData struct {
 
 // TplRow is a single line item for the HTML template.
 type TplRow struct {
-	Desc  string
-	Det   string
-	Qty   string
-	Price string
-	Amt   string
+	Unit, Discount, TaxRate string
+	Desc                    string
+	Det                     string
+	Qty                     string
+	Price                   string
+	Amt                     string
 }
+
+type TplTaxGroup struct{ Rate, Net, Tax, Gross string }
 
 // PrepareTplData converts Config into pre-formatted template data for the
 // given document type (invoice or quote).
@@ -119,6 +130,9 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 	// equivalents. The template only ever reads lb.DueDate/DueDate, so
 	// substituting these values is enough — no template changes needed.
 	title := lb.InvoiceTitle
+	if cfg.Invoice.Kind == "correction" {
+		title = "Correction invoice"
+	}
 	dueDateValue := cfg.Invoice.DueDate
 	if docType == config.DocQuote {
 		title = lb.QuoteTitle
@@ -229,12 +243,14 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 		CompanyPhone:     cfg.Company.Phone,
 		TaxID:            taxID,
 
+		ServiceDate: cfg.Invoice.ServiceDate, DocumentKind: cfg.Invoice.Kind, CorrectionOf: cfg.Invoice.CorrectionOf, CorrectionOfNumber: cfg.Invoice.CorrectionOfNumber,
 		InvNumber:   fmt.Sprintf("%v", cfg.Invoice.Number),
 		InvDate:     loc.FormatDate(cfg.Invoice.Date),
 		DueDate:     loc.FormatDate(dueDateValue),
 		Status:      cfg.Invoice.Status,
 		StatusClass: statusClass,
 
+		CustDisplayName: cfg.Customer.DisplayName, CustEmail: cfg.Customer.Email,
 		CustName:  cfg.Customer.Name,
 		CustLines: custLines,
 		Rows:      rows,
@@ -284,14 +300,14 @@ func HTML(cfg *config.Config, loc *locale.Locale, docType config.DocType, tmplPa
 // Priority: 1) explicit path, 2) template.html next to config, 3) embedded default.
 func loadTemplateSrc(tmplPath, configDir string) (string, error) {
 	if tmplPath != "" {
-		data, err := os.ReadFile(tmplPath)
+		data, err := os.ReadFile(tmplPath) // #nosec G304 -- Explicit administrator-selected CLI template; server FromSnapshot uses only the embedded template.
 		if err != nil {
 			return "", fmt.Errorf("template not found: %s", tmplPath)
 		}
 		return string(data), nil
 	}
 	local := filepath.Join(configDir, "template.html")
-	if data, err := os.ReadFile(local); err == nil {
+	if data, err := os.ReadFile(local); err == nil { // #nosec G304 -- Fixed template.html beside administrator-selected CLI configuration; server rendering does not call this helper.
 		return string(data), nil
 	}
 	return defaultTemplateHTML, nil
@@ -302,8 +318,8 @@ func loadTemplateSrc(tmplPath, configDir string) (string, error) {
 // per-OS installation locations (Linux, macOS, Windows).
 func FindChrome() string {
 	if p := os.Getenv("INVOICE_CHROME"); p != "" {
-		if _, err := os.Stat(p); err == nil {
-			return p
+		if executable, err := exec.LookPath(p); err == nil {
+			return executable
 		}
 	}
 
@@ -349,8 +365,8 @@ func FindChrome() string {
 		}
 	}
 	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p
+		if executable, err := exec.LookPath(p); err == nil {
+			return executable
 		}
 	}
 	return ""
@@ -451,6 +467,14 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 		return err
 	}
 
+	return printHTML(context.Background(), chrome, html, footerHTML, outputPath)
+}
+
+func printHTML(parent context.Context, chrome, html, footerHTML, outputPath string) error {
+	return printHTMLWithPolicy(parent, chrome, html, footerHTML, outputPath, false)
+}
+
+func printHTMLWithPolicy(parent context.Context, chrome, html, footerHTML, outputPath string, confined bool) error {
 	// Write HTML to temp file
 	tmpFile, err := os.CreateTemp("", "invoice-*.html")
 	if err != nil {
@@ -488,7 +512,7 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 		allocOpts = append(allocOpts, chromedp.NoSandbox)
 	}
 
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), allocOpts...)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(parent, allocOpts...)
 	defer cancelAlloc()
 	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
 	defer cancelBrowser()
@@ -521,6 +545,11 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 		paperHeightIn = 297.0 / mmPerInch
 	)
 
+	if confined {
+		if err := chromedp.Run(ctx, network.Enable(), network.SetBlockedURLs().WithURLPatterns(snapshotNetworkPatterns())); err != nil {
+			return err
+		}
+	}
 	var pdfBytes []byte
 	err = chromedp.Run(ctx,
 		chromedp.Navigate("file://"+filepath.ToSlash(tmpPath)),
@@ -556,4 +585,39 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 		return fmt.Errorf("could not write PDF: %w", err)
 	}
 	return nil
+}
+
+// SnapshotHTML uses contextual escaping for database-sourced values. Web output
+// uses the embedded authoritative layout; it never loads adjacent custom files.
+func SnapshotHTML(data *TplData) (string, error) {
+	t, e := htmltemplate.New("invoice").Parse(defaultTemplateHTML)
+	if e != nil {
+		return "", e
+	}
+	var b strings.Builder
+	e = t.Execute(&b, data)
+	return b.String(), e
+}
+func FromSnapshot(ctx context.Context, data *TplData, path string) error {
+	chrome := FindChrome()
+	if chrome == "" {
+		return fmt.Errorf("required Chrome renderer unavailable")
+	}
+	body, e := SnapshotHTML(data)
+	if e != nil {
+		return e
+	}
+	footer, e := htmltemplate.New("footer").Parse(footerTemplateSrc)
+	if e != nil {
+		return e
+	}
+	var b strings.Builder
+	if e = footer.Execute(&b, data); e != nil {
+		return e
+	}
+	return printHTMLWithPolicy(ctx, chrome, body, b.String(), path, true)
+}
+
+func snapshotNetworkPatterns() []*network.BlockPattern {
+	return []*network.BlockPattern{{URLPattern: "http://*/*", Block: true}, {URLPattern: "https://*/*", Block: true}, {URLPattern: "ws://*/*", Block: true}, {URLPattern: "wss://*/*", Block: true}, {URLPattern: "ftp://*/*", Block: true}, {URLPattern: "http://*:*/*", Block: true}, {URLPattern: "https://*:*/*", Block: true}, {URLPattern: "ws://*:*/*", Block: true}, {URLPattern: "wss://*:*/*", Block: true}, {URLPattern: "ftp://*:*/*", Block: true}}
 }

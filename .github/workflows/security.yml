@@ -6,71 +6,178 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Weekly scan even without code changes, to catch newly disclosed CVEs.
     - cron: "17 4 * * 1"
   workflow_dispatch: {}
-
+  workflow_call: {}
 permissions:
   contents: read
-
+concurrency:
+  group: security-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+defaults:
+  run:
+    shell: bash
 jobs:
-  codeql:
-    name: CodeQL
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
+  workflow-policy:
+    name: Workflow, pin and container policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: github/codeql-action/init@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          languages: go
-      - uses: github/codeql-action/autobuild@v4
-      - uses: github/codeql-action/analyze@v4
-
-  gitleaks:
-    name: Secret scan (gitleaks)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: |
+          go test ./internal/cipolicy -count=1
+          python3 scripts/test-scrub-artifact.py
+          bash scripts/check-actions-pinned.sh
+          bash scripts/check-container-security.sh
+          bash scripts/install-ci-tool.sh actionlint
+          bash scripts/install-ci-tool.sh zizmor
+      - run: actionlint -shellcheck=''
+      - run: zizmor --offline --pedantic .github/workflows
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
-      # Run the open-source gitleaks CLI directly rather than
-      # gitleaks/gitleaks-action, which now requires a paid
-      # GITLEAKS_LICENSE for organization-owned repositories.
-      - name: Install gitleaks
-        env:
-          GITLEAKS_VERSION: "8.30.1"
-          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+      - run: bash scripts/install-ci-tool.sh gitleaks
+      - run: gitleaks git --redact --exit-code 1 .
+  dependencies:
+    name: Vulnerabilities, SBOM and license inventory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          govulncheck ./...
+          bash scripts/install-ci-tool.sh trivy
+          bash scripts/install-ci-tool.sh syft
+      - run: trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --exit-code 1 .
+      - name: Inventory and scrub
         run: |
-          curl -sSL -o gitleaks.tar.gz \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
-          tar -xzf gitleaks.tar.gz gitleaks
-      - name: Scan for secrets
-        run: ./gitleaks detect --source . --redact -v
-
+          mkdir -p .ci-private artifacts
+          syft dir:. -o spdx-json=.ci-private/sbom.json
+          syft dir:. -o syft-json=.ci-private/licenses.json
+          python3 scripts/scrub-artifact.py .ci-private/sbom.json artifacts/sbom.spdx.json
+          python3 scripts/scrub-artifact.py .ci-private/licenses.json artifacts/licenses.json
+      - name: Upload scrubbed evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-inventory-${{ github.run_attempt }}
+          path: artifacts/
+          retention-days: 7
+          if-no-files-found: error
   dependency-review:
     name: Dependency review
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/dependency-review-action@v5
-
-  govulncheck:
-    name: govulncheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: "1.26.x"
-          cache: true
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - run: govulncheck ./...
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Detect dependency graph support
+        id: dependency-graph
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          mkdir -p .ci-private
+          status=$(curl --silent --show-error --output .ci-private/dependency-graph.json --write-out '%{http_code}' \
+            --proto '=https' --tlsv1.2 \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$REPOSITORY/dependency-graph/sbom")
+          case "$status" in
+            200) echo 'enabled=true' >> "$GITHUB_OUTPUT" ;;
+            404)
+              echo 'enabled=false' >> "$GITHUB_OUTPUT"
+              echo '::notice::GitHub Dependency Graph is disabled; verified the complete locked module set instead.'
+              ;;
+            *)
+              cat .ci-private/dependency-graph.json
+              exit 1
+              ;;
+          esac
+      - name: Review pull request changes
+        if: github.event_name == 'pull_request' && steps.dependency-graph.outputs.enabled == 'true'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          comment-summary-in-pr: never
+          fail-on-severity: high
+      - name: Verify locked modules
+        if: github.event_name != 'pull_request' || steps.dependency-graph.outputs.enabled != 'true'
+        run: |
+          test -s go.sum
+          go mod verify
+          go list -m all >/dev/null
+          git diff --exit-code -- go.mod go.sum
+  codeql-analysis:
+    name: CodeQL analysis without write credentials
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: go
+          build-mode: manual
+      - run: go build ./...
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          upload: false
+          output: .ci-private/codeql
+      - name: Reject CodeQL security findings
+        run: |
+          python3 scripts/check-codeql.py .ci-private/codeql
+  freshness:
+    name: Scheduled dependency freshness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Verify current application and runtime pins
+        run: |
+          bash scripts/check-deps-fresh.sh
+          python3 scripts/check-runtime-fresh.py
+  required:
+    name: Security required
+    if: always()
+    needs: [workflow-policy, secrets, dependencies, dependency-review, codeql-analysis, freshness]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'length == 6 and all(.[]; .result == "success")' <<< "$RESULTS"

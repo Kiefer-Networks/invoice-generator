@@ -1,0 +1,213 @@
+# Task 4 report: Company profile and customer CRUD
+
+## Scope delivered
+
+- Added the company singleton repository with normalized profile data and stable validation errors.
+- Added customer creation, retrieval, search, cursor pagination, optimistic updates, archive, and restore.
+- Added authenticated company and customer HTTP routes, forms, HTMX detail swaps, and the Blue Split View master-detail UI.
+- Extended the local asset manifest after updating the form and focus styles.
+
+## TDD evidence
+
+### Repository RED
+
+Command:
+
+```text
+go test ./internal/store -run 'TestCompany|TestCustomer' -v
+```
+
+Result: failed as intended before implementation. The compiler reported missing `CustomerInput`, `Store.CustomerRepository`, `CompanyInput`, `Store.CompanyRepository`, and `IsValidationError` symbols.
+
+### Repository GREEN
+
+Command:
+
+```text
+go test ./internal/store -run 'TestCompany|TestCustomer' -v
+```
+
+Result: passed all company and customer repository tests. Coverage includes singleton upsert; opaque customer IDs; normalized fields; duplicate numbers; deterministic escaped search and cursor paging; optimistic conflicts; and archive/restore while retaining an invoice reference.
+
+### HTTP RED
+
+Command:
+
+```text
+go test ./internal/web -run 'TestCompany|TestCustomer' -v
+```
+
+Result: failed as intended before route implementation. The company profile, customer list, and customer mutation tests received `404 page not found` from the absent routes. The existing CSRF/auth denial test continued to pass.
+
+### HTTP GREEN
+
+Command:
+
+```text
+go test ./internal/web -run 'TestCompany|TestCustomer' -v
+```
+
+Result: passed company profile and customer HTTP tests. Coverage includes list/detail/create/edit, archive/restore labeled forms, HTMX retargeting, CSRF and authentication denial, invalid and oversized input preservation, duplicate numbers, and stale-version conflicts.
+
+## Implementation notes
+
+- Repositories select and scan explicit columns and use only parameterized SQL.
+- Customer search escapes `%`, `_`, and the selected `!` escape character; page size is capped at 100 and ordering is by normalized display name, number, and ID.
+- Updates, archive, and restore include `WHERE id = ? AND version = ?` and increment the version in the same statement.
+- Domain-facing repository errors are stable: validation, duplicate, not-found, and optimistic-conflict errors are mapped without returning SQLite constraint text to handlers.
+- State-changing web requests remain under the existing session, form content-type, and CSRF middleware. Full-page mutations use Post/Redirect/Get; HTMX mutations return a retargeted detail fragment.
+- Customer archive and restore retain the database record and invoice foreign-key reference.
+
+## Changed files
+
+- `internal/store/company.go`, `internal/store/company_test.go`
+- `internal/store/customer.go`, `internal/store/customer_test.go`
+- `internal/web/company.go`, `internal/web/company_test.go`
+- `internal/web/customers.go`, `internal/web/customers_test.go`
+- `internal/web/server.go`
+- `internal/web/templates/layout.html`, `company.html`, `customers.html`, `customer_detail.html`, `customer_form.html`
+- `internal/web/static/app.css`
+- `internal/web/testdata/asset-manifest.json`
+
+## Verification
+
+Passed:
+
+```text
+go test ./internal/store ./internal/web -run 'Company|Customer' -v
+go test ./...
+go vet ./...
+git diff --check
+```
+
+The requested race command was attempted:
+
+```text
+go test ./internal/store ./internal/web -race -run 'Company|Customer' -v
+```
+
+It could not run because this Windows Go installation reports `go: -race requires cgo; enable cgo by setting CGO_ENABLED=1`. The non-race equivalent above passed.
+
+## Remaining concern
+
+Race-detector coverage requires a Windows environment with CGO and a compatible C compiler enabled. No application test failures remain in the available environment.
+
+## Fix round 1: review findings
+
+### Root causes and RED evidence
+
+Focused regressions were added before the fixes and run with:
+
+```text
+go test ./internal/store ./internal/web -run 'TestCustomerRepository(UsesUnicode|CapsPage|RejectsUnsupported)|TestHTMXConfiguration|TestCustomerValidationFullPage|TestCompanyValidationPreserves|TestCustomerConflictUses|TestCustomersExpose' -v
+```
+
+The initial run failed as intended:
+
+- Unicode `é` search returned no rows because SQLite `LOWER()` only handled ASCII while cursor values used Go Unicode lowercasing.
+- `ZZ` and `ZZZ` passed the former length-only country and currency validation.
+- HTMX used its default 4xx response policy, which declines swaps; validation responses also lacked a retarget header.
+- Customer validation and conflict handlers unconditionally rendered a form fragment even for ordinary full-page POSTs.
+- Integer parsing returned a generic conversion error, so validation was not associated with `payment_terms_days` and the raw input was lost.
+- No explicit archived-state filter was parsed or rendered, and pagination links discarded both the query and state.
+
+### Fixes
+
+- Added migration 003 with persisted `search_key` and `sort_key` columns. The repository writes them on create/update and safely backfills existing rows using the same Go Unicode normalization before querying. Search and cursor ordering no longer use SQLite `LOWER()`.
+- Enforced explicit ISO 3166-1 alpha-2 and ISO 4217 allow lists for company and customer data.
+- Added a safe HTMX `responseHandling` configuration that swaps 400 and 409 responses while keeping other 4xx/5xx responses unswapped errors. HTMX validation and conflict responses set the correct retarget header.
+- Rendered a complete Blue Split View page for non-HTMX validation and conflict responses; only actual HTMX requests receive fragments.
+- Kept raw submitted form values independently of typed conversion. Both forms now include a focusable validation summary, field-specific message IDs, invalid-state attributes, described-by links, and preserved unsupported language options.
+- Added an accessible active/archived/all customer filter. Archived records visibly identify their state and continue to expose their deliberate restore form. Pagination URLs preserve escaped `q`, `state`, and cursor values.
+
+### Fix-round GREEN and verification
+
+Passed:
+
+```text
+go test ./internal/store ./internal/web -run 'Company|Customer' -v
+go test ./...
+go vet ./...
+git diff --check
+```
+
+The race command was attempted again and remains unavailable only because Go reports:
+
+```text
+go: -race requires cgo; enable cgo by setting CGO_ENABLED=1
+```
+
+New focused coverage includes Unicode accented search and cursor paging, literal `%`, `_`, and `!` search, the 100-record cap, unsupported ISO placeholders, 400/409 HTMX swap configuration and outcomes, full-page versus fragment errors, raw invalid number and unsupported language preservation, archived filtering and restore UI, and escaped query/filter pagination.
+
+## Fix round 2: migration safety and full-page list state
+
+### RED evidence
+
+Before implementation, focused tests failed with these reproducible defects:
+
+- A populated database upgraded through migration 003 retained empty `search_key` and `sort_key` values. The only backfill was the unsafe `List`-time scan and rewrite.
+- Customer detail, new, edit, validation, and conflict full pages rendered a `More customers` link with an empty URL or lost the active search/filter state.
+- The company and customer payment-term controls were `type=number`; browsers can sanitize arbitrary rejected text even though the server returned it in markup.
+
+### Fixes and guard evidence
+
+- Migration 003 now backfills customer keys using the application’s Unicode normalization on the same dedicated SQLite connection, after schema changes and before the migration record is committed. `applyMigration` already begins with `BEGIN IMMEDIATE`, so competing writers cannot update a customer between the key read and write. The runtime repository list path is read-only and no longer performs a table scan or key rewrite.
+- Added a populated-upgrade regression that seeds an accented legacy customer, holds a competing `BEGIN IMMEDIATE` writer lock to prove the migration waits, then verifies the committed migration writes the expected normalized keys. This covers the SQLite coordination boundary rather than relying on a timing-sensitive in-process race.
+- Centralized customer list-view construction. Every full-page detail, new, edit, validation, and conflict renderer now uses it, retaining the current `q`, state filter, cursor, results, and next-page URL.
+- Invalid payment terms now appear in the linked field error text (`received: <submitted value>`), which is browser-visible and accessible through the existing `aria-describedby` association even when a browser sanitizes the number control value.
+
+### Fix-round GREEN and verification
+
+Passed:
+
+```text
+go test ./internal/store ./internal/web -run 'TestCustomerKeyMigrationBackfills|TestFullCustomerRenderers|TestCustomerValidationFullPage|TestCompanyValidationPreserves' -v
+go test ./...
+go vet ./...
+git diff --check
+```
+
+The race command was attempted and remains unavailable only because this Windows toolchain reports:
+
+```text
+go: -race requires cgo; enable cgo by setting CGO_ENABLED=1
+```
+
+## Fix round 3: recorded migration 003 repair
+
+### RED evidence
+
+`TestCustomerKeyRepairMigrationUpgradesRecorded003WithoutChecksumDrift` first seeded a populated database with migrations 001, 002, and 003 already recorded, then inserted accented customers with one stale and one empty normalized-key pair. The initial focused run failed because only three migrations were embedded:
+
+```text
+repair migration is missing
+```
+
+That reproduces the upgrade boundary: a recorded migration 003 is correctly skipped, so changing its former backfill hook cannot repair databases that already applied it.
+
+### Fixes and migration coordination
+
+- Added immutable migration 004, `repair_customer_normalized_keys`; migration 003 SQL and its recorded checksum remain unchanged.
+- Migration 004 executes the existing Unicode key backfill through the same dedicated connection and `BEGIN IMMEDIATE` transaction used by the migration runner. It recomputes every pre-existing customer key before recording version 004, so a concurrent SQLite writer cannot overwrite a newer customer edit with a stale key snapshot.
+- Clean installations safely apply both migrations: 003 adds the key columns and performs its initial backfill; 004 repeats the idempotent repair under the same writer coordination.
+- The runtime `CustomerRepository.List` remains read-only and does not scan or rewrite customer rows.
+
+### GREEN and verification
+
+The regression now proves a database already recorded through 003 repairs empty and stale keys, returns accented search results in deterministic cursor order, preserves the version-003 checksum through migration validation, records exactly four migrations, and remains idempotent on a second `Migrate` call.
+
+Passed:
+
+```text
+go test ./internal/store -run 'TestMigrateUpgradesOriginalSchema|TestCustomerKeyRepairMigrationUpgradesRecorded003WithoutChecksumDrift|TestCustomerKeyMigrationBackfillsPopulatedDatabaseUnderWriterLock' -v
+go test ./internal/store ./internal/web -run 'Company|Customer|Migrate' -v
+go test ./...
+go vet ./...
+git diff --check
+```
+
+The focused and full race command was attempted; it remains unavailable only because this Windows toolchain reports:
+
+```text
+go: -race requires cgo; enable cgo by setting CGO_ENABLED=1
+```

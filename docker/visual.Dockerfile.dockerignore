@@ -1,0 +1,13 @@
+**
+!go.mod
+!go.sum
+!internal/
+!internal/**
+!docker/
+!docker/visual-fonts.conf
+**/*.local.*
+**/*.key
+**/*.pem
+**/*.db*
+**/*.sqlite*
+**/output/**

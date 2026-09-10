@@ -1,0 +1,26 @@
+# Docker Compose 2.24.4+; Linux host networking or Docker Desktop host-network opt-in.
+services:
+  invoice:
+    image: invoice-generator:development
+    build:
+      target: development
+    network_mode: host
+    networks: !reset []
+    ports: !reset []
+    secrets: !reset []
+    environment: !override
+      INVOICE_HEALTH_URL: http://127.0.0.1:8080/health/ready
+    volumes: !override
+      - development:/development
+      - type: bind
+        source: ./internal/web/templates
+        target: /development-assets/templates
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./internal/web/static
+        target: /development-assets/static
+        read_only: true
+        bind: {create_host_path: false}
+volumes:
+  development:

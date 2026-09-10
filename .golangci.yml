@@ -12,19 +12,6 @@ linters:
     - unconvert
     - bodyclose
   settings:
-    gosec:
-      excludes:
-        # G304 (file inclusion via variable) / G703 (path traversal via
-        # taint analysis): this is a local CLI tool — every "variable
-        # path" it opens is a path the same user passed explicitly via a
-        # CLI flag or a config file field. That is the tool's entire
-        # purpose, not an attacker-controlled input.
-        - G304
-        - G703
-        # G204 (subprocess launched with variable): invoking a
-        # user/system-discovered Chrome/Chromium/Edge binary with a
-        # fixed set of flags is this renderer's whole job.
-        - G204
     misspell:
       ignore-rules:
         # "Preventivo" (Italian for "quote/estimate") is a genuine label,
@@ -33,8 +20,10 @@ linters:
   exclusions:
     rules:
       - path: _test\.go
+        text: 'Error return value of .*\.(Close|RemoveAll|Rollback)'
         linters:
-          - gosec
+          # Only cleanup errors may be discarded in test fixtures. Test setup,
+          # database operations, subprocesses and security analysis stay checked.
           - errcheck
 
 formatters:

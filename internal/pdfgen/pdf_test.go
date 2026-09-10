@@ -75,7 +75,7 @@ func TestGenerateProducesNonEmptyPDF(t *testing.T) {
 		t.Errorf("generated PDF suspiciously small: %d bytes", info.Size())
 	}
 
-	data, err := os.ReadFile(out)
+	data, err := os.ReadFile(out) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if err != nil {
 		t.Fatalf("could not read generated PDF: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestGenerateWithZugferdAttachment(t *testing.T) {
 	if err := Generate(cfg, loc, config.DocInvoice, attachOut, fakeXML); err != nil {
 		t.Fatalf("Generate with attachment failed: %v", err)
 	}
-	data, err := os.ReadFile(attachOut)
+	data, err := os.ReadFile(attachOut) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if err != nil {
 		t.Fatalf("could not read generated PDF: %v", err)
 	}

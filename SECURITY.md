@@ -71,3 +71,7 @@ trusted input by design — it is your own invoice data).
   bank/tax data, the API key can be kept out of version control in a
   gitignored `paperless.local.yaml` (see README: "Local Config
   Overrides").
+
+## Web container boundary
+
+Production images use the production build tag to physically exclude local fixtures and development reload. They run as UID/GID 65532 with a read-only root, no capabilities, no-new-privileges, a reviewed seccomp profile and bounded writable mounts. See [container deployment](docs/container-deployment.md) for trust boundaries, encrypted storage, exact proxy configuration, secret file modes, hybrid TLS verification and recovery. Keep the host kernel and runtime pins current; verify the actual Chrome sandbox under this profile before deploying.

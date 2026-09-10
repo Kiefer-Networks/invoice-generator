@@ -11,6 +11,10 @@
 /dist/
 /bin/
 /build/
+/.ci-private/
+/artifacts/
+__pycache__/
+/.invoice-development/
 
 # Coverage / profiling
 *.out

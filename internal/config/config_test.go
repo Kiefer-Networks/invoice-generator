@@ -141,15 +141,15 @@ func TestLoadMissingFile(t *testing.T) {
 func TestLoadTooLarge(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "huge.yaml")
-	f, err := os.Create(path)
+	f, err := os.Create(path) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if err != nil {
 		t.Fatalf("could not create file: %v", err)
 	}
 	if err := f.Truncate(MaxFileSize + 1); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("could not truncate file: %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	if _, err := Load(path); err == nil {
 		t.Error("expected error for oversized config file, got nil")
@@ -176,16 +176,20 @@ func TestLoadWithLocalOverrideAppliesWhenPresent(t *testing.T) {
 	base := filepath.Join(dir, "company.yaml")
 	local := filepath.Join(dir, "company.local.yaml")
 
-	os.WriteFile(base, []byte(`
+	if err := os.WriteFile(base, []byte(`
 company:
   name: "Template GmbH"
 currency: "EUR"
-`), 0600)
-	os.WriteFile(local, []byte(`
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte(`
 company:
   name: "Real Company GmbH"
   vat_id: "DE999999999"
-`), 0600)
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, overridePath, err := LoadWithLocalOverride(base)
 	if err != nil {
@@ -208,9 +212,11 @@ company:
 func TestLoadWithLocalOverrideAbsentIsNoop(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "company.yaml")
-	os.WriteFile(base, []byte(`company:
+	if err := os.WriteFile(base, []byte(`company:
   name: "Only Base GmbH"
-`), 0600)
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, overridePath, err := LoadWithLocalOverride(base)
 	if err != nil {
@@ -282,8 +288,12 @@ func TestFindFontsExplicitConfig(t *testing.T) {
 	dir := t.TempDir()
 	reg := filepath.Join(dir, "regular.ttf")
 	bold := filepath.Join(dir, "bold.ttf")
-	os.WriteFile(reg, []byte("fake"), 0600)
-	os.WriteFile(bold, []byte("fake"), 0600)
+	if err := os.WriteFile(reg, []byte("fake"), 0600); err != nil {
+		t.Error(err)
+	}
+	if err := os.WriteFile(bold, []byte("fake"), 0600); err != nil {
+		t.Error(err)
+	}
 
 	cfg := &Config{Font: FontCfg{Regular: reg, Bold: bold}}
 	gotReg, gotBold, err := FindFonts(cfg)
@@ -306,8 +316,12 @@ func TestFindFontsEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	reg := filepath.Join(dir, "regular.ttf")
 	bold := filepath.Join(dir, "bold.ttf")
-	os.WriteFile(reg, []byte("fake"), 0600)
-	os.WriteFile(bold, []byte("fake"), 0600)
+	if err := os.WriteFile(reg, []byte("fake"), 0600); err != nil {
+		t.Error(err)
+	}
+	if err := os.WriteFile(bold, []byte("fake"), 0600); err != nil {
+		t.Error(err)
+	}
 
 	t.Setenv("INVOICE_FONT_REGULAR", reg)
 	t.Setenv("INVOICE_FONT_BOLD", bold)

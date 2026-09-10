@@ -324,7 +324,9 @@ func TestHTMLInvalidTemplate(t *testing.T) {
 	loc := resolveLoc(cfg)
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "bad.html")
-	os.WriteFile(bad, []byte("{{ .DoesNotExist.Nested }}"), 0600)
+	if err := os.WriteFile(bad, []byte("{{ .DoesNotExist.Nested }}"), 0600); err != nil {
+		t.Error(err)
+	}
 
 	if _, err := HTML(cfg, loc, config.DocInvoice, bad, dir); err == nil {
 		t.Error("expected error for template referencing unknown field")
@@ -333,13 +335,21 @@ func TestHTMLInvalidTemplate(t *testing.T) {
 
 func TestFindChromeEnvOverride(t *testing.T) {
 	dir := t.TempDir()
-	fakeChrome := filepath.Join(dir, "fake-chrome")
-	if err := os.WriteFile(fakeChrome, []byte("#!/bin/sh\n"), 0700); err != nil {
+	fakeChrome := filepath.Join(dir, "fake-chrome.exe")
+	if err := os.WriteFile(fakeChrome, []byte("#!/bin/sh\n"), 0700); err != nil { // #nosec G306 -- Executable fixture requires owner-only 0700; contents are fixed test code.
 		t.Fatalf("setup failed: %v", err)
 	}
 	t.Setenv("INVOICE_CHROME", fakeChrome)
 	if got := FindChrome(); got != fakeChrome {
 		t.Errorf("FindChrome() = %q, want %q (INVOICE_CHROME override)", got, fakeChrome)
+	}
+}
+
+func TestFindChromeEnvOverrideRejectsDirectory(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("INVOICE_CHROME", directory)
+	if got := FindChrome(); got == directory {
+		t.Fatal("browser discovery accepted a directory as an executable")
 	}
 }
 

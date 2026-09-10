@@ -4,16 +4,13 @@
 package paperless
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -35,17 +32,29 @@ const maxConfigFileSize = 1 << 20 // 1 MiB
 // Load reads a Paperless config from a YAML or TOML file, selected by
 // file extension (defaulting to YAML for anything else).
 func Load(path string) (*Config, error) {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("paperless config unavailable")
+	}
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
+		return nil, fmt.Errorf("paperless config must be a protected regular file")
 	}
 	if info.Size() > maxConfigFileSize {
 		return nil, fmt.Errorf("paperless config file too large (%d bytes, max %d)", info.Size(), maxConfigFileSize)
 	}
 
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path) // #nosec G304 -- Local CLI configuration path; protected regular-file type, identity and bounded size are checked.
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("paperless config unavailable")
+	}
+	defer func() { _ = f.Close() }() // Read-only input; read and upload errors are reported separately.
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return nil, fmt.Errorf("paperless config changed")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxConfigFileSize+1))
+	if err != nil || len(data) > maxConfigFileSize {
+		return nil, fmt.Errorf("paperless config unreadable or too large")
 	}
 
 	cfg := &Config{}
@@ -55,7 +64,7 @@ func Load(path string) (*Config, error) {
 		err = yaml.Unmarshal(data, cfg)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("could not parse paperless config: %w", err)
+		return nil, fmt.Errorf("could not parse paperless config")
 	}
 
 	if cfg.URL == "" {
@@ -108,54 +117,35 @@ func LoadWithLocalOverride(path string) (*Config, string, error) {
 	return override, overridePath, nil
 }
 
-// uploadTimeout bounds the whole upload (tag resolution + file upload),
-// so an unreachable or hanging Paperless instance cannot block the CLI
-// indefinitely.
-const uploadTimeout = 60 * time.Second
-
-// Upload sends filePath to the configured Paperless-ngx instance's
-// "post_document" endpoint, resolving (and creating, if necessary) each
-// of cfg.Tags by name, and titling the document with title.
+// Upload preserves the CLI entry point and caller-selected tags. Loopback HTTP
+// remains available for CLI fixtures; every other destination requires HTTPS.
 func Upload(cfg *Config, filePath, title string) error {
-	warnIfInsecure(cfg.URL)
-
-	ctx, cancel := context.WithTimeout(context.Background(), uploadTimeout)
+	if cfg == nil {
+		return ErrRequest
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	client := &http.Client{Timeout: uploadTimeout}
-
-	var tagIDs []int
-	for _, name := range cfg.Tags {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		id, err := resolveOrCreateTag(ctx, client, cfg, name)
-		if err != nil {
-			return fmt.Errorf("could not resolve tag %q: %w", name, err)
-		}
-		tagIDs = append(tagIDs, id)
+	client, e := NewClient(*cfg, nil, true)
+	if e != nil {
+		return e
 	}
-
-	return postDocument(ctx, client, cfg, filePath, title, tagIDs)
-}
-
-// warnIfInsecure flags a plain-HTTP Paperless URL (other than localhost),
-// since the API key travels in a header on every request.
-func warnIfInsecure(rawURL string) {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Scheme != "http" {
-		return
+	tags, e := client.resolveTags(ctx, cfg.Tags)
+	if e != nil {
+		return e
 	}
-	host := u.Hostname()
-	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
-		return
+	f, e := os.Open(filePath) // #nosec G304 -- Local CLI document path selected by the operator; server delivery uses documents.Storage.Open.
+	if e != nil {
+		return ErrRequest
 	}
-	fmt.Fprintln(os.Stderr, "Warning: paperless.url uses plain HTTP — your API key is sent unencrypted on every request. Use HTTPS if at all possible.")
+	defer func() { _ = f.Close() }() // Read-only input; read and upload errors are reported separately.
+	info, e := f.Stat()
+	if e != nil || !info.Mode().IsRegular() {
+		return ErrRequest
+	}
+	_, e = client.submit(ctx, f, info.Size(), title, tags, false)
+	return e
 }
-
-func apiURL(base, p string) string {
-	return strings.TrimRight(base, "/") + p
-}
+func apiURL(base, p string) string { return strings.TrimRight(base, "/") + p }
 
 type tagListResponse struct {
 	Count   int `json:"count"`
@@ -164,136 +154,11 @@ type tagListResponse struct {
 		Name string `json:"name"`
 	} `json:"results"`
 }
-
 type tagCreateResponse struct {
 	ID int `json:"id"`
 }
 
-// resolveOrCreateTag looks up a Paperless tag by exact name (case
-// sensitive match on the API's own case-insensitive filter, then
-// verified client-side) and creates it if it doesn't exist yet.
-func resolveOrCreateTag(ctx context.Context, client *http.Client, cfg *Config, name string) (int, error) {
-	lookupURL := apiURL(cfg.URL, "/api/tags/?name__iexact="+url.QueryEscape(name))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, lookupURL, nil)
-	if err != nil {
-		return 0, err
-	}
-	setAuth(req, cfg.APIKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("contacting Paperless: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("unexpected status %d looking up tag: %s", resp.StatusCode, readErrBody(resp.Body))
-	}
-
-	var list tagListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		return 0, fmt.Errorf("could not parse tag list response: %w", err)
-	}
-	for _, t := range list.Results {
-		if strings.EqualFold(t.Name, name) {
-			return t.ID, nil
-		}
-	}
-
-	// Not found — create it.
-	body, err := json.Marshal(map[string]string{"name": name})
-	if err != nil {
-		return 0, err
-	}
-	createURL := apiURL(cfg.URL, "/api/tags/")
-	req, err = http.NewRequestWithContext(ctx, http.MethodPost, createURL, bytes.NewReader(body))
-	if err != nil {
-		return 0, err
-	}
-	setAuth(req, cfg.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err = client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("contacting Paperless: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusCreated {
-		return 0, fmt.Errorf("unexpected status %d creating tag: %s", resp.StatusCode, readErrBody(resp.Body))
-	}
-	var created tagCreateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		return 0, fmt.Errorf("could not parse tag creation response: %w", err)
-	}
-	return created.ID, nil
-}
-
-// postDocument uploads filePath as multipart/form-data to Paperless-ngx's
-// consumption endpoint.
-func postDocument(ctx context.Context, client *http.Client, cfg *Config, filePath, title string, tagIDs []int) error {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("could not open %s: %w", filePath, err)
-	}
-	defer func() { _ = f.Close() }()
-
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-
-	part, err := mw.CreateFormFile("document", filepath.Base(filePath))
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(part, f); err != nil {
-		return fmt.Errorf("could not read %s: %w", filePath, err)
-	}
-	if title != "" {
-		if err := mw.WriteField("title", title); err != nil {
-			return err
-		}
-	}
-	for _, id := range tagIDs {
-		if err := mw.WriteField("tags", fmt.Sprintf("%d", id)); err != nil {
-			return err
-		}
-	}
-	if err := mw.Close(); err != nil {
-		return err
-	}
-
-	uploadURL := apiURL(cfg.URL, "/api/documents/post_document/")
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, &buf)
-	if err != nil {
-		return err
-	}
-	setAuth(req, cfg.APIKey)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("contacting Paperless: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("paperless upload failed with status %d: %s", resp.StatusCode, readErrBody(resp.Body))
-	}
-	return nil
-}
-
-func setAuth(req *http.Request, apiKey string) {
-	req.Header.Set("Authorization", "Token "+apiKey)
-}
-
-// readErrBody returns a short, safe-to-print snippet of a failed
-// response body for error messages (bounded so a misbehaving server
-// can't dump megabytes into the CLI's stderr).
-func readErrBody(r io.Reader) string {
-	data, _ := io.ReadAll(io.LimitReader(r, 4096))
-	s := strings.TrimSpace(string(data))
-	if s == "" {
-		return "(empty response)"
-	}
-	return s
+func setAuth(req *http.Request, key string) {
+	req.Header.Set("Authorization", "Token "+key)
+	req.Header.Set("Accept", "application/json; version=10")
 }

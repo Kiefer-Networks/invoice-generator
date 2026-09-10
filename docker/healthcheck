@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+# Health payloads are fixed and contain no auth or installation details.
+exec curl --fail --silent --show-error --max-time 4 "${INVOICE_HEALTH_URL:-http://127.0.0.1:8080/health/ready}" --output /dev/null

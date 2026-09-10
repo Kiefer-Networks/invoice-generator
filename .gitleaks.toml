@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public Alpine package signing key SHA-256 fingerprint"
+regexes = [
+  '''207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f''',
+]

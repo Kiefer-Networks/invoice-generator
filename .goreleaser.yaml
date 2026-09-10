@@ -1,9 +1,5 @@
 version: 2
 
-before:
-  hooks:
-    - go mod tidy
-
 builds:
   - id: invoice
     main: ./cmd/invoice
@@ -56,9 +52,6 @@ release:
   footer: |
     ## Verifying this release
 
-    Checksums are listed in `checksums.txt`. Build provenance attestations
-    are published via GitHub's attestation API — verify with:
-
-    ```
-    gh attestation verify <downloaded-file> -o kiefer-networks
-    ```
+    Checksums are listed in `checksums.txt`. This optional local CLI release
+    configuration does not create identity attestations. The protected web
+    container workflow publishes its own SBOM and provenance attestations.

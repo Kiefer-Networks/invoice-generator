@@ -63,6 +63,9 @@ version, along with checksums and build provenance attestations.
 - **Go 1.26+** to build
 - **Chrome, Chromium, or Edge** (optional) — for HTML template rendering. Falls back to the built-in renderer automatically if none is found.
 
+The web server has separate runtime and storage requirements. Its document root
+must be durably provisioned before startup; see [server storage provisioning](docs/server-storage.md).
+
 ## Usage
 
 ```
@@ -381,3 +384,7 @@ checksums and build provenance attestations.
 ## License
 
 MIT
+
+## Container deployment
+
+See [container deployment](docs/container-deployment.md) for hardened production Compose, NetBird/Pocket ID configuration, secret provisioning, recovery, and both local CI entry points.

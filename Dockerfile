@@ -1,0 +1,61 @@
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+FROM --platform=$BUILDPLATFORM golang:1.27.1-trixie@sha256:9baa6b4187bbb98d240372a8a235ac0bb6b5ddd52bba1431dc2f7c0705862728 AS build
+ARG TARGETOS=linux
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum LICENSE ./
+RUN go mod download && go mod verify
+COPY cmd ./cmd
+COPY internal ./internal
+COPY testdata/dev ./testdata/dev
+COPY --chmod=0555 docker/licenses /usr/local/bin/collect-licenses
+RUN /usr/local/bin/collect-licenses
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags=production -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o /out/server ./cmd/server
+
+FROM build AS development-build
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o /out/development ./cmd/server && \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -c -trimpath -o /out/browser.test ./internal/web
+
+FROM build AS visual-build
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go test -tags=visual -c -trimpath -o /out/visual.test ./internal/render
+
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS runtime
+ARG TARGETARCH
+COPY --chmod=0555 docker/install-locked-apks /usr/local/bin/install-locked-apks
+COPY docker/apk-lock.amd64 docker/apk-lock.arm64 /usr/local/share/
+RUN /usr/local/bin/install-locked-apks "$TARGETARCH" && \
+    mkdir -p /data/database /data/documents /backup /config /development && \
+    chown -R 65532:65532 /data /backup /development && chmod 0700 /data /data/database /data/documents /backup /development
+COPY docker/visual-fonts.conf /etc/fonts/local.conf
+RUN fc-cache -f && test "$(fc-match system-ui -f '%{family}')" = 'Liberation Sans'
+ENV HOME=/tmp INVOICE_CHROME=/usr/bin/chromium
+COPY --chmod=0555 docker/entrypoint docker/healthcheck /usr/local/bin/
+COPY LICENSE /usr/share/doc/invoice-generator/LICENSE
+COPY internal/zugferd/schema/LICENSE.txt /usr/share/doc/invoice-generator/CII-LICENSE.txt
+USER 65532:65532
+WORKDIR /data
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=3 CMD ["/usr/local/bin/healthcheck"]
+ENTRYPOINT ["/usr/local/bin/entrypoint"]
+CMD ["serve"]
+
+FROM runtime AS development
+COPY --from=development-build --chmod=0555 /out/development /usr/local/bin/server
+COPY --from=development-build --chmod=0555 /out/browser.test /usr/local/bin/browser.test
+COPY internal/web/templates /development-assets/templates
+COPY internal/web/static /development-assets/static
+CMD ["serve", "-dev", "-dev-root", "/development/state", "-dev-assets", "/development-assets"]
+
+FROM runtime AS visual
+USER root
+RUN apk add --no-cache poppler-utils=25.12.0-r1
+COPY --from=visual-build --chmod=0555 /out/visual.test /usr/local/bin/visual.test
+COPY internal/render/testdata/visual /golden
+ENV INVOICE_VISUAL_RUNTIME=alpine-3.24.1-chromium-152 TZ=UTC LANG=C.UTF-8
+USER 65532:65532
+WORKDIR /tmp
+ENTRYPOINT ["/usr/local/bin/visual.test", "-test.run=^TestVisual", "-test.v", "-test.timeout=3m"]
+
+FROM runtime AS production
+COPY --from=build /out/licenses /usr/share/doc/invoice-generator/licenses
+COPY --from=build --chmod=0555 /out/server /usr/local/bin/server

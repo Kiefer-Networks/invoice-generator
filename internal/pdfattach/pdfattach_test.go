@@ -26,7 +26,7 @@ func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f, err := os.Open(pdfPath)
+	f, err := os.Open(pdfPath) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,14 +82,14 @@ func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
 	if err := api.ExtractAttachmentsFile(pdfPath, extractDir, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	gotXML, err := os.ReadFile(filepath.Join(extractDir, "factur-x.xml"))
+	gotXML, err := os.ReadFile(filepath.Join(extractDir, "factur-x.xml")) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(gotXML) != string(xml) {
 		t.Fatalf("attachment content = %q, want %q", gotXML, xml)
 	}
-	data, err := os.ReadFile(pdfPath)
+	data, err := os.ReadFile(pdfPath) // #nosec G304 -- Fixture file in a test-owned temporary directory; no HTTP or external input selects this path.
 	if err != nil {
 		t.Fatal(err)
 	}

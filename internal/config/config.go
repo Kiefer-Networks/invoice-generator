@@ -61,6 +61,7 @@ type BankInfo struct {
 }
 
 type Customer struct {
+	DisplayName string `yaml:"display_name" toml:"display_name"`
 	Name        string `yaml:"name" toml:"name"`
 	Contact     string `yaml:"contact" toml:"contact"`
 	Email       string `yaml:"email" toml:"email"`
@@ -73,10 +74,14 @@ type Customer struct {
 }
 
 type InvInfo struct {
-	Number  any    `yaml:"number" toml:"number"`
-	Date    string `yaml:"date" toml:"date"`
-	DueDate string `yaml:"due_date" toml:"due_date"`
-	Status  string `yaml:"status" toml:"status"`
+	ServiceDate        string `yaml:"service_date" toml:"service_date"`
+	Kind               string `yaml:"kind" toml:"kind"`
+	CorrectionOf       string `yaml:"correction_of" toml:"correction_of"`
+	CorrectionOfNumber string `yaml:"correction_of_number" toml:"correction_of_number"`
+	Number             any    `yaml:"number" toml:"number"`
+	Date               string `yaml:"date" toml:"date"`
+	DueDate            string `yaml:"due_date" toml:"due_date"`
+	Status             string `yaml:"status" toml:"status"`
 	// ValidUntil is used for quotes ("Angebot") instead of DueDate — the
 	// offer's expiry date rather than a payment due date.
 	ValidUntil string `yaml:"valid_until" toml:"valid_until"`
@@ -163,7 +168,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config file too large (%d bytes, max %d)", info.Size(), MaxFileSize)
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- Local CLI configuration path selected by its operator, never an HTTP request.
 	if err != nil {
 		return nil, err
 	}
@@ -266,8 +271,8 @@ func FindFonts(cfg *Config) (string, string, error) {
 		return cfg.Font.Regular, cfg.Font.Bold, nil
 	}
 	if envReg, envBold := os.Getenv("INVOICE_FONT_REGULAR"), os.Getenv("INVOICE_FONT_BOLD"); envReg != "" && envBold != "" {
-		if _, err := os.Stat(envReg); err == nil {
-			if _, err := os.Stat(envBold); err == nil {
+		if _, err := os.Stat(envReg); err == nil { // #nosec G703 -- Operator-configured font override from process environment, never HTTP input.
+			if _, err := os.Stat(envBold); err == nil { // #nosec G703 -- Operator-configured font override from process environment, never HTTP input.
 				return envReg, envBold, nil
 			}
 		}

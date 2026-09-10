@@ -12,7 +12,7 @@ direct_modules=$(go list -m -f '{{if not .Indirect}}{{.Path}}{{end}}' all | tail
 outdated=""
 while IFS= read -r mod; do
   [ -z "$mod" ] && continue
-  info=$(go list -m -u -f '{{if .Update}}{{.Path}} {{.Version}} -> {{.Update.Version}}{{end}}' "$mod" 2>/dev/null || true)
+  info=$(go list -m -u -f '{{if .Update}}{{.Path}} {{.Version}} -> {{.Update.Version}}{{end}}' "$mod")
   if [ -n "$info" ]; then
     outdated="${outdated}${info}\n"
   fi

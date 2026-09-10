@@ -1,0 +1,1 @@
+[{"Number":"DEV-S001","Kind":"service","Title":"Development consulting","Description":"Synthetic service","Unit":"hour","UnitPriceMinor":10000,"TaxRateBasisPoints":1900},{"Number":"DEV-G001","Kind":"good","Title":"Example equipment","Description":"Synthetic product","Unit":"piece","UnitPriceMinor":2500,"TaxRateBasisPoints":1900}]

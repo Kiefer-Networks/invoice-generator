@@ -11,30 +11,8 @@ import (
 	"time"
 
 	"github.com/kiefer-networks/invoice-generator/internal/config"
+	"github.com/kiefer-networks/invoice-generator/internal/units"
 )
-
-// Unit code mapping: German + English unit names → UN/ECE Recommendation 20 codes
-var unitCodes = map[string]string{
-	"stunde": "HUR", "stunde(n)": "HUR", "stunden": "HUR", "h": "HUR",
-	"stück": "C62", "stueck": "C62", "stk": "C62", "stk.": "C62",
-	"pauschal": "C62", "pausch.": "C62",
-	"tag": "DAY", "tag(e)": "DAY", "tage": "DAY",
-	"monat": "MON", "monat(e)": "MON", "monate": "MON",
-	"kg": "KGM", "km": "KMT", "m": "MTR", "l": "LTR", "liter": "LTR",
-	"m2": "MTK", "m3": "MTQ", "kwh": "KWH",
-	// English
-	"hour": "HUR", "hours": "HUR", "piece": "C62", "pieces": "C62",
-	"day": "DAY", "days": "DAY", "month": "MON", "months": "MON",
-	"flat": "C62", "unit": "C62",
-}
-
-func mapUnitCode(unit string) string {
-	key := strings.ToLower(strings.TrimSpace(unit))
-	if code, ok := unitCodes[key]; ok {
-		return code
-	}
-	return "C62" // default: piece/unit
-}
 
 func convertDate(dateStr string) string {
 	for _, layout := range []string{"02.01.2006", "2.1.2006", "2.01.2006", "02.1.2006", "2006-01-02", "01/02/2006"} {
@@ -116,6 +94,10 @@ func GenerateCII(cfg *config.Config) ([]byte, error) {
 	var lines []lineData
 
 	for i, it := range cfg.Items {
+		code, err := units.Code(it.Unit)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", i+1, err)
+		}
 		total := math.Round(it.Quantity*it.Price*100) / 100
 		lineTotal += total
 		name := it.Description
@@ -126,7 +108,7 @@ func GenerateCII(cfg *config.Config) ([]byte, error) {
 			id:    fmt.Sprintf("%d", i+1),
 			name:  name,
 			qty:   it.Quantity,
-			unit:  mapUnitCode(it.Unit),
+			unit:  code,
 			price: it.Price,
 			total: total,
 			vCode: catCode,

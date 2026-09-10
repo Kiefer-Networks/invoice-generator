@@ -253,7 +253,7 @@ td.r { text-align: right; font-variant-numeric: tabular-nums; }
 
 <!-- One-line sender identity -->
 <div class="letterline">
-    <span class="company-name">{{ .CompanyName }}</span>{{ range .CompanyAddrLines }}, {{ . }}{{ end }}{{ if .TaxID }} &middot; {{ .LB.TaxID }}: {{ .TaxID }}{{ end }}
+    <span class="company-name">{{ .CompanyName }}</span>{{ range .CompanyAddrLines }}, {{ . }}{{ end }}{{ if .TaxID }} &middot; {{ .LB.TaxID }}: {{ .TaxID }}{{ end }}{{ if and .CompanyTaxNumber (ne .CompanyTaxNumber .TaxID) }} &middot; Tax number: {{ .CompanyTaxNumber }}{{ end }}{{ if .CompanyTaxNumber }}{{ if .CompanyContact }}<br>{{ .CompanyContact }}{{ end }}{{ end }}
 </div>
 
 <!-- Bill to (left) + Invoice meta (right) -->
@@ -261,9 +261,15 @@ td.r { text-align: right; font-variant-numeric: tabular-nums; }
     <div class="bill-to">
         <div class="addr-label">{{ .LB.InvoiceTo }}</div>
         <div class="cust-name">{{ .CustName }}</div>
+        {{ if and .CustDisplayName (ne .CustDisplayName .CustName) }}<div>{{ .CustDisplayName }}</div>{{ end }}
+        {{ if .CustContact }}<div>{{ .CustContact }}</div>{{ end }}
+        {{ if .CustEmail }}<div>{{ .CustEmail }}</div>{{ end }}
+        {{ if .CustVATID }}<div>{{ .CustVATID }}</div>{{ end }}
         <div class="cust-details">{{ range .CustLines }}{{ . }}<br>{{ end }}</div>
     </div>
     <div class="meta">
+        {{ if .CorrectionOfNumber }}<div class="m-row"><span class="l">Correction of</span><span class="v">{{ .CorrectionOfNumber }}</span></div>{{ end }}
+        {{ if .ServiceDate }}<div class="m-row"><span class="l">Service / delivery date</span><span class="v">{{ .ServiceDate }}</span></div>{{ end }}
         <div class="m-row"><span class="l">{{ .LB.InvoiceNr }}</span><span class="v">{{ .InvNumber }}</span></div>
         <div class="m-row"><span class="l">{{ .LB.InvoiceDate }}</span><span class="v">{{ .InvDate }}</span></div>
         <div class="m-row"><span class="l">{{ .LB.DueDate }}</span><span class="v">{{ .DueDate }}</span></div>
@@ -286,8 +292,8 @@ td.r { text-align: right; font-variant-numeric: tabular-nums; }
     <tbody>
     {{ range .Rows }}
         <tr>
-            <td><div class="d-title">{{ .Desc }}</div>{{ if .Det }}<div class="d-sub">{{ .Det }}</div>{{ end }}</td>
-            <td class="r">{{ .Qty }}</td>
+            <td><div class="d-title">{{ .Desc }}</div>{{ if .Det }}<div class="d-sub">{{ .Det }}</div>{{ end }}{{ if .TaxRate }}<div class="d-sub">VAT {{ .TaxRate }}% &middot; Discount {{ .Discount }}%</div>{{ end }}</td>
+            <td class="r">{{ .Qty }}{{ if .Unit }} {{ .Unit }}{{ end }}</td>
             <td class="r">{{ .Price }}</td>
             <td class="r amt">{{ .Amt }}</td>
         </tr>
@@ -297,13 +303,16 @@ td.r { text-align: right; font-variant-numeric: tabular-nums; }
 
 <!-- Summary -->
 <div class="sum-area"><div class="sum">
-    {{ if .HasVAT }}
+    {{ if .TaxGroups }}
+    <div class="sr"><span class="l">{{ .LB.Subtotal }}</span><span class="v">{{ .Subtotal }}</span></div>
+    {{ range .TaxGroups }}<div class="sr"><span class="l">VAT {{ .Rate }}% on {{ .Net }}</span><span class="v">{{ .Tax }}</span></div>{{ end }}
+    {{ else if .HasVAT }}
     <div class="sr"><span class="l">{{ .LB.Subtotal }}</span><span class="v">{{ .Subtotal }}</span></div>
     <div class="sr"><span class="l">{{ .TaxLabel }}</span><span class="v">{{ .TaxAmt }}</span></div>
     {{ end }}
     <div class="grand">
         <span class="gl">{{ .LB.Total }}</span>
-        <span class="gv">{{ .GrossTotal }}</span>
+        <span class="gv">{{ .GrossTotal }}{{ if .Currency }} {{ .Currency }}{{ end }}</span>
     </div>
 </div></div>
 
