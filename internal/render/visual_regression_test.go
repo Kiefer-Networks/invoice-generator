@@ -175,7 +175,14 @@ func visualInvoice() *TplData {
 func visualBrowser(t *testing.T) (context.Context, context.CancelFunc) {
 	t.Helper()
 	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
-	opts = append(opts, chromedp.ExecPath(FindChrome()), chromedp.DisableGPU, chromedp.CombinedOutput(os.Stderr))
+	opts = append(opts,
+		chromedp.ExecPath(FindChrome()),
+		chromedp.DisableGPU,
+		chromedp.Flag("disable-gpu-compositing", true),
+		chromedp.Flag("disable-software-rasterizer", true),
+		chromedp.Flag("use-gl", "disabled"),
+		chromedp.CombinedOutput(os.Stderr),
+	)
 	alloc, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
 	ctx, cancelBrowser := chromedp.NewContext(alloc)
 	ctx, cancelTimeout := context.WithTimeout(ctx, time.Minute)

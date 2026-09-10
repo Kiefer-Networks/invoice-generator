@@ -12,8 +12,8 @@ case "$stage" in
   oidc) args=(./internal/auth ./internal/web -race -run 'OIDC|Callback|Authorization|Session|CSRF|Host|Proxy|Security|Download|PKCE|Token|Readiness') ;;
   browser) args=(./internal/web -run '^TestBrowserWorkflow$') ;;
   documents) args=(./internal/documents ./internal/zugferd ./internal/pdfattach ./internal/render ./cmd/invoice -race) ;;
-  numbering) args=(./internal/invoicing ./internal/store -race -run 'Final|Concurrent|Number|Sequence|Idempot|Correction') ;;
-  paperless) args=(./internal/paperless ./internal/jobs ./internal/devmode -race) ;;
+  numbering) args=(./internal/invoicing ./internal/store -race -run '^(Test(Draft|Final|ConcurrentFinal|Number|Sequence|Idempot|Correction|Transitions))') ;;
+  paperless) args=(./internal/paperless ./internal/jobs ./internal/devmode -race -run 'Paperless|Runner') ;;
   container-runtime) args=(./cmd/server -run '^TestContainerRuntime$') ;;
   *) echo "Unknown test stage: $stage" >&2; exit 1 ;;
 esac
