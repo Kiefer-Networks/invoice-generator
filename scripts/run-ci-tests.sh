@@ -8,7 +8,7 @@ case "$stage" in
   all) args=(./... -race -covermode=atomic -coverprofile=.ci-private/coverage.out) ;;
   # Linux/macOS full suites provide race coverage; migration portability must
   # not require a Windows C compiler for the pure-Go SQLite driver.
-  migrations) args=(./internal/store -run 'Migration|Migrate|Schema|SQLite|Recovery|Backup|Restore') ;;
+  migrations) args=(./internal/store -run 'Migration|Migrate|Schema|SQLite|Recovery|Restore') ;;
   oidc) args=(./internal/auth ./internal/web -race -run 'OIDC|Callback|Authorization|Session|CSRF|Host|Proxy|Security|Download|PKCE|Token|Readiness') ;;
   browser) args=(./internal/web -run '^TestBrowserWorkflow$') ;;
   documents) args=(./internal/documents ./internal/zugferd ./internal/pdfattach ./internal/render ./cmd/invoice -race) ;;
