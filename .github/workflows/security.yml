@@ -90,16 +90,46 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Detect dependency graph support
+        id: dependency-graph
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          mkdir -p .ci-private
+          status=$(curl --silent --show-error --output .ci-private/dependency-graph.json --write-out '%{http_code}' \
+            --proto '=https' --tlsv1.2 \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$REPOSITORY/dependency-graph/sbom")
+          case "$status" in
+            200) echo 'enabled=true' >> "$GITHUB_OUTPUT" ;;
+            404)
+              echo 'enabled=false' >> "$GITHUB_OUTPUT"
+              echo '::notice::GitHub Dependency Graph is disabled; verified the complete locked module set instead.'
+              ;;
+            *)
+              cat .ci-private/dependency-graph.json
+              exit 1
+              ;;
+          esac
       - name: Review pull request changes
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.dependency-graph.outputs.enabled == 'true'
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           comment-summary-in-pr: never
           fail-on-severity: high
-      - name: Verify locked modules outside pull requests
-        if: github.event_name != 'pull_request'
+      - name: Verify locked modules
+        if: github.event_name != 'pull_request' || steps.dependency-graph.outputs.enabled != 'true'
         run: |
           test -s go.sum
+          go mod verify
+          go list -m all >/dev/null
           git diff --exit-code -- go.mod go.sum
   codeql-analysis:
     name: CodeQL analysis without write credentials
