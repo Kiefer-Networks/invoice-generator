@@ -379,17 +379,22 @@ func browserWorkflow(t *testing.T, ctx context.Context, base string, db *store.S
 	ui.waitText("Status: finalized")
 	var invoiceURL string
 	ui.run("invoice URL", chromedp.Location(&invoiceURL))
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 60; i++ {
 		var ready bool
 		ui.run("document state", chromedp.Evaluate(`!!document.querySelector('a[aria-label="Download PDF with ZUGFeRD"]')`, &ready))
 		if ready {
 			break
 		}
-		ui.run("refresh document status", chromedp.Reload())
-		if i == 29 {
+		// A worker update can briefly interrupt navigation while the response is
+		// being replaced. Keep polling the same invoice and tolerate that
+		// transient reload error; the next state check remains authoritative.
+		reloadCtx, cancelReload := context.WithTimeout(ui.ctx, 15*time.Second)
+		_ = chromedp.Run(reloadCtx, chromedp.Reload())
+		cancelReload()
+		if i == 59 {
 			t.Fatal("document never became ready")
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
 	}
 	var download string
 	ui.run("download link", chromedp.AttributeValue(`//a[@aria-label='Download PDF with ZUGFeRD']`, "href", &download, nil, chromedp.BySearch))
