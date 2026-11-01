@@ -246,7 +246,7 @@ invoice init template
 invoice -t template.html -company company.yaml invoice.yaml
 ```
 
-The template uses Go's `text/template` syntax with CSS custom properties for easy theming. All data is pre-formatted — the template only needs to place values, no logic required.
+The template uses Go's `html/template` syntax (config values are HTML-escaped automatically) with CSS custom properties for easy theming. All data is pre-formatted — the template only needs to place values, no logic required.
 
 Note: the repeating per-page footer (company/bank details, page numbers) is rendered by Chrome's native print header/footer mechanism, not baked into this template's HTML — it only appears in the generated PDF, not in a `-html` export or when previewing `template.html` directly in a browser.
 

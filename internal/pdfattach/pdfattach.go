@@ -23,8 +23,9 @@ func EmbedFacturX(ctx context.Context, pdfPath string, xml []byte) error {
 	if err != nil {
 		return fmt.Errorf("could not open rendered PDF: %w", err)
 	}
-	// Stateless: the user's global pdfcpu config.yml must neither change the
-	// output nor crash the run (pdfcpu panics on config load errors).
+	// Stateless: otherwise pdfcpu creates and reads a per-user config
+	// directory (writing a config file and a font into $HOME) and panics if
+	// that directory is not writable or its config.yml is invalid.
 	conf := model.NewStatelessConfiguration()
 	conf.Cmd = model.ADDATTACHMENTS
 	pdfCtx, err := api.ReadValidateAndOptimize(ctx, in, conf, nil)
@@ -92,11 +93,12 @@ func EmbedFacturX(ctx context.Context, pdfPath string, xml []byte) error {
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("could not close ZUGFeRD PDF: %w", err)
 	}
-	// os.CreateTemp creates the file with mode 0600, so the replaced PDF
-	// keeps its PII-safe permissions.
 	if err := os.Rename(outPath, pdfPath); err != nil {
 		return fmt.Errorf("could not replace rendered PDF with ZUGFeRD PDF: %w", err)
 	}
 	keep = true
+	if err := os.Chmod(pdfPath, 0600); err != nil {
+		return fmt.Errorf("could not restrict PDF permissions: %w", err)
+	}
 	return nil
 }

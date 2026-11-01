@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+
 	"github.com/kiefer-networks/invoice-generator/internal/config"
 	"github.com/kiefer-networks/invoice-generator/internal/locale"
 )
@@ -63,7 +66,7 @@ func TestGenerateProducesNonEmptyPDF(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "invoice.pdf")
 
-	if err := Generate(cfg, loc, config.DocInvoice, out, nil); err != nil {
+	if err := Generate(cfg, loc, config.DocInvoice, out); err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
 
@@ -95,7 +98,7 @@ func TestGenerateWithThreeLineCompanyAddress(t *testing.T) {
 
 	dir := t.TempDir()
 	out := filepath.Join(dir, "invoice.pdf")
-	if err := Generate(cfg, loc, config.DocInvoice, out, nil); err != nil {
+	if err := Generate(cfg, loc, config.DocInvoice, out); err != nil {
 		t.Fatalf("Generate with 3-line company address failed: %v", err)
 	}
 	info, err := os.Stat(out)
@@ -112,7 +115,7 @@ func TestGenerateQuoteUsesQuoteTitle(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "quote.pdf")
 
-	if err := Generate(cfg, loc, config.DocQuote, out, nil); err != nil {
+	if err := Generate(cfg, loc, config.DocQuote, out); err != nil {
 		t.Fatalf("Generate (quote) failed: %v", err)
 	}
 	if _, err := os.Stat(out); err != nil {
@@ -120,41 +123,19 @@ func TestGenerateQuoteUsesQuoteTitle(t *testing.T) {
 	}
 }
 
-func TestGenerateWithZugferdAttachment(t *testing.T) {
+func TestGenerateSkipsUnsupportedLogo(t *testing.T) {
+	// fpdf cannot draw SVG; the logo must be skipped instead of failing
+	// the whole document (the sample company.yaml ships logo.svg).
 	cfg := sampleConfig()
 	requireFonts(t, cfg)
-	loc := locale.Resolve(cfg.Language, locale.Formatting{})
 	dir := t.TempDir()
-
-	plainOut := filepath.Join(dir, "plain.pdf")
-	if err := Generate(cfg, loc, config.DocInvoice, plainOut, nil); err != nil {
-		t.Fatalf("Generate (no attachment) failed: %v", err)
+	cfg.Logo = filepath.Join(dir, "logo.svg")
+	if err := os.WriteFile(cfg.Logo, []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`), 0600); err != nil {
+		t.Fatal(err)
 	}
-	plainInfo, err := os.Stat(plainOut)
-	if err != nil {
-		t.Fatalf("could not stat plain PDF: %v", err)
-	}
-
-	attachOut := filepath.Join(dir, "attach.pdf")
-	fakeXML := []byte(`<?xml version="1.0"?><root>` + strings.Repeat("x", 500) + `</root>`)
-	if err := Generate(cfg, loc, config.DocInvoice, attachOut, fakeXML); err != nil {
-		t.Fatalf("Generate with attachment failed: %v", err)
-	}
-	data, err := os.ReadFile(attachOut)
-	if err != nil {
-		t.Fatalf("could not read generated PDF: %v", err)
-	}
-	if string(data[:5]) != "%PDF-" {
-		t.Error("output with attachment does not look like a PDF")
-	}
-	// A PDF with an embedded file attachment must be meaningfully larger
-	// than the same document without one, and must declare an embedded
-	// file stream somewhere in its object list.
-	if int64(len(data)) <= plainInfo.Size() {
-		t.Errorf("expected PDF with attachment (%d bytes) to be larger than without (%d bytes)", len(data), plainInfo.Size())
-	}
-	if !contains(data, []byte("EmbeddedFile")) {
-		t.Error("expected PDF to declare an /EmbeddedFile object for the ZUGFeRD attachment")
+	out := filepath.Join(dir, "invoice.pdf")
+	if err := Generate(cfg, locale.Resolve(cfg.Language, locale.Formatting{}), config.DocInvoice, out); err != nil {
+		t.Fatalf("Generate with SVG logo failed: %v", err)
 	}
 }
 
@@ -165,21 +146,32 @@ func TestGenerateMissingFontsErrors(t *testing.T) {
 
 	dir := t.TempDir()
 	out := filepath.Join(dir, "invoice.pdf")
-	if err := Generate(cfg, loc, config.DocInvoice, out, nil); err == nil {
+	if err := Generate(cfg, loc, config.DocInvoice, out); err == nil {
 		t.Error("expected error when configured fonts do not exist")
 	}
 }
 
-func contains(haystack, needle []byte) bool {
-	return len(needle) == 0 || indexOf(haystack, needle) >= 0
-}
-
-func indexOf(haystack, needle []byte) int {
-	n, m := len(haystack), len(needle)
-	for i := 0; i+m <= n; i++ {
-		if string(haystack[i:i+m]) == string(needle) {
-			return i
-		}
+func TestGenerateTallRowBreaksAcrossFewPages(t *testing.T) {
+	cfg := sampleConfig()
+	requireFonts(t, cfg)
+	cfg.Items[0].Details = strings.Repeat("detail line\n", 80)
+	cfg.Notes = strings.Repeat("note line\n", 120)
+	out := filepath.Join(t.TempDir(), "tall.pdf")
+	if err := Generate(cfg, locale.Resolve(cfg.Language, locale.Formatting{}), config.DocInvoice, out); err != nil {
+		t.Fatal(err)
 	}
-	return -1
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	pages, err := api.PageCount(t.Context(), f, model.NewStatelessConfiguration())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 80 detail lines + 120 note lines fit on a handful of pages; the old
+	// absolute positioning produced one page per remaining line (20+).
+	if pages > 6 {
+		t.Errorf("expected at most 6 pages, got %d", pages)
+	}
 }

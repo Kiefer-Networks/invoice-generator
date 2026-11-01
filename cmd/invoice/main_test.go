@@ -18,6 +18,7 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 
+	"github.com/kiefer-networks/invoice-generator/internal/config"
 	"github.com/kiefer-networks/invoice-generator/internal/render"
 )
 
@@ -28,8 +29,6 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(dir)
-
 	name := "invoice-test-bin"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
@@ -40,10 +39,24 @@ func TestMain(m *testing.M) {
 	cmd.Dir = mustGetwd()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		_ = os.RemoveAll(dir)
 		panic("failed to build CLI binary for tests: " + err.Error() + "\n" + string(out))
 	}
 
-	os.Exit(m.Run())
+	// os.Exit skips deferred calls, so clean up explicitly.
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// requireFonts skips tests that render with the built-in renderer when no
+// TTF font is installed. Any other generation failure must fail the test,
+// not hide behind a skip.
+func requireFonts(t *testing.T) {
+	t.Helper()
+	if _, _, err := config.FindFonts(&config.Config{}); err != nil {
+		t.Skipf("no TTF fonts available: %v", err)
+	}
 }
 
 func mustGetwd() string {
@@ -105,6 +118,7 @@ func TestCLIVersion(t *testing.T) {
 }
 
 func TestCLIInitAndGenerateInvoice(t *testing.T) {
+	requireFonts(t)
 	dir := t.TempDir()
 
 	if _, stderr, code := run(t, dir, "init", "company", "--lang", "en"); code != 0 {
@@ -116,7 +130,7 @@ func TestCLIInitAndGenerateInvoice(t *testing.T) {
 
 	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-fpdf", "invoice.yaml")
 	if code != 0 {
-		t.Skipf("generate invoice failed (likely no TTF fonts available in this environment): %s / %s", stdout, stderr)
+		t.Fatalf("generate invoice failed: %s / %s", stdout, stderr)
 	}
 	if !strings.Contains(stdout, "Invoice created") {
 		t.Errorf("unexpected output: %s", stdout)
@@ -133,6 +147,7 @@ func TestCLIInitAndGenerateInvoice(t *testing.T) {
 }
 
 func TestCLIInitAndGenerateQuote(t *testing.T) {
+	requireFonts(t)
 	dir := t.TempDir()
 
 	if _, stderr, code := run(t, dir, "init", "company", "--lang", "en"); code != 0 {
@@ -144,7 +159,7 @@ func TestCLIInitAndGenerateQuote(t *testing.T) {
 
 	stdout, stderr, code := run(t, dir, "quote", "-company", "company.yaml", "-fpdf", "quote.yaml")
 	if code != 0 {
-		t.Skipf("generate quote failed (likely no TTF fonts available in this environment): %s / %s", stdout, stderr)
+		t.Fatalf("generate quote failed: %s / %s", stdout, stderr)
 	}
 	if !strings.Contains(stdout, "Quote created") {
 		t.Errorf("unexpected output: %s", stdout)
@@ -170,6 +185,7 @@ func TestCLIQuoteRejectsZugferd(t *testing.T) {
 }
 
 func TestCLILocalOverrideTakesPrecedence(t *testing.T) {
+	requireFonts(t)
 	dir := t.TempDir()
 	run(t, dir, "init", "company", "--lang", "en")
 	run(t, dir, "init", "invoice", "--lang", "en")
@@ -185,7 +201,7 @@ company:
 
 	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-fpdf", "-html", "invoice.yaml")
 	if code != 0 {
-		t.Skipf("generate invoice failed (likely no TTF fonts available): %s / %s", stdout, stderr)
+		t.Fatalf("generate invoice failed: %s / %s", stdout, stderr)
 	}
 	if !strings.Contains(stdout, "Using local override") {
 		t.Errorf("expected CLI to report using the local override, got: %s", stdout)
@@ -216,6 +232,7 @@ func TestCLIInitPaperless(t *testing.T) {
 }
 
 func TestCLIPaperlessUpload(t *testing.T) {
+	requireFonts(t)
 	dir := t.TempDir()
 	run(t, dir, "init", "company", "--lang", "en")
 	run(t, dir, "init", "invoice", "--lang", "en")
@@ -246,7 +263,7 @@ func TestCLIPaperlessUpload(t *testing.T) {
 
 	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-fpdf", "-paperless", "invoice.yaml")
 	if code != 0 {
-		t.Skipf("generate invoice failed (likely no TTF fonts available): %s / %s", stdout, stderr)
+		t.Fatalf("generate invoice failed: %s / %s", stdout, stderr)
 	}
 	if !uploaded {
 		t.Errorf("expected the generated PDF to be uploaded to the fake Paperless server, stdout=%s stderr=%s", stdout, stderr)
@@ -257,6 +274,7 @@ func TestCLIPaperlessUpload(t *testing.T) {
 }
 
 func TestCLIRejectsPathTraversalInInvoiceNumber(t *testing.T) {
+	requireFonts(t)
 	dir := t.TempDir()
 	run(t, dir, "init", "company", "--lang", "en")
 
@@ -278,7 +296,7 @@ items:
 
 	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-fpdf", "invoice.yaml")
 	if code != 0 {
-		t.Skipf("generate invoice failed (likely no TTF fonts available): %s / %s", stdout, stderr)
+		t.Fatalf("generate invoice failed: %s / %s", stdout, stderr)
 	}
 
 	// The output must stay inside dir — no file should have been written
@@ -290,6 +308,30 @@ items:
 			t.Errorf("path traversal via invoice number escaped the output directory: %s", e.Name())
 		}
 	}
+}
+
+// readFacturXPDF parses the PDF with a stateless pdfcpu configuration, so the
+// test neither reads nor creates the developer's pdfcpu config directory, and
+// asserts that it carries exactly one factur-x.xml attachment.
+func readFacturXPDF(t *testing.T, path string) *model.Context {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	pdfCtx, err := api.ReadAndValidate(t.Context(), f, model.NewStatelessConfiguration())
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachments, err := pdfCtx.ListAttachments(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments) != 1 || attachments[0].FileName != "factur-x.xml" {
+		t.Fatalf("missing Factur-X attachment: %+v", attachments)
+	}
+	return pdfCtx
 }
 
 func TestCLIZugferdKeepsHTMLTemplateRenderer(t *testing.T) {
@@ -311,25 +353,7 @@ func TestCLIZugferdKeepsHTMLTemplateRenderer(t *testing.T) {
 	if !strings.Contains(stdout, "rendered via HTML template + Chrome") {
 		t.Fatalf("expected HTML renderer with ZUGFeRD, got: %s", stdout)
 	}
-	f, err := os.Open(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	attachments, err := api.Attachments(t.Context(), f, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(attachments) != 1 || attachments[0].FileName != "factur-x.xml" {
-		t.Fatalf("missing Factur-X attachment: %+v", attachments)
-	}
-	if _, err := f.Seek(0, 0); err != nil {
-		t.Fatal(err)
-	}
-	pdfCtx, err := api.ReadAndValidate(t.Context(), f, model.NewStatelessConfiguration())
-	if err != nil {
-		t.Fatal(err)
-	}
+	pdfCtx := readFacturXPDF(t, out)
 	catalog, err := pdfCtx.Catalog()
 	if err != nil {
 		t.Fatal(err)
@@ -340,31 +364,65 @@ func TestCLIZugferdKeepsHTMLTemplateRenderer(t *testing.T) {
 	}
 }
 
-func TestCLIZugferdChromeFallbackKeepsXML(t *testing.T) {
-	// Any existing executable that is not Chrome makes the HTML renderer
-	// fail, which must fall back to fpdf without losing the e-invoice.
+func TestCLIChromeFailureIsAnError(t *testing.T) {
+	// An existing executable that is not Chrome makes the browser fail to
+	// start. Only a missing browser may fall back to fpdf; a real Chrome
+	// failure must not silently swap the layout.
 	t.Setenv("INVOICE_CHROME", binPath)
 	dir := t.TempDir()
 	run(t, dir, "init", "company", "--lang", "en")
 	run(t, dir, "init", "invoice", "--lang", "en")
-	out := filepath.Join(dir, "fallback.pdf")
-	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-zugferd", "-o", out, "invoice.yaml")
+	out := filepath.Join(dir, "x.pdf")
+	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-o", out, "invoice.yaml")
+	if code == 0 {
+		t.Fatalf("expected a Chrome failure to be an error: %s / %s", stdout, stderr)
+	}
+	if strings.Contains(stderr, "Falling back to built-in renderer") {
+		t.Fatalf("a failing Chrome must not fall back to fpdf: %s", stderr)
+	}
+}
+
+func TestCLIInitHonorsLangAfterSubcommand(t *testing.T) {
+	dir := t.TempDir()
+	if _, stderr, code := run(t, dir, "init", "company", "--lang", "en"); code != 0 {
+		t.Fatalf("init company failed: %s", stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "company.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `language: "en"`) {
+		t.Error("--lang after the subcommand was ignored")
+	}
+}
+
+func TestCLIFlagsAfterConfigFileAndZugferdWithFpdf(t *testing.T) {
+	requireFonts(t)
+	dir := t.TempDir()
+	run(t, dir, "init", "company", "--lang", "en")
+	run(t, dir, "init", "invoice", "--lang", "en")
+	out := filepath.Join(dir, "x.pdf")
+
+	// Flags after the positional argument, as the help documents.
+	stdout, stderr, code := run(t, dir, "invoice.yaml", "-company", "company.yaml", "-fpdf", "-zugferd", "-o", out)
 	if code != 0 {
-		t.Fatalf("ZUGFeRD generation failed: %s / %s", stdout, stderr)
+		t.Fatalf("generation failed: %s / %s", stdout, stderr)
 	}
-	if !strings.Contains(stderr, "Falling back to built-in renderer") {
-		t.Fatalf("expected the fpdf fallback, got: %s / %s", stdout, stderr)
-	}
-	f, err := os.Open(out)
+	data, err := os.ReadFile(out)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("-o after the config file was ignored: %v", err)
 	}
-	defer f.Close()
-	attachments, err := api.Attachments(t.Context(), f, nil)
-	if err != nil {
-		t.Fatal(err)
+	// The built-in renderer gets the same Factur-X embedding as Chrome.
+	if !strings.Contains(string(data), "AFRelationship") {
+		t.Error("expected Factur-X attachment with /AFRelationship in -fpdf output")
 	}
-	if len(attachments) != 1 || attachments[0].FileName != "factur-x.xml" {
-		t.Fatalf("fallback dropped the Factur-X attachment: %+v", attachments)
+	readFacturXPDF(t, out)
+}
+
+func TestCLIRejectsExtraArguments(t *testing.T) {
+	dir := t.TempDir()
+	_, stderr, code := run(t, dir, "a.yaml", "b.yaml")
+	if code == 0 || !strings.Contains(stderr, "expected one config file") {
+		t.Errorf("expected an error for two config files, got code=%d stderr=%s", code, stderr)
 	}
 }

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -144,17 +145,35 @@ EXAMPLES
 // CLI: Init templates
 // ============================================================
 
+// parseInterspersed parses flags that appear before or after positional
+// arguments and returns the positionals. The help documents
+// "invoice <file> [flags]" and "invoice init company --lang en", but the
+// flag package alone stops at the first positional and silently ignored
+// every flag after it.
+func parseInterspersed(fs *flag.FlagSet, args []string) []string {
+	var positional []string
+	for {
+		_ = fs.Parse(args) // flag.ExitOnError already terminates the process on a parse error
+		args = fs.Args()
+		if len(args) == 0 {
+			return positional
+		}
+		positional = append(positional, args[0])
+		args = args[1:]
+	}
+}
+
 func handleInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	lang := fs.String("lang", "de", "Template language")
-	_ = fs.Parse(args) // flag.ExitOnError already terminates the process on a parse error
+	positional := parseInterspersed(fs, args)
 
-	if fs.NArg() == 0 {
+	if len(positional) != 1 {
 		fmt.Fprintln(os.Stderr, "Usage: invoice init company|invoice|quote|paperless|template [--lang de]")
 		os.Exit(1)
 	}
 
-	switch fs.Arg(0) {
+	switch positional[0] {
 	case "company":
 		writeTemplate("company.yaml", companyTemplate(*lang))
 		ensureGitignoreHasLocalOverridePattern()
@@ -168,7 +187,7 @@ func handleInit(args []string) {
 	case "template":
 		writeTemplate("template.html", render.DefaultTemplate())
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown template: %s (expected: company, invoice, quote, paperless, or template)\n", fs.Arg(0))
+		fmt.Fprintf(os.Stderr, "Unknown template: %s (expected: company, invoice, quote, paperless, or template)\n", positional[0])
 		os.Exit(1)
 	}
 }
@@ -230,10 +249,14 @@ func handleGenerate(docType config.DocType, args []string) {
 	useFpdf := fs.Bool("fpdf", false, "Use built-in renderer (no Chrome)")
 	paperlessFlag := fs.Bool("paperless", false, "Upload the generated PDF to Paperless-ngx")
 	paperlessConfigPath := fs.String("paperless-config", "", "Paperless config file (default: paperless.yaml next to -company, or the document)")
-	_ = fs.Parse(args) // flag.ExitOnError already terminates the process on a parse error
+	positional := parseInterspersed(fs, args)
 
-	if fs.NArg() == 0 {
+	if len(positional) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: specify a config file\nHelp: invoice help")
+		os.Exit(1)
+	}
+	if len(positional) > 1 {
+		fmt.Fprintf(os.Stderr, "Error: expected one config file, got %d arguments: %s\n", len(positional), strings.Join(positional, " "))
 		os.Exit(1)
 	}
 	if *zugferdFlag && docType == config.DocQuote {
@@ -241,7 +264,7 @@ func handleGenerate(docType config.DocType, args []string) {
 		os.Exit(1)
 	}
 
-	configPath, err := filepath.Abs(fs.Arg(0))
+	configPath, err := filepath.Abs(positional[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -251,23 +274,19 @@ func handleGenerate(docType config.DocType, args []string) {
 		os.Exit(1)
 	}
 
-	cfg, _, err := config.LoadWithLocalOverride(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
-	}
-
 	configDir := filepath.Dir(configPath)
 	paperlessSearchDir := configDir
 
-	// Merge company config
+	// Layer the configs key by key: company.yaml, company.local.yaml,
+	// invoice.yaml, invoice.local.yaml — every key a later file sets wins.
+	cfg := &config.Config{}
 	if *companyPath != "" {
 		absP, absErr := filepath.Abs(*companyPath)
 		if absErr != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", absErr)
 			os.Exit(1)
 		}
-		companyCfg, overridePath, companyErr := config.LoadWithLocalOverride(absP)
+		overridePath, companyErr := config.LoadInto(cfg, absP)
 		if companyErr != nil {
 			fmt.Fprintf(os.Stderr, "Error loading company config: %v\n", companyErr)
 			os.Exit(1)
@@ -275,18 +294,20 @@ func handleGenerate(docType config.DocType, args []string) {
 		if overridePath != "" {
 			fmt.Printf("Using local override:  %s\n", overridePath)
 		}
-		config.Merge(cfg, companyCfg)
 		paperlessSearchDir = filepath.Dir(absP)
+	}
+	overridePath, err := config.LoadInto(cfg, configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	if overridePath != "" {
+		fmt.Printf("Using local override:  %s\n", overridePath)
 	}
 
 	// Override language
 	if *lang != "" {
 		cfg.Language = *lang
-	}
-
-	// Resolve relative logo path
-	if cfg.Logo != "" && !filepath.IsAbs(cfg.Logo) {
-		cfg.Logo = filepath.Join(configDir, cfg.Logo)
 	}
 
 	// Defaults
@@ -305,6 +326,16 @@ func handleGenerate(docType config.DocType, args []string) {
 	}
 	if len(cfg.Items) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: at least one position is required")
+		os.Exit(1)
+	}
+	if strings.TrimSpace(string(cfg.Invoice.Number)) == "" {
+		fmt.Fprintln(os.Stderr, "Error: invoice.number is required")
+		os.Exit(1)
+	}
+	if cfg.VAT.Liable && cfg.VAT.Rate <= 0 {
+		// Otherwise the PDF silently shows no VAT while the e-invoice
+		// declares standard-rated VAT at 0% (EN 16931 BR-S-05).
+		fmt.Fprintln(os.Stderr, "Error: vat.rate must be greater than 0 when vat.liable is true (set vat.liable: false for VAT-exempt invoices)")
 		os.Exit(1)
 	}
 
@@ -330,7 +361,7 @@ func handleGenerate(docType config.DocType, args []string) {
 		}
 		created := time.Now().Format("20060102")
 		company := config.SanitizeFilenamePart(cfg.Company.Name)
-		nr := config.SanitizeFilenamePart(fmt.Sprintf("%v", cfg.Invoice.Number))
+		nr := config.SanitizeFilenamePart(string(cfg.Invoice.Number))
 		filename := fmt.Sprintf("%s; %s; %s %s.pdf", created, company, prefix, nr)
 		out = filepath.Join(configDir, filename)
 	}
@@ -355,34 +386,34 @@ func handleGenerate(docType config.DocType, args []string) {
 	// Choose renderer
 	usedFpdf := false
 	if *useFpdf {
-		// Built-in fpdf renderer can embed the attachment while rendering.
-		if err := pdfgen.Generate(cfg, loc, docType, out, zugferdXML); err != nil {
+		if err := pdfgen.Generate(cfg, loc, docType, out); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		usedFpdf = true
 	} else {
-		// HTML template → Chrome → PDF
+		// HTML template → Chrome → PDF. Only a missing browser falls back;
+		// a real Chrome failure must not silently swap the layout.
 		err := render.FromTemplate(cfg, loc, docType, out, *tmplPath, configDir)
-		if err != nil {
-			if strings.Contains(err.Error(), "Chrome") {
-				fmt.Fprintf(os.Stderr, "Note: %v\n", err)
-				fmt.Fprintln(os.Stderr, "Falling back to built-in renderer.")
-				if err := pdfgen.Generate(cfg, loc, docType, out, zugferdXML); err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-					os.Exit(1)
-				}
-				usedFpdf = true
-			} else {
+		if errors.Is(err, render.ErrChromeNotFound) {
+			fmt.Fprintf(os.Stderr, "Note: %v\n", err)
+			fmt.Fprintln(os.Stderr, "Falling back to built-in renderer.")
+			if err := pdfgen.Generate(cfg, loc, docType, out); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
+			usedFpdf = true
+		} else if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
-	// Chrome has already produced the selected HTML/template layout. Add the
-	// electronic invoice afterwards without changing any rendered pages.
-	if *zugferdFlag && !usedFpdf {
+	// Add the electronic invoice to whichever renderer produced the PDF,
+	// without changing any rendered pages. One path for all renderers, so
+	// the fallback can't drop the XML and every output gets the Factur-X
+	// /AF + /AFRelationship entries.
+	if *zugferdFlag {
 		if err := pdfattach.EmbedFacturX(context.Background(), out, zugferdXML); err != nil {
 			fmt.Fprintf(os.Stderr, "Error embedding ZUGFeRD XML: %v\n", err)
 			os.Exit(1)
