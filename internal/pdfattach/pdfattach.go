@@ -3,6 +3,7 @@ package pdfattach
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,27 +15,19 @@ import (
 
 // EmbedFacturX adds xml to pdfPath as the conventional factur-x.xml
 // attachment while preserving the already-rendered PDF pages and layout.
-func EmbedFacturX(pdfPath string, xml []byte) error {
+func EmbedFacturX(ctx context.Context, pdfPath string, xml []byte) error {
 	if len(xml) == 0 {
 		return fmt.Errorf("cannot embed empty Factur-X XML")
-	}
-	tmpDir, err := os.MkdirTemp("", "invoice-factur-x-*")
-	if err != nil {
-		return fmt.Errorf("could not create Factur-X temp directory: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	xmlPath := filepath.Join(tmpDir, "factur-x.xml")
-	if err := os.WriteFile(xmlPath, xml, 0600); err != nil {
-		return fmt.Errorf("could not stage Factur-X XML: %w", err)
 	}
 	in, err := os.Open(pdfPath)
 	if err != nil {
 		return fmt.Errorf("could not open rendered PDF: %w", err)
 	}
-	conf := model.NewDefaultConfiguration()
+	// Stateless: the user's global pdfcpu config.yml must neither change the
+	// output nor crash the run (pdfcpu panics on config load errors).
+	conf := model.NewStatelessConfiguration()
 	conf.Cmd = model.ADDATTACHMENTS
-	ctx, err := api.ReadValidateAndOptimize(in, conf)
+	pdfCtx, err := api.ReadValidateAndOptimize(ctx, in, conf, nil)
 	closeErr := in.Close()
 	if err != nil {
 		return fmt.Errorf("could not read rendered PDF: %w", err)
@@ -42,16 +35,16 @@ func EmbedFacturX(pdfPath string, xml []byte) error {
 	if closeErr != nil {
 		return fmt.Errorf("could not close rendered PDF: %w", closeErr)
 	}
-	if err := ctx.LocateNameTree("EmbeddedFiles", true); err != nil {
+	if err := pdfCtx.LocateNameTree("EmbeddedFiles", true); err != nil {
 		return fmt.Errorf("could not prepare PDF attachments: %w", err)
 	}
 
 	attachment := model.Attachment{
 		Reader: bytes.NewReader(xml),
-		ID:     filepath.Base(xmlPath),
+		ID:     "factur-x.xml",
 		Desc:   "Factur-X / ZUGFeRD e-invoice (CII XML, BASIC profile)",
 	}
-	fileSpec, err := ctx.NewFileSpecDictForAttachment(attachment)
+	fileSpec, err := pdfCtx.NewFileSpecDictForAttachment(ctx, attachment)
 	if err != nil {
 		return fmt.Errorf("could not create Factur-X attachment: %w", err)
 	}
@@ -59,7 +52,7 @@ func EmbedFacturX(pdfPath string, xml []byte) error {
 	if !found {
 		return fmt.Errorf("could not locate Factur-X embedded file stream")
 	}
-	embedded, _, err := ctx.DereferenceStreamDict(embeddedRef)
+	embedded, _, err := pdfCtx.DereferenceStreamDict(embeddedRef)
 	if err != nil {
 		return fmt.Errorf("could not update Factur-X embedded file stream: %w", err)
 	}
@@ -67,15 +60,15 @@ func EmbedFacturX(pdfPath string, xml []byte) error {
 	// Factur-X requires the invoice XML to be an associated alternative
 	// representation of the visible PDF, not merely a generic attachment.
 	fileSpec.InsertName("AFRelationship", "Alternative")
-	ref, err := ctx.IndRefForNewObject(fileSpec)
+	ref, err := pdfCtx.IndRefForNewObject(fileSpec)
 	if err != nil {
 		return fmt.Errorf("could not register Factur-X attachment: %w", err)
 	}
 	nameMap := model.NameMap{attachment.ID: []types.Dict{fileSpec}}
-	if err := ctx.Names["EmbeddedFiles"].Add(ctx.XRefTable, attachment.ID, *ref, nameMap, []string{"F", "UF"}); err != nil {
+	if err := pdfCtx.Names["EmbeddedFiles"].Add(ctx, pdfCtx.XRefTable, attachment.ID, *ref, nameMap, []string{"F", "UF"}); err != nil {
 		return fmt.Errorf("could not index Factur-X attachment: %w", err)
 	}
-	catalog, err := ctx.Catalog()
+	catalog, err := pdfCtx.Catalog()
 	if err != nil {
 		return fmt.Errorf("could not read PDF catalog: %w", err)
 	}
@@ -93,18 +86,17 @@ func EmbedFacturX(pdfPath string, xml []byte) error {
 			_ = os.Remove(outPath)
 		}
 	}()
-	if err := api.Write(ctx, out, conf); err != nil {
+	if err := api.Write(ctx, pdfCtx, out, conf); err != nil {
 		return fmt.Errorf("could not write ZUGFeRD PDF: %w", err)
 	}
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("could not close ZUGFeRD PDF: %w", err)
 	}
+	// os.CreateTemp creates the file with mode 0600, so the replaced PDF
+	// keeps its PII-safe permissions.
 	if err := os.Rename(outPath, pdfPath); err != nil {
 		return fmt.Errorf("could not replace rendered PDF with ZUGFeRD PDF: %w", err)
 	}
 	keep = true
-	if err := os.Chmod(pdfPath, 0600); err != nil {
-		return fmt.Errorf("could not restrict PDF permissions: %w", err)
-	}
 	return nil
 }

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -367,7 +368,7 @@ func handleGenerate(docType config.DocType, args []string) {
 			if strings.Contains(err.Error(), "Chrome") {
 				fmt.Fprintf(os.Stderr, "Note: %v\n", err)
 				fmt.Fprintln(os.Stderr, "Falling back to built-in renderer.")
-				if err := pdfgen.Generate(cfg, loc, docType, out, nil); err != nil {
+				if err := pdfgen.Generate(cfg, loc, docType, out, zugferdXML); err != nil {
 					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 					os.Exit(1)
 				}
@@ -382,7 +383,7 @@ func handleGenerate(docType config.DocType, args []string) {
 	// Chrome has already produced the selected HTML/template layout. Add the
 	// electronic invoice afterwards without changing any rendered pages.
 	if *zugferdFlag && !usedFpdf {
-		if err := pdfattach.EmbedFacturX(out, zugferdXML); err != nil {
+		if err := pdfattach.EmbedFacturX(context.Background(), out, zugferdXML); err != nil {
 			fmt.Fprintf(os.Stderr, "Error embedding ZUGFeRD XML: %v\n", err)
 			os.Exit(1)
 		}

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 
 	"github.com/kiefer-networks/invoice-generator/internal/render"
 )
@@ -315,11 +316,55 @@ func TestCLIZugferdKeepsHTMLTemplateRenderer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	attachments, err := api.Attachments(f, nil)
+	attachments, err := api.Attachments(t.Context(), f, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(attachments) != 1 || attachments[0].FileName != "factur-x.xml" {
 		t.Fatalf("missing Factur-X attachment: %+v", attachments)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	pdfCtx, err := api.ReadAndValidate(t.Context(), f, model.NewStatelessConfiguration())
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := pdfCtx.Catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Chrome 154+ tags PDFs unless told not to, which bloats invoices.
+	if _, tagged := catalog.Find("StructTreeRoot"); tagged {
+		t.Fatal("Chrome output must stay an untagged PDF")
+	}
+}
+
+func TestCLIZugferdChromeFallbackKeepsXML(t *testing.T) {
+	// Any existing executable that is not Chrome makes the HTML renderer
+	// fail, which must fall back to fpdf without losing the e-invoice.
+	t.Setenv("INVOICE_CHROME", binPath)
+	dir := t.TempDir()
+	run(t, dir, "init", "company", "--lang", "en")
+	run(t, dir, "init", "invoice", "--lang", "en")
+	out := filepath.Join(dir, "fallback.pdf")
+	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-zugferd", "-o", out, "invoice.yaml")
+	if code != 0 {
+		t.Fatalf("ZUGFeRD generation failed: %s / %s", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "Falling back to built-in renderer") {
+		t.Fatalf("expected the fpdf fallback, got: %s / %s", stdout, stderr)
+	}
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	attachments, err := api.Attachments(t.Context(), f, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments) != 1 || attachments[0].FileName != "factur-x.xml" {
+		t.Fatalf("fallback dropped the Factur-X attachment: %+v", attachments)
 	}
 }

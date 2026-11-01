@@ -22,7 +22,7 @@ func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
 	}
 
 	xml := []byte(`<?xml version="1.0"?><invoice>2026-0007</invoice>`)
-	if err := EmbedFacturX(pdfPath, xml); err != nil {
+	if err := EmbedFacturX(t.Context(), pdfPath, xml); err != nil {
 		t.Fatal(err)
 	}
 
@@ -31,7 +31,7 @@ func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	attachments, err := api.Attachments(f, nil)
+	attachments, err := api.Attachments(t.Context(), f, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,11 +42,11 @@ func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
 		t.Fatal(err)
 	}
 	conf := model.NewDefaultConfiguration()
-	ctx, err := api.ReadAndValidate(f, conf)
+	ctx, err := api.ReadAndValidate(t.Context(), f, conf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, obj, err := ctx.SearchEmbeddedFilesNameTreeNodeByContent("factur-x.xml")
+	_, obj, err := ctx.SearchEmbeddedFilesNameTreeNodeByContent(t.Context(), "factur-x.xml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
 	if err := os.Mkdir(extractDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := api.ExtractAttachmentsFile(pdfPath, extractDir, nil, nil); err != nil {
+	if err := api.ExtractAttachmentsFile(t.Context(), pdfPath, extractDir, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	gotXML, err := os.ReadFile(filepath.Join(extractDir, "factur-x.xml"))
@@ -99,7 +99,7 @@ func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
 }
 
 func TestEmbedFacturXRejectsEmptyXML(t *testing.T) {
-	if err := EmbedFacturX(filepath.Join(t.TempDir(), "missing.pdf"), nil); err == nil {
+	if err := EmbedFacturX(t.Context(), filepath.Join(t.TempDir(), "missing.pdf"), nil); err == nil {
 		t.Fatal("expected empty XML to be rejected")
 	}
 }

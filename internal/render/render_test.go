@@ -1,6 +1,7 @@
 package render
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -392,5 +393,45 @@ func TestCustomPrintFooterFallsBackAndReportsErrors(t *testing.T) {
 		if _, err := customFooterHTML(data, path, dir); err == nil {
 			t.Fatalf("expected an error for %q", src)
 		}
+	}
+}
+
+func TestCustomPrintFooterEmptyDefinitionSuppressesChromeFooter(t *testing.T) {
+	data := PrepareTplData(sampleConfig(), locale.Get("en"), config.DocInvoice)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "custom.html")
+	if err := os.WriteFile(path, []byte(`<html></html>{{define "footer"}}  {{end}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := customFooterHTML(data, path, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An empty footerTemplate makes Chrome print its default footer,
+	// which contains the local temp file path.
+	if got != "<span></span>" {
+		t.Fatalf("empty footer must become a blank element, got %q", got)
+	}
+}
+
+func TestFileURLEscapesSpecialCharacters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tmp#1?x%41", "invoice.html")
+	got, err := fileURL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Scheme != "file" || u.Fragment != "" || u.RawQuery != "" {
+		t.Fatalf("special characters leaked into URL syntax: %s", got)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.ToSlash(abs); strings.TrimPrefix(u.Path, "/") != strings.TrimPrefix(want, "/") {
+		t.Fatalf("URL path = %q, want %q", u.Path, want)
 	}
 }

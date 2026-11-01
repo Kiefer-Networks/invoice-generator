@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -422,6 +423,11 @@ func customFooterHTML(data *TplData, tmplPath, configDir string) (string, error)
 	if err := tmpl.ExecuteTemplate(&buf, "footer", data); err != nil {
 		return "", fmt.Errorf("footer template execute error: %w", err)
 	}
+	// Chrome drops an empty footer template and prints its own default
+	// footer instead, which shows the temp file's local path.
+	if strings.TrimSpace(buf.String()) == "" {
+		return "<span></span>", nil
+	}
 	return buf.String(), nil
 }
 
@@ -467,9 +473,9 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 		return fmt.Errorf("could not close temp file: %w", err)
 	}
 
-	abs, err := filepath.Abs(outputPath)
+	pageURL, err := fileURL(tmpPath)
 	if err != nil {
-		return fmt.Errorf("could not resolve output path: %w", err)
+		return fmt.Errorf("could not resolve temp file path: %w", err)
 	}
 
 	// Chrome headless → PDF (bounded by chromeTimeout to avoid hangs).
@@ -522,28 +528,25 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 	)
 
 	var pdfBytes []byte
-	err = chromedp.Run(ctx,
-		chromedp.Navigate("file://"+filepath.ToSlash(tmpPath)),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			data, _, err := page.PrintToPDF().
-				WithDisplayHeaderFooter(true).
-				WithHeaderTemplate("<span></span>").
-				WithFooterTemplate(footerHTML).
-				WithPrintBackground(true).
-				WithPaperWidth(paperWidthIn).
-				WithPaperHeight(paperHeightIn).
-				WithMarginTop(marginTopMM / mmPerInch).
-				WithMarginBottom(marginBotMM / mmPerInch).
-				WithMarginLeft(marginLeftMM / mmPerInch).
-				WithMarginRight(marginRightMM / mmPerInch).
-				Do(ctx)
-			if err != nil {
-				return err
-			}
-			pdfBytes = data
-			return nil
-		}),
-	)
+	err = chromedp.Do(ctx, chromedp.Navigate(pageURL))
+	if err == nil {
+		pdfBytes, err = chromedp.Run(ctx, chromedp.PrintToPDF(
+			chromedp.PDFHeaderTemplate("<span></span>"),
+			chromedp.PDFFooterTemplate(footerHTML),
+			chromedp.PDFPrintBackground(),
+			// Chrome 154+ tags PDFs by default when the field is omitted,
+			// which bloats large invoices and can exceed pdfcpu's structure
+			// tree depth limit when embedding ZUGFeRD XML.
+			func(p *page.PrintToPDFParams) { p.GenerateTaggedPDF = new(false) },
+			chromedp.PDFPaper(chromedp.PaperSize{Width: paperWidthIn, Height: paperHeightIn}),
+			chromedp.PDFMargins(
+				marginTopMM/mmPerInch,
+				marginRightMM/mmPerInch,
+				marginBotMM/mmPerInch,
+				marginLeftMM/mmPerInch,
+			),
+		))
+	}
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("rendering PDF via Chrome timed out after %s", chromeTimeout)
@@ -552,8 +555,22 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 	}
 
 	// 0600: the PDF contains customer/company PII and financial data.
-	if err := os.WriteFile(abs, pdfBytes, 0600); err != nil {
+	if err := os.WriteFile(outputPath, pdfBytes, 0600); err != nil {
 		return fmt.Errorf("could not write PDF: %w", err)
 	}
 	return nil
+}
+
+// fileURL turns a local path into an escaped file:// URL, so characters
+// such as '#' or '?' in the temp directory are not read as URL syntax.
+func fileURL(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p // Windows drive path, e.g. C:/Users/...
+	}
+	return (&url.URL{Scheme: "file", Path: p}).String(), nil
 }
