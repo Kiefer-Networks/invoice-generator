@@ -1,0 +1,3 @@
+# Public SHA-256 digest of an Alpine signing key in a since-removed CI
+# policy file, not a secret.
+cd2f981e9d09d0256c2d7c8c6f8f428da33612ed:internal/cipolicy/policy.go:generic-api-key:334
