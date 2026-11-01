@@ -93,12 +93,12 @@ func EmbedFacturX(ctx context.Context, pdfPath string, xml []byte) error {
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("could not close ZUGFeRD PDF: %w", err)
 	}
+	// os.CreateTemp creates the file with mode 0600, so the replaced PDF
+	// keeps owner-only permissions without a chmod that could fail after
+	// the rename on filesystems without Unix modes.
 	if err := os.Rename(outPath, pdfPath); err != nil {
 		return fmt.Errorf("could not replace rendered PDF with ZUGFeRD PDF: %w", err)
 	}
 	keep = true
-	if err := os.Chmod(pdfPath, 0600); err != nil {
-		return fmt.Errorf("could not restrict PDF permissions: %w", err)
-	}
 	return nil
 }

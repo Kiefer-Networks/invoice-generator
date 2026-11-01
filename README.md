@@ -256,7 +256,7 @@ HTML template. It receives the same formatted data as the body (for example,
 prints the footer in a separate context. Templates without this definition
 keep the default footer. This applies to the HTML renderer; `-fpdf` uses
 the built-in PDF layout. `-zugferd` preserves whichever renderer was selected
-and embeds the electronic invoice after HTML/Chrome rendering when needed.
+and embeds the electronic invoice after rendering.
 
 ## Paperless-ngx Upload
 
@@ -304,7 +304,8 @@ This creates:
 
 ZUGFeRD does not change the visual renderer: custom HTML templates continue
 to be used. If Chrome is unavailable, or `-fpdf` is specified, the built-in
-renderer creates the PDF and embeds the same XML directly.
+renderer creates the PDF. Either way the same XML is embedded after rendering.
+The standalone XML is saved only once the PDF was created.
 
 Mandatory in Germany: reception since 2025, sending B2B from 2027–2028.
 

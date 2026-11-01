@@ -1,8 +1,11 @@
 package pdfattach
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -11,16 +14,56 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
+// TestMain points the user config dir at a broken pdfcpu config.yml for the
+// whole test binary. pdfcpu caches its default configuration per process, so
+// only a process-wide setup reliably catches a call that falls back to it:
+// such a call panics on the broken file instead of passing on a cached copy.
+func TestMain(m *testing.M) {
+	os.Exit(runWithBrokenPdfcpuConfig(m))
+}
+
+func runWithBrokenPdfcpuConfig(m *testing.M) int {
+	home, err := os.MkdirTemp("", "pdfattach-home-*")
+	if err != nil {
+		panic(err)
+	}
+	defer func() { _ = os.RemoveAll(home) }()
+	for key, dir := range map[string]string{
+		"HOME":            home,
+		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
+		"AppData":         filepath.Join(home, "AppData"),
+	} {
+		if err := os.Setenv(key, dir); err != nil {
+			panic(err)
+		}
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		panic(err)
+	}
+	pdfcpuDir := filepath.Join(configDir, "pdfcpu")
+	if err := os.MkdirAll(pdfcpuDir, 0700); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(pdfcpuDir, "config.yml"), []byte("validationMode: [broken"), 0600); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	entries, err := os.ReadDir(pdfcpuDir)
+	if err != nil {
+		panic(err)
+	}
+	if len(entries) != 1 {
+		fmt.Fprintf(os.Stderr, "tests wrote into the user's pdfcpu config dir: %v\n", entries)
+		return 1
+	}
+	return code
+}
+
 func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
 	dir := t.TempDir()
 	pdfPath := filepath.Join(dir, "invoice.pdf")
-	pdf := fpdf.New("P", "mm", "A4", "")
-	pdf.AddPage()
-	pdf.SetFont("Arial", "", 12)
-	pdf.Cell(40, 10, "Invoice layout")
-	if err := pdf.OutputFileAndClose(pdfPath); err != nil {
-		t.Fatal(err)
-	}
+	writeTestPDF(t, pdfPath)
 
 	xml := []byte(`<?xml version="1.0"?><invoice>2026-0007</invoice>`)
 	if err := EmbedFacturX(t.Context(), pdfPath, xml); err != nil {
@@ -35,22 +78,22 @@ func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	ctx, err := api.ReadAndValidate(t.Context(), f, conf)
+	pdfCtx, err := api.ReadAndValidate(t.Context(), f, conf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	attachments, err := ctx.ListAttachments(t.Context())
+	attachments, err := pdfCtx.ListAttachments(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(attachments) != 1 || attachments[0].FileName != "factur-x.xml" {
 		t.Fatalf("unexpected attachments: %+v", attachments)
 	}
-	_, obj, err := ctx.SearchEmbeddedFilesNameTreeNodeByContent(t.Context(), "factur-x.xml")
+	_, obj, err := pdfCtx.SearchEmbeddedFilesNameTreeNodeByContent(t.Context(), "factur-x.xml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	fileSpec, err := ctx.DereferenceDict(obj)
+	fileSpec, err := pdfCtx.DereferenceDict(obj)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,14 +104,14 @@ func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
 	if !found {
 		t.Fatal("embedded file stream is missing")
 	}
-	embedded, _, err := ctx.DereferenceStreamDict(embeddedRef)
+	embedded, _, err := pdfCtx.DereferenceStreamDict(embeddedRef)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if subtype := embedded.NameEntry("Subtype"); subtype == nil || *subtype != "text/xml" {
 		t.Fatalf("embedded XML subtype = %v, want text/xml", subtype)
 	}
-	catalog, err := ctx.Catalog()
+	catalog, err := pdfCtx.Catalog()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,12 +139,24 @@ func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
 	if string(data[:5]) != "%PDF-" {
 		t.Fatal("embedding corrupted the PDF")
 	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(pdfPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The replaced PDF holds customer data; os.CreateTemp's 0600 must survive.
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Fatalf("embedded PDF has mode %o, want 600", perm)
+		}
+	}
 }
 
 func writeTestPDF(t *testing.T, path string) {
 	t.Helper()
 	pdf := fpdf.New("P", "mm", "A4", "")
 	pdf.AddPage()
+	pdf.SetFont("Arial", "", 12)
+	pdf.Cell(40, 10, "Invoice layout")
 	if err := pdf.OutputFileAndClose(path); err != nil {
 		t.Fatal(err)
 	}
@@ -117,33 +172,12 @@ func TestEmbedFacturXRejectsEmptyXML(t *testing.T) {
 	}
 }
 
-func TestEmbedFacturXIgnoresUserPdfcpuConfig(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("AppData", filepath.Join(home, "AppData"))
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pdfcpuDir := filepath.Join(configDir, "pdfcpu")
-	if err := os.MkdirAll(pdfcpuDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	// pdfcpu panics when it loads an invalid config.yml.
-	if err := os.WriteFile(filepath.Join(pdfcpuDir, "config.yml"), []byte("validationMode: [broken"), 0600); err != nil {
-		t.Fatal(err)
-	}
+func TestEmbedFacturXHonoursCancelledContext(t *testing.T) {
 	pdfPath := filepath.Join(t.TempDir(), "invoice.pdf")
 	writeTestPDF(t, pdfPath)
-	if err := EmbedFacturX(t.Context(), pdfPath, []byte("<invoice/>")); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := os.ReadDir(pdfcpuDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("EmbedFacturX wrote into the user's pdfcpu config dir: %v", entries)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := EmbedFacturX(ctx, pdfPath, []byte("<invoice/>")); err == nil {
+		t.Fatal("expected a cancelled context to stop embedding")
 	}
 }

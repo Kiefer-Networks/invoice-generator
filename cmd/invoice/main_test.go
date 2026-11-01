@@ -312,7 +312,8 @@ items:
 
 // readFacturXPDF parses the PDF with a stateless pdfcpu configuration, so the
 // test neither reads nor creates the developer's pdfcpu config directory, and
-// asserts that it carries exactly one factur-x.xml attachment.
+// asserts that it carries exactly one factur-x.xml attachment associated as
+// the PDF's Alternative representation.
 func readFacturXPDF(t *testing.T, path string) *model.Context {
 	t.Helper()
 	f, err := os.Open(path)
@@ -330,6 +331,17 @@ func readFacturXPDF(t *testing.T, path string) *model.Context {
 	}
 	if len(attachments) != 1 || attachments[0].FileName != "factur-x.xml" {
 		t.Fatalf("missing Factur-X attachment: %+v", attachments)
+	}
+	_, obj, err := pdfCtx.SearchEmbeddedFilesNameTreeNodeByContent(t.Context(), "factur-x.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileSpec, err := pdfCtx.DereferenceDict(obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel := fileSpec.NameEntry("AFRelationship"); rel == nil || *rel != "Alternative" {
+		t.Fatalf("AFRelationship = %v, want Alternative", rel)
 	}
 	return pdfCtx
 }
@@ -364,21 +376,86 @@ func TestCLIZugferdKeepsHTMLTemplateRenderer(t *testing.T) {
 	}
 }
 
+func TestCLIChromeOutputUsesTheGivenPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows resolves .. lexically, so the path is consistent there")
+	}
+	if render.FindChrome() == "" {
+		t.Skip("Chrome is not available")
+	}
+	dir := t.TempDir()
+	run(t, dir, "init", "company", "--lang", "en")
+	run(t, dir, "init", "invoice", "--lang", "en")
+	// The OS cannot resolve "missing/..", so every later step (embedding,
+	// chmod, upload) fails on this path. Chrome output must not silently
+	// land in a cleaned-up path instead and leave an incomplete PDF.
+	// Not filepath.Join: it would clean the path before the CLI sees it.
+	_, _, code := run(t, dir, "-company", "company.yaml", "-zugferd", "-o", "missing/../x.pdf", "invoice.yaml")
+	if code == 0 {
+		t.Fatal("expected the unresolvable output path to fail")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "x.pdf")); !os.IsNotExist(err) {
+		t.Errorf("Chrome wrote x.pdf to a cleaned path (stat err: %v)", err)
+	}
+}
+
 func TestCLIChromeFailureIsAnError(t *testing.T) {
 	// An existing executable that is not Chrome makes the browser fail to
 	// start. Only a missing browser may fall back to fpdf; a real Chrome
 	// failure must not silently swap the layout.
 	t.Setenv("INVOICE_CHROME", binPath)
 	dir := t.TempDir()
-	run(t, dir, "init", "company", "--lang", "en")
-	run(t, dir, "init", "invoice", "--lang", "en")
+	for _, kind := range []string{"company", "invoice"} {
+		if _, stderr, code := run(t, dir, "init", kind, "--lang", "en"); code != 0 {
+			t.Fatalf("init %s failed: %s", kind, stderr)
+		}
+	}
 	out := filepath.Join(dir, "x.pdf")
-	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-o", out, "invoice.yaml")
-	if code == 0 {
-		t.Fatalf("expected a Chrome failure to be an error: %s / %s", stdout, stderr)
+	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-zugferd", "-o", out, "invoice.yaml")
+	if code != 1 || !strings.Contains(stderr, "rendering PDF via Chrome failed") {
+		t.Fatalf("expected exit 1 with the Chrome error, got %d: %s / %s", code, stdout, stderr)
 	}
 	if strings.Contains(stderr, "Falling back to built-in renderer") {
 		t.Fatalf("a failing Chrome must not fall back to fpdf: %s", stderr)
+	}
+	// A failed run must not leave customer data behind.
+	for _, name := range []string{"x.pdf", "x_factur-x.xml"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("failed run left %s behind (stat err: %v)", name, err)
+		}
+	}
+}
+
+func TestCLISidecarsAreOwnerOnlyOnRerun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits")
+	}
+	requireFonts(t)
+	dir := t.TempDir()
+	run(t, dir, "init", "company", "--lang", "en")
+	run(t, dir, "init", "invoice", "--lang", "en")
+	// Files left by an earlier run, or created under a loose umask.
+	sidecars := []string{"x.html", "x_factur-x.xml"}
+	for _, name := range sidecars {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(dir, name), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := filepath.Join(dir, "x.pdf")
+	if stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-fpdf", "-zugferd", "-html", "-o", out, "invoice.yaml"); code != 0 {
+		t.Fatalf("generation failed: %s / %s", stdout, stderr)
+	}
+	for _, name := range sidecars {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("%s has mode %o, want 600: it contains customer data", name, perm)
+		}
 	}
 }
 
@@ -408,14 +485,10 @@ func TestCLIFlagsAfterConfigFileAndZugferdWithFpdf(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("generation failed: %s / %s", stdout, stderr)
 	}
-	data, err := os.ReadFile(out)
-	if err != nil {
+	if _, err := os.Stat(out); err != nil {
 		t.Fatalf("-o after the config file was ignored: %v", err)
 	}
 	// The built-in renderer gets the same Factur-X embedding as Chrome.
-	if !strings.Contains(string(data), "AFRelationship") {
-		t.Error("expected Factur-X attachment with /AFRelationship in -fpdf output")
-	}
 	readFacturXPDF(t, out)
 }
 

@@ -203,9 +203,10 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 	if cfg.Logo != "" {
 		if abs, err := filepath.Abs(cfg.Logo); err == nil {
 			if _, err := os.Stat(abs); err == nil {
-				// fileURL percent-encodes the path, so it cannot break out
-				// of the src attribute.
-				logoPath = template.URL(fileURL(abs)) //nolint:gosec // G203: escaped above
+				// template.URL only lifts html/template's scheme filter; the
+				// attribute is still escaped. Safe: fileURL always builds a
+				// file: URL from a local path.
+				logoPath = template.URL(fileURL(abs)) //nolint:gosec // G203: fixed file: scheme
 			}
 		}
 	}
@@ -507,11 +508,6 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 		return err
 	}
 
-	abs, err := filepath.Abs(outputPath)
-	if err != nil {
-		return fmt.Errorf("could not resolve output path: %w", err)
-	}
-
 	// Chrome headless → PDF (bounded by chromeTimeout to avoid hangs).
 	// chromedp's exec allocator creates and cleans up its own isolated
 	// temporary user-data-dir, so concurrent/parallel runs never share
@@ -592,7 +588,7 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 	}
 
 	// 0600: the PDF contains customer/company PII and financial data.
-	if err := os.WriteFile(abs, pdfBytes, 0600); err != nil {
+	if err := os.WriteFile(outputPath, pdfBytes, 0600); err != nil {
 		return fmt.Errorf("could not write PDF: %w", err)
 	}
 	return nil

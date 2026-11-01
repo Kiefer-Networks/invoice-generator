@@ -374,13 +374,6 @@ func handleGenerate(docType config.DocType, args []string) {
 			fmt.Fprintf(os.Stderr, "Error generating ZUGFeRD XML: %v\n", err)
 			os.Exit(1)
 		}
-		xmlPath := strings.TrimSuffix(out, filepath.Ext(out)) + "_factur-x.xml"
-		// 0600: this XML contains customer/company PII and financial data.
-		if writeErr := os.WriteFile(xmlPath, zugferdXML, 0600); writeErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not save XML: %v\n", writeErr)
-		} else {
-			fmt.Printf("ZUGFeRD XML:      %s\n", xmlPath)
-		}
 	}
 
 	// Choose renderer
@@ -418,6 +411,14 @@ func handleGenerate(docType config.DocType, args []string) {
 			fmt.Fprintf(os.Stderr, "Error embedding ZUGFeRD XML: %v\n", err)
 			os.Exit(1)
 		}
+		// Saved only after the PDF succeeded, so a failed run leaves no
+		// orphaned copy of the customer data behind.
+		xmlPath := strings.TrimSuffix(out, filepath.Ext(out)) + "_factur-x.xml"
+		if err := writePrivate(xmlPath, zugferdXML); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not save XML: %v\n", err)
+		} else {
+			fmt.Printf("ZUGFeRD XML:      %s\n", xmlPath)
+		}
 	}
 
 	// Optionally save HTML
@@ -427,8 +428,7 @@ func handleGenerate(docType config.DocType, args []string) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not render HTML: %v\n", err)
 		} else {
-			// 0600: rendered HTML contains customer/company PII and financial data.
-			if err := os.WriteFile(htmlPath, []byte(html), 0600); err != nil {
+			if err := writePrivate(htmlPath, []byte(html)); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not save HTML: %v\n", err)
 			} else {
 				fmt.Printf("HTML saved:       %s\n", htmlPath)
@@ -503,4 +503,16 @@ func main() {
 	default:
 		handleGenerate(config.DocInvoice, os.Args[1:])
 	}
+}
+
+// writePrivate writes a file that contains customer/company PII and
+// financial data with owner-only permissions. os.WriteFile keeps the mode
+// of an existing file, so the chmod also tightens a file left by an
+// earlier run. Best-effort like the PDF's chmod: a no-op on Windows/NTFS.
+func writePrivate(path string, data []byte) error {
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return err
+	}
+	_ = os.Chmod(path, 0600)
+	return nil
 }
