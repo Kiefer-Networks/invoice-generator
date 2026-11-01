@@ -406,6 +406,31 @@ func TestFindChromeEnvOverride(t *testing.T) {
 	}
 }
 
+func TestWriteTempHTMLReturnsAbsolutePathForRelativeTMPDIR(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir("tmp", 0700); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(key, "tmp")
+	}
+
+	path, err := writeTempHTML("<p>x</p>")
+	if err != nil {
+		t.Fatalf("writeTempHTML: %v", err)
+	}
+	if !filepath.IsAbs(path) {
+		t.Fatalf("path %q is not absolute", path)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading temp file: %v", err)
+	}
+	if string(got) != "<p>x</p>" {
+		t.Errorf("temp file content = %q", got)
+	}
+}
+
 func TestFindChromeEnvOverrideIgnoredWhenMissing(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	t.Setenv("INVOICE_CHROME", missing)

@@ -280,6 +280,31 @@ func fileURL(abs string) string {
 	return (&url.URL{Scheme: "file", Path: p}).String()
 }
 
+// writeTempHTML writes html to a new temp file and returns its absolute
+// path. A relative TMPDIR makes os.CreateTemp return a relative name,
+// which fileURL would turn into a root-anchored URL Chrome cannot open.
+// The path is returned even on a write error so the caller can remove it.
+func writeTempHTML(html string) (string, error) {
+	tmpFile, err := os.CreateTemp("", "invoice-*.html")
+	if err != nil {
+		return "", fmt.Errorf("could not create temp file: %w", err)
+	}
+	tmpPath, err := filepath.Abs(tmpFile.Name())
+	if err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
+		return "", fmt.Errorf("could not resolve temp file path: %w", err)
+	}
+	if _, err := tmpFile.WriteString(html); err != nil {
+		_ = tmpFile.Close()
+		return tmpPath, fmt.Errorf("could not write temp file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return tmpPath, fmt.Errorf("could not close temp file: %w", err)
+	}
+	return tmpPath, nil
+}
+
 // HTML renders the invoice (or quote) as an HTML string.
 func HTML(cfg *config.Config, loc *locale.Locale, docType config.DocType, tmplPath string, configDir string) (string, error) {
 	src, err := loadTemplateSrc(tmplPath, configDir)
@@ -474,20 +499,12 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 		return err
 	}
 
-	// Write HTML to temp file
-	tmpFile, err := os.CreateTemp("", "invoice-*.html")
+	tmpPath, err := writeTempHTML(html)
+	if tmpPath != "" {
+		defer func() { _ = os.Remove(tmpPath) }()
+	}
 	if err != nil {
-		return fmt.Errorf("could not create temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	if _, err := tmpFile.WriteString(html); err != nil {
-		_ = tmpFile.Close()
 		return err
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("could not close temp file: %w", err)
 	}
 
 	abs, err := filepath.Abs(outputPath)
