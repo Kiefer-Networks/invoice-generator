@@ -380,10 +380,21 @@ func ParseDate(input string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unknown date format: %s", input)
 }
 
+// ParseDate parses input in this locale's own date format first, then in
+// the generic formats. Without the locale format first, a French/Spanish/
+// Italian/Portuguese "05/03/2026" (5 March) matched the US layout and was
+// read as 3 May.
+func (l *Locale) ParseDate(input string) (time.Time, error) {
+	if t, err := time.Parse(l.DateFormat, strings.TrimSpace(input)); err == nil {
+		return t, nil
+	}
+	return ParseDate(input)
+}
+
 // FormatDate parses and reformats a date string. Unparseable input is
 // returned unchanged so that malformed dates don't crash rendering.
 func (l *Locale) FormatDate(input string) string {
-	t, err := ParseDate(input)
+	t, err := l.ParseDate(input)
 	if err != nil {
 		return input
 	}

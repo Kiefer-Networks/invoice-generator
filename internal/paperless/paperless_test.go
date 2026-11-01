@@ -267,3 +267,51 @@ func TestUploadFailsOnServerError(t *testing.T) {
 		t.Error("expected error on server 500, got nil")
 	}
 }
+
+func TestLoadWithLocalOverrideKeyOnly(t *testing.T) {
+	// The documented setup: the tracked file has no secret, the gitignored
+	// local file holds nothing but the API key.
+	dir := t.TempDir()
+	base := writeTemp(t, dir, "paperless.yaml", "url: \"https://p.example.com\"\ntags:\n  - \"Invoices\"\n")
+	writeTemp(t, dir, "paperless.local.yaml", "api_key: \"real-key\"\n")
+
+	cfg, overridePath, err := LoadWithLocalOverride(base)
+	if err != nil {
+		t.Fatalf("LoadWithLocalOverride failed: %v", err)
+	}
+	if overridePath == "" || cfg.URL != "https://p.example.com" || cfg.APIKey != "real-key" || len(cfg.Tags) != 1 {
+		t.Errorf("unexpected merged config %+v (override %q)", cfg, overridePath)
+	}
+
+	// The merged result is still validated.
+	os.Remove(filepath.Join(dir, "paperless.local.yaml"))
+	if _, _, err := LoadWithLocalOverride(base); err == nil || !strings.Contains(err.Error(), "api_key") {
+		t.Errorf("expected missing api_key error, got %v", err)
+	}
+}
+
+func TestUploadTagCreateTransportErrorDoesNotPanic(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tags/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(tagListResponse{Count: 0})
+			return
+		}
+		// Drop the connection on tag creation: client.Do returns an error
+		// and a nil response.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("hijacking not supported")
+		}
+		conn, _, _ := hj.Hijack()
+		_ = conn.Close()
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	docPath := writeTemp(t, t.TempDir(), "invoice.pdf", "%PDF-fake")
+	cfg := &Config{URL: server.URL, APIKey: "k", Tags: []string{"New"}}
+	if err := Upload(cfg, docPath, "t"); err == nil {
+		t.Error("expected an error when tag creation fails")
+	}
+}

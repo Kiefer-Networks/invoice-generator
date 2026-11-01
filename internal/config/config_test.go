@@ -224,30 +224,98 @@ func TestLoadWithLocalOverrideAbsentIsNoop(t *testing.T) {
 	}
 }
 
-func TestMergeFillsOnlyEmptyFields(t *testing.T) {
-	cfg := &Config{
-		Customer: Customer{Name: "Client"},
-		Currency: "USD", // already set — must not be overwritten
-	}
-	company := &Config{
-		Company:  Company{Name: "Company GmbH"},
-		Currency: "EUR",
-		Language: "en",
-		VAT:      VATConfig{Liable: true, Rate: 19},
-	}
-	Merge(cfg, company)
+func TestLoadWithLocalOverrideMergesPerKey(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "company.yaml")
+	os.WriteFile(base, []byte(`
+company:
+  name: "Template GmbH"
+  address: "Sample Street 1"
+  bank:
+    iban: "DE00 SAMPLE"
+    bic: "SAMPLEBIC"
+vat:
+  liable: true
+  rate: 19
+`), 0600)
+	// Only the secret bank data and the small-business VAT status — no
+	// company.name — must still be applied, key by key.
+	os.WriteFile(filepath.Join(dir, "company.local.yaml"), []byte(`
+company:
+  bank:
+    iban: "DE99 REAL"
+vat:
+  liable: false
+`), 0600)
 
-	if cfg.Company.Name != "Company GmbH" {
-		t.Errorf("expected company merged in, got %+v", cfg.Company)
+	cfg, _, err := LoadWithLocalOverride(base)
+	if err != nil {
+		t.Fatalf("LoadWithLocalOverride failed: %v", err)
 	}
-	if cfg.Currency != "USD" {
-		t.Errorf("existing currency must not be overwritten, got %q", cfg.Currency)
+	if cfg.Company.Bank.IBAN != "DE99 REAL" {
+		t.Errorf("override IBAN must win, got %q", cfg.Company.Bank.IBAN)
 	}
-	if cfg.Language != "en" {
-		t.Errorf("expected language merged in, got %q", cfg.Language)
+	if cfg.Company.Bank.BIC != "SAMPLEBIC" || cfg.Company.Address != "Sample Street 1" || cfg.Company.Name != "Template GmbH" {
+		t.Errorf("keys the override leaves out must keep base values, got %+v", cfg.Company)
 	}
-	if !cfg.VAT.Liable || cfg.VAT.Rate != 19 {
-		t.Errorf("expected VAT merged in, got %+v", cfg.VAT)
+	if cfg.VAT.Liable {
+		t.Errorf("explicit liable: false must override base, got %+v", cfg.VAT)
+	}
+}
+
+func TestLoadIntoLayersCompanyThenInvoice(t *testing.T) {
+	dir := t.TempDir()
+	company := filepath.Join(dir, "co", "company.yaml")
+	invoice := filepath.Join(dir, "inv", "invoice.yaml")
+	os.MkdirAll(filepath.Dir(company), 0700)
+	os.MkdirAll(filepath.Dir(invoice), 0700)
+	os.WriteFile(company, []byte("logo: \"logo.png\"\ncurrency: EUR\nvat:\n  liable: true\n  rate: 19\n"), 0600)
+	os.WriteFile(invoice, []byte("currency: USD\nvat:\n  liable: false\ninvoice:\n  number: 0042\n"), 0600)
+
+	cfg := &Config{}
+	if _, err := LoadInto(cfg, company); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadInto(cfg, invoice); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Currency != "USD" || cfg.VAT.Liable {
+		t.Errorf("invoice keys must win over company keys, got currency=%q vat=%+v", cfg.Currency, cfg.VAT)
+	}
+	if want := filepath.Join(dir, "co", "logo.png"); cfg.Logo != want {
+		t.Errorf("relative logo must resolve against the company file's directory: got %q, want %q", cfg.Logo, want)
+	}
+	if cfg.Invoice.Number != "0042" {
+		t.Errorf("invoice number must be kept literally, got %q", cfg.Invoice.Number)
+	}
+}
+
+func TestDocNumberTOMLInteger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "i.toml")
+	os.WriteFile(path, []byte("[invoice]\nnumber = 12\n"), 0600)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Invoice.Number != "12" {
+		t.Errorf("got %q", cfg.Invoice.Number)
+	}
+}
+
+func TestRoundCentsHalfUp(t *testing.T) {
+	cases := map[float64]float64{1.005: 1.01, 2.675: 2.68, -1.005: -1.01, -0.001: 0}
+	for in, want := range cases {
+		if got := RoundCents(in); got != want {
+			t.Errorf("RoundCents(%v) = %v, want %v", in, got, want)
+		}
+	}
+	if got := LineTotal(Item{Quantity: 0.5, Price: 2.01}); got != 1.01 {
+		t.Errorf("LineTotal(0.5 × 2.01) = %v, want 1.01", got)
+	}
+	// net 3084.50 at 19% is 586.055 → 586.06 (the summed float used to be 3084.4999…)
+	items := []Item{{Quantity: 2, Price: 405.08}, {Quantity: 2, Price: 79.34}, {Quantity: 2, Price: 884.53}, {Quantity: 2, Price: 173.30}}
+	if tax := CalcTax(CalcNet(items), VATConfig{Liable: true, Rate: 19}); tax != 586.06 {
+		t.Errorf("CalcTax = %v, want 586.06", tax)
 	}
 }
 

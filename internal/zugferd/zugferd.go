@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"time"
 
 	"github.com/kiefer-networks/invoice-generator/internal/config"
+	"github.com/kiefer-networks/invoice-generator/internal/locale"
 )
 
 // Unit code mapping: German + English unit names → UN/ECE Recommendation 20 codes
@@ -25,7 +25,9 @@ var unitCodes = map[string]string{
 	// English
 	"hour": "HUR", "hours": "HUR", "piece": "C62", "pieces": "C62",
 	"day": "DAY", "days": "DAY", "month": "MON", "months": "MON",
-	"flat": "C62", "unit": "C62",
+	"flat": "C62", "unit": "C62", "units": "C62",
+	// "(s)" forms used by the `invoice init` templates
+	"hour(s)": "HUR", "day(s)": "DAY", "month(s)": "MON", "piece(s)": "C62", "unit(s)": "C62",
 }
 
 func mapUnitCode(unit string) string {
@@ -36,13 +38,15 @@ func mapUnitCode(unit string) string {
 	return "C62" // default: piece/unit
 }
 
-func convertDate(dateStr string) string {
-	for _, layout := range []string{"02.01.2006", "2.1.2006", "2.01.2006", "02.1.2006", "2006-01-02", "01/02/2006"} {
-		if t, err := time.Parse(layout, dateStr); err == nil {
-			return t.Format("20060102")
-		}
+// convertDate parses dateStr exactly like the PDF renderers do (locale
+// format first) and returns it in CII format 102 (YYYYMMDD). Unparseable
+// input is an error: passing it through would produce an invalid e-invoice.
+func convertDate(loc *locale.Locale, field, dateStr string) (string, error) {
+	t, err := loc.ParseDate(dateStr)
+	if err != nil {
+		return "", fmt.Errorf("invoice.%s: %w", field, err)
 	}
-	return dateStr
+	return t.Format("20060102"), nil
 }
 
 func xmlEsc(s string) string {
@@ -52,7 +56,7 @@ func xmlEsc(s string) string {
 }
 
 func fmtAmount(f float64) string {
-	return fmt.Sprintf("%.2f", math.Round(f*100)/100)
+	return fmt.Sprintf("%.2f", config.RoundCents(f))
 }
 
 func fmtQuantity(f float64) string {
@@ -91,9 +95,24 @@ func GenerateCII(cfg *config.Config) ([]byte, error) {
 		buyerCountry = "DE"
 	}
 
-	invoiceID := fmt.Sprintf("%v", cfg.Invoice.Number)
-	issueDate := convertDate(cfg.Invoice.Date)
-	dueDate := convertDate(cfg.Invoice.DueDate)
+	invoiceID := strings.TrimSpace(string(cfg.Invoice.Number))
+	if invoiceID == "" {
+		return nil, fmt.Errorf("invoice.number is required for an e-invoice")
+	}
+	if cfg.VAT.Liable && cfg.VAT.Rate <= 0 {
+		return nil, fmt.Errorf("vat.rate must be greater than 0 when vat.liable is true (EN 16931 BR-S-05)")
+	}
+	loc := locale.Resolve(cfg.Language, locale.Formatting{DateFmt: cfg.Formatting.DateFmt})
+	issueDate, err := convertDate(loc, "date", cfg.Invoice.Date)
+	if err != nil {
+		return nil, err
+	}
+	dueDate := ""
+	if strings.TrimSpace(cfg.Invoice.DueDate) != "" {
+		if dueDate, err = convertDate(loc, "due_date", cfg.Invoice.DueDate); err != nil {
+			return nil, err
+		}
+	}
 
 	// Tax settings
 	isExempt := !cfg.VAT.Liable
@@ -106,7 +125,6 @@ func GenerateCII(cfg *config.Config) ([]byte, error) {
 		catCode = "E"
 	}
 
-	lineTotal := 0.0
 	type lineData struct {
 		id, name          string
 		qty, price, total float64
@@ -116,8 +134,7 @@ func GenerateCII(cfg *config.Config) ([]byte, error) {
 	var lines []lineData
 
 	for i, it := range cfg.Items {
-		total := math.Round(it.Quantity*it.Price*100) / 100
-		lineTotal += total
+		total := config.LineTotal(it)
 		name := it.Description
 		if it.Details != "" {
 			name += " - " + strings.Join(strings.Fields(strings.TrimSpace(it.Details)), " ")
@@ -134,12 +151,11 @@ func GenerateCII(cfg *config.Config) ([]byte, error) {
 		})
 	}
 
-	taxBasis := math.Round(lineTotal*100) / 100
-	taxAmount := 0.0
-	if !isExempt && vatRate > 0 {
-		taxAmount = math.Round(taxBasis*vatRate) / 100
-	}
-	grandTotal := math.Round((taxBasis+taxAmount)*100) / 100
+	// Same computation as both PDF renderers, so PDF and XML always agree.
+	taxBasis := config.CalcNet(cfg.Items)
+	lineTotal := taxBasis
+	taxAmount := config.CalcTax(taxBasis, cfg.VAT)
+	grandTotal := config.RoundCents(taxBasis + taxAmount)
 
 	// === XML output ===
 	w(`<?xml version="1.0" encoding="UTF-8"?>`)
@@ -296,12 +312,19 @@ func GenerateCII(cfg *config.Config) ([]byte, error) {
 	w("<ram:RateApplicablePercent>%s</ram:RateApplicablePercent>", fmtAmount(vatRate))
 	closeTag("ram:ApplicableTradeTax")
 
-	// Payment terms
-	if dueDate != "" {
+	// Payment terms (BT-20) and due date (BT-9). EN 16931 BR-CO-25 requires
+	// at least one of them when an amount is due.
+	payTerms := strings.Join(strings.Fields(cfg.PayTerms), " ")
+	if dueDate != "" || payTerms != "" {
 		open("ram:SpecifiedTradePaymentTerms")
-		open("ram:DueDateDateTime")
-		w(`<udt:DateTimeString format="102">%s</udt:DateTimeString>`, dueDate)
-		closeTag("ram:DueDateDateTime")
+		if payTerms != "" {
+			w("<ram:Description>%s</ram:Description>", xmlEsc(payTerms))
+		}
+		if dueDate != "" {
+			open("ram:DueDateDateTime")
+			w(`<udt:DateTimeString format="102">%s</udt:DateTimeString>`, dueDate)
+			closeTag("ram:DueDateDateTime")
+		}
 		closeTag("ram:SpecifiedTradePaymentTerms")
 	}
 

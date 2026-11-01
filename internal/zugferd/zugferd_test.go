@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kiefer-networks/invoice-generator/internal/config"
+	"github.com/kiefer-networks/invoice-generator/internal/locale"
 )
 
 func sampleConfig() *config.Config {
@@ -123,6 +124,7 @@ func TestMapUnitCode(t *testing.T) {
 	cases := map[string]string{
 		"Stunde(n)": "HUR",
 		"hours":     "HUR",
+		"hour(s)":   "HUR",
 		"Stück":     "C62",
 		"kg":        "KGM",
 		"unknown-x": "C62", // default fallback
@@ -136,19 +138,35 @@ func TestMapUnitCode(t *testing.T) {
 }
 
 func TestConvertDate(t *testing.T) {
-	cases := map[string]string{
-		"01.03.2026": "20260301",
-		"2026-03-01": "20260301",
-		"03/01/2026": "20260301",
+	cases := []struct{ lang, in, want string }{
+		{"de", "01.03.2026", "20260301"},
+		{"de", "2026-03-01", "20260301"},
+		{"en", "03/01/2026", "20260301"},
+		{"fr", "05/03/2026", "20260305"}, // day first in fr, not US month first
+		{"nl", "15-03-2026", "20260315"}, // nl's own format was passed through raw
 	}
-	for in, want := range cases {
-		if got := convertDate(in); got != want {
-			t.Errorf("convertDate(%q) = %q, want %q", in, got, want)
+	for _, c := range cases {
+		got, err := convertDate(locale.Get(c.lang), "date", c.in)
+		if err != nil || got != c.want {
+			t.Errorf("convertDate(%s, %q) = %q, %v; want %q", c.lang, c.in, got, err, c.want)
 		}
 	}
-	// Unparseable input passes through unchanged rather than crashing.
-	if got := convertDate("garbage"); got != "garbage" {
-		t.Errorf("convertDate(garbage) = %q, want passthrough", got)
+	// Unparseable input is an error: it must never reach a format="102" field.
+	if _, err := convertDate(locale.Get("de"), "date", "garbage & more"); err == nil {
+		t.Error("expected error for unparseable date")
+	}
+}
+
+func TestGenerateCIIRejectsMissingNumberAndDate(t *testing.T) {
+	cfg := sampleConfig()
+	cfg.Invoice.Number = ""
+	if _, err := GenerateCII(cfg); err == nil {
+		t.Error("expected error for missing invoice number")
+	}
+	cfg = sampleConfig()
+	cfg.Invoice.Date = ""
+	if _, err := GenerateCII(cfg); err == nil {
+		t.Error("expected error for missing invoice date")
 	}
 }
 
@@ -164,5 +182,26 @@ func TestFmtAmountAndQuantity(t *testing.T) {
 	}
 	if got := fmtQuantity(1.5); got != "1.5000" {
 		t.Errorf("fmtQuantity(1.5) = %q, want %q", got, "1.5000")
+	}
+}
+
+func TestGenerateCIIPaymentTermsWithoutDueDate(t *testing.T) {
+	cfg := sampleConfig()
+	cfg.Invoice.DueDate = ""
+	cfg.PayTerms = "Payable within 14 days\nnet."
+	xmlBytes, err := GenerateCII(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(xmlBytes), "<ram:Description>Payable within 14 days net.</ram:Description>") {
+		t.Error("payment terms (BT-20) must be emitted when there is no due date (BR-CO-25)")
+	}
+}
+
+func TestGenerateCIIRejectsLiableWithoutRate(t *testing.T) {
+	cfg := sampleConfig()
+	cfg.VAT = config.VATConfig{Liable: true, Rate: 0}
+	if _, err := GenerateCII(cfg); err == nil {
+		t.Error("expected error for liable VAT with rate 0 (BR-S-05)")
 	}
 }

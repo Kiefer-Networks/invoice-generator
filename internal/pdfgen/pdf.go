@@ -1,13 +1,12 @@
 // Package pdfgen implements the built-in fpdf-based invoice renderer,
 // used as a fallback when Chrome/Chromium is unavailable or when explicitly
-// requested. It can embed a ZUGFeRD/Factur-X XML attachment directly.
+// requested. ZUGFeRD/Factur-X XML is embedded afterwards by pdfattach, the
+// same way as for Chrome output.
 package pdfgen
 
 import (
 	"fmt"
-	"math"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/go-pdf/fpdf"
@@ -66,22 +65,32 @@ func statusColor(status string) (bg, text [3]int) {
 }
 
 // Generate creates a modern invoice/quote PDF using the built-in fpdf
-// renderer. If zugferdXML is non-empty, it is embedded as a PDF file
-// attachment (Factur-X / ZUGFeRD BASIC profile) — callers must not pass
-// a non-empty zugferdXML for docType == config.DocQuote.
-func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, outputPath string, zugferdXML []byte) error {
+// renderer.
+func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, outputPath string) error {
 	fontRegular, fontBold, err := config.FindFonts(cfg)
 	if err != nil {
 		return err
 	}
+	regularTTF, err := os.ReadFile(fontRegular)
+	if err != nil {
+		return fmt.Errorf("could not read font %s: %w", fontRegular, err)
+	}
+	// Read each font from its own path: fpdf resolves AddUTF8Font names
+	// against a single font directory, which broke a bold font that lives
+	// in a different directory than the regular one.
+	boldTTF, err := os.ReadFile(fontBold)
+	if err != nil {
+		return fmt.Errorf("could not read font %s: %w", fontBold, err)
+	}
 
-	fontDir := filepath.Dir(fontRegular)
-	pdf := fpdf.New("P", "mm", "A4", fontDir)
-	pdf.AddUTF8Font("inv", "", filepath.Base(fontRegular))
-	pdf.AddUTF8Font("inv", "B", filepath.Base(fontBold))
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.AddUTF8FontFromBytes("inv", "", regularTTF)
+	pdf.AddUTF8FontFromBytes("inv", "B", boldTTF)
 
 	lm, rm := 18.0, 18.0
-	pdf.SetMargins(lm, 0, rm)
+	// Top margin: where fpdf continues text after an automatic page break
+	// (long notes/terms). With 0 it continued at the paper's top edge.
+	pdf.SetMargins(lm, 14, rm)
 	pdf.SetAutoPageBreak(true, 22)
 
 	pageW, pageH := pdf.GetPageSize()
@@ -111,7 +120,7 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 	// Tax calculations
 	netTotal := config.CalcNet(cfg.Items)
 	taxAmt := config.CalcTax(netTotal, cfg.VAT)
-	grossTotal := math.Round((netTotal+taxAmt)*100) / 100
+	grossTotal := config.RoundCents(netTotal + taxAmt)
 
 	lb := loc.Labels
 
@@ -163,7 +172,13 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 		if _, statErr := os.Stat(cfg.Logo); statErr == nil {
 			opts := fpdf.ImageOptions{ReadDpi: true}
 			info := pdf.RegisterImageOptions(cfg.Logo, opts)
-			if info != nil {
+			if pdf.Err() {
+				// fpdf supports only PNG/JPG/GIF and keeps a failed image
+				// as a sticky error that would abort the whole document
+				// (e.g. the SVG logos the Chrome renderer handles fine).
+				fmt.Fprintf(os.Stderr, "Note: logo skipped by the built-in renderer: %v\n", pdf.Error())
+				pdf.ClearError()
+			} else if info != nil {
 				imgH := 14.0
 				imgW := info.Width() / info.Height() * imgH
 				if imgW > 60 {
@@ -233,7 +248,7 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 	metaY := topY
 	type detRow struct{ label, value string }
 	details := []detRow{
-		{docNrLabel, fmt.Sprintf("%v", cfg.Invoice.Number)},
+		{docNrLabel, string(cfg.Invoice.Number)},
 		{lb.InvoiceDate, loc.FormatDate(cfg.Invoice.Date)},
 		{dueDateLabel, loc.FormatDate(dueDateValue)},
 	}
@@ -299,7 +314,7 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 
 	// Data rows with alternating backgrounds
 	for _, item := range cfg.Items {
-		amount := math.Round(item.Quantity*item.Price*100) / 100
+		amount := config.LineTotal(item)
 
 		descW := colW[0] - 6
 		pdf.SetFont("inv", "B", 7.5)
@@ -313,59 +328,76 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 		nLines := len(titleLines) + len(detLines)
 		rowH := float64(nLines)*lineH + 4
 
+		// A row taller than a fresh page (very long details) can't be kept
+		// together: it starts on the current page and its text lines break
+		// across pages. Placing such lines at absolute positions past the
+		// page bottom made fpdf add one page per remaining line.
+		const tableTop = 14.0
+		bottom := pageH - 25
+		fits := tableTop+7+rowH <= bottom
+
 		// Page break check
-		if pdf.GetY()+rowH > pageH-25 {
+		if (fits && pdf.GetY()+rowH > bottom) || (!fits && pdf.GetY()+2*lineH+4 > bottom) {
 			pdf.AddPage()
-			pdf.SetY(14)
+			pdf.SetY(tableTop)
 			drawTableHdr()
 		}
 
 		x0, y0 := lm, pdf.GetY()
 
-		// Hairline row separator (no zebra striping) — matching the
-		// HTML template's plain, quiet table rows.
-		pdf.SetDrawColor(lineR, lineG, lineB)
-		pdf.SetLineWidth(0.15)
-		pdf.Line(x0, y0+rowH, x0+cw, y0+rowH)
+		// Numeric columns: vertically centered, or at the top of a row that
+		// spans pages.
+		numY := y0 + 2
+		if fits {
+			numY = y0 + (rowH-lineH)/2
+		}
+		pdf.SetFont("inv", "", 7.5)
+		pdf.SetTextColor(inkR, inkG, inkB)
+
+		x := x0 + colW[0]
+		pdf.SetXY(x, numY)
+		pdf.CellFormat(colW[1]-4, lineH, loc.FormatQuantity(item.Quantity), "", 0, "R", false, 0, "")
+
+		x += colW[1]
+		pdf.SetXY(x, numY)
+		pdf.CellFormat(colW[2]-4, lineH, loc.FormatCurrency(item.Price, curr), "", 0, "R", false, 0, "")
+
+		x += colW[2]
+		pdf.SetXY(x, numY)
+		pdf.SetFont("inv", "B", 7.5)
+		pdf.CellFormat(colW[3]-4, lineH, loc.FormatCurrency(amount, curr), "", 0, "R", false, 0, "")
 
 		// Description text
 		yy := y0 + 2
-		pdf.SetFont("inv", "", 7.5)
-		pdf.SetTextColor(inkR, inkG, inkB)
-		for _, l := range titleLines {
-			pdf.SetXY(x0+2, yy)
-			pdf.CellFormat(descW, lineH, l, "", 0, "L", false, 0, "")
-			yy += lineH
-		}
-		if len(detLines) > 0 {
-			pdf.SetFont("inv", "", 7.5)
-			pdf.SetTextColor(softR, softG, softB)
-			for _, l := range detLines {
+		drawLines := func(lines []string) {
+			for _, l := range lines {
+				if yy+lineH > bottom {
+					pdf.AddPage()
+					pdf.SetY(tableTop)
+					drawTableHdr()
+					yy = pdf.GetY() + 2
+				}
 				pdf.SetXY(x0+2, yy)
 				pdf.CellFormat(descW, lineH, l, "", 0, "L", false, 0, "")
 				yy += lineH
 			}
 		}
-
-		// Numeric columns (vertically centered)
-		midY := y0 + (rowH-lineH)/2
 		pdf.SetFont("inv", "", 7.5)
 		pdf.SetTextColor(inkR, inkG, inkB)
+		drawLines(titleLines)
+		if len(detLines) > 0 {
+			pdf.SetTextColor(softR, softG, softB)
+			drawLines(detLines)
+		}
 
-		x := x0 + colW[0]
-		pdf.SetXY(x, midY)
-		pdf.CellFormat(colW[1]-4, lineH, loc.FormatQuantity(item.Quantity), "", 0, "R", false, 0, "")
+		// Hairline row separator (no zebra striping) — matching the
+		// HTML template's plain, quiet table rows.
+		rowEnd := yy + 2
+		pdf.SetDrawColor(lineR, lineG, lineB)
+		pdf.SetLineWidth(0.15)
+		pdf.Line(x0, rowEnd, x0+cw, rowEnd)
 
-		x += colW[1]
-		pdf.SetXY(x, midY)
-		pdf.CellFormat(colW[2]-4, lineH, loc.FormatCurrency(item.Price, curr), "", 0, "R", false, 0, "")
-
-		x += colW[2]
-		pdf.SetXY(x, midY)
-		pdf.SetFont("inv", "B", 7.5)
-		pdf.CellFormat(colW[3]-4, lineH, loc.FormatCurrency(amount, curr), "", 0, "R", false, 0, "")
-
-		pdf.SetXY(x0, y0+rowH)
+		pdf.SetXY(x0, rowEnd)
 	}
 
 	// ========== SUMMARY SECTION ==========
@@ -378,7 +410,7 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 	sumRowH := 7.0
 	totalBarH := 8.0
 	boxH := totalBarH
-	if cfg.VAT.Liable && cfg.VAT.Rate > 0 {
+	if config.VATApplies(cfg.VAT) {
 		boxH += sumRowH * 2
 	}
 
@@ -392,7 +424,7 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 	sumLabelW := sumW * 0.55
 	sumValueW := sumW * 0.45
 
-	if cfg.VAT.Liable && cfg.VAT.Rate > 0 {
+	if config.VATApplies(cfg.VAT) {
 		pdf.SetDrawColor(lineR, lineG, lineB)
 		pdf.SetLineWidth(0.2)
 
@@ -487,17 +519,6 @@ func Generate(cfg *config.Config, loc *locale.Locale, docType config.DocType, ou
 		pdf.SetFont("inv", "", 8)
 		pdf.SetTextColor(90, 90, 90)
 		pdf.MultiCell(cw, 4, payNote, "", "L", false)
-	}
-
-	// ========== ZUGFERD ATTACHMENT ==========
-	if len(zugferdXML) > 0 {
-		pdf.SetAttachments([]fpdf.Attachment{
-			{
-				Content:     zugferdXML,
-				Filename:    "factur-x.xml",
-				Description: "Factur-X / ZUGFeRD e-invoice (CII XML, BASIC profile)",
-			},
-		})
 	}
 
 	return pdf.OutputFileAndClose(outputPath)

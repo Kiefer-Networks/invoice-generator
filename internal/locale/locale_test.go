@@ -106,6 +106,15 @@ func TestFormatDate(t *testing.T) {
 	}
 }
 
+func TestFormatDatePrefersLocaleFormat(t *testing.T) {
+	if got := Get("fr").FormatDate("05/03/2026"); got != "05/03/2026" {
+		t.Errorf("fr day-first input must not be swapped, got %q", got)
+	}
+	if got := Get("en").FormatDate("03/05/2026"); got != "03/05/2026" {
+		t.Errorf("en month-first input must stay, got %q", got)
+	}
+}
+
 func TestResolveOverrides(t *testing.T) {
 	trueVal := true
 	loc := Resolve("en", Formatting{

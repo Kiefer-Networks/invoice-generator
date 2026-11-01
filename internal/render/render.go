@@ -1,18 +1,19 @@
-// Package render turns a Config into invoice HTML (via Go's text/template)
+// Package render turns a Config into invoice HTML (via Go's html/template)
 // and, optionally, into a PDF by driving headless Chrome/Chromium/Edge.
 package render
 
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
-	"math"
+	"html/template"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/chromedp/cdproto/page"
@@ -31,6 +32,11 @@ func DefaultTemplate() string {
 	return defaultTemplateHTML
 }
 
+// ErrChromeNotFound is returned by FromTemplate when no Chrome/Chromium/Edge
+// binary is installed — the only case in which callers should fall back to
+// the built-in renderer. Real Chrome failures are reported as errors.
+var ErrChromeNotFound = errors.New("Chrome/Chromium/Edge not found – install one, set INVOICE_CHROME, or use -fpdf flag")
+
 // chromeTimeout bounds how long headless Chrome may run for a single
 // PDF render, so a stuck/hanging browser process cannot block indefinitely.
 const chromeTimeout = 60 * time.Second
@@ -42,7 +48,7 @@ type TplData struct {
 	ColorDark string
 	Title     string
 	LB        locale.Labels
-	LogoPath  string
+	LogoPath  template.URL // file:// URL; marked safe because html/template rejects non-http(s) schemes
 
 	// Company
 	CompanyName      string
@@ -112,16 +118,17 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 
 	net := config.CalcNet(cfg.Items)
 	tax := config.CalcTax(net, cfg.VAT)
-	gross := math.Round((net+tax)*100) / 100
+	gross := config.RoundCents(net + tax)
 	lb := loc.Labels
 
-	// Quote (Angebot): swap title/second-date-row for their quote
-	// equivalents. The template only ever reads lb.DueDate/DueDate, so
-	// substituting these values is enough — no template changes needed.
+	// Quote (Angebot): swap title, number label and second date row for
+	// their quote equivalents. Templates read lb.InvoiceNr/lb.DueDate, so
+	// substituting the labels here keeps them document-type agnostic.
 	title := lb.InvoiceTitle
 	dueDateValue := cfg.Invoice.DueDate
 	if docType == config.DocQuote {
 		title = lb.QuoteTitle
+		lb.InvoiceNr = lb.QuoteNr
 		lb.DueDate = lb.ValidUntil
 		dueDateValue = cfg.Invoice.ValidUntil
 		if dueDateValue == "" {
@@ -170,7 +177,7 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 	// Item rows
 	var rows []TplRow
 	for _, it := range cfg.Items {
-		amt := math.Round(it.Quantity*it.Price*100) / 100
+		amt := config.LineTotal(it)
 		rows = append(rows, TplRow{
 			Desc:  it.Description,
 			Det:   it.Details,
@@ -192,20 +199,20 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 	}
 
 	// Logo path (file:// URI for Chrome)
-	logoPath := ""
+	var logoPath template.URL
 	if cfg.Logo != "" {
 		if abs, err := filepath.Abs(cfg.Logo); err == nil {
 			if _, err := os.Stat(abs); err == nil {
-				logoPath = "file://" + filepath.ToSlash(abs)
+				logoPath = template.URL(fileURL(abs))
 			}
 		}
 	}
 
-	// Color
-	color := cfg.Color
-	if color == "" {
-		color = "#5B9BD5"
-	}
+	// Color: normalized to #rrggbb exactly like the fpdf renderer, so a
+	// value without "#" or a typo can't produce invalid CSS (which made the
+	// grand-total bar transparent and its white text invisible).
+	r, g, b := locale.ParseColor(cfg.Color)
+	color := fmt.Sprintf("#%02x%02x%02x", r, g, b)
 
 	lang := cfg.Language
 	if lang == "" {
@@ -229,7 +236,7 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 		CompanyPhone:     cfg.Company.Phone,
 		TaxID:            taxID,
 
-		InvNumber:   fmt.Sprintf("%v", cfg.Invoice.Number),
+		InvNumber:   string(cfg.Invoice.Number),
 		InvDate:     loc.FormatDate(cfg.Invoice.Date),
 		DueDate:     loc.FormatDate(dueDateValue),
 		Status:      cfg.Invoice.Status,
@@ -239,7 +246,7 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 		CustLines: custLines,
 		Rows:      rows,
 
-		HasVAT:     cfg.VAT.Liable && cfg.VAT.Rate > 0,
+		HasVAT:     config.VATApplies(cfg.VAT),
 		Subtotal:   loc.FormatCurrency(net, curr),
 		TaxLabel:   fmt.Sprintf("%s (%s%%)", lb.Tax, loc.FormatQuantity(cfg.VAT.Rate)),
 		TaxAmt:     loc.FormatCurrency(tax, curr),
@@ -258,6 +265,17 @@ func PrepareTplData(cfg *config.Config, loc *locale.Locale, docType config.DocTy
 		BankBIC:   cfg.Company.Bank.BIC,
 	}
 	return d
+}
+
+// fileURL builds a percent-encoded file:// URL for an absolute path, so
+// characters such as '#', '%' or spaces in folder names can't break it.
+// Windows paths ("C:\x") get the leading slash a file URL needs.
+func fileURL(abs string) string {
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return (&url.URL{Scheme: "file", Path: p}).String()
 }
 
 // HTML renders the invoice (or quote) as an HTML string.
@@ -384,13 +402,11 @@ const footerTemplateSrc = `
 `
 
 // footerTemplateHTML renders Chrome's native per-page footer template
-// from the same TplData used for the invoice body. Uses text/template
-// like the main body template (not html/template — its contextual
-// autoescaping mangled plain content such as phone numbers, e.g.
-// "+49 30 123456" into "&#43;49 30 123456"). Company/bank data comes
-// from the user's own config file for their own output, the same trust
-// level as the rest of this tool, so this matches existing precedent
-// rather than being a new gap.
+// from the same TplData used for the invoice body. Uses html/template like
+// the body: an escaped "+" ("&#43;49 30 …") still displays as "+49 30 …",
+// while unescaped config text would be live HTML in Chrome — text such as
+// "<Branch North>" vanished, and markup like an iframe could pull local
+// files into the PDF.
 func footerTemplateHTML(data *TplData) (string, error) {
 	tmpl, err := template.New("footer").Parse(footerTemplateSrc)
 	if err != nil {
@@ -439,7 +455,7 @@ func customFooterHTML(data *TplData, tmplPath, configDir string) (string, error)
 func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType, outputPath, tmplPath, configDir string) error {
 	chrome := FindChrome()
 	if chrome == "" {
-		return fmt.Errorf("Chrome/Chromium/Edge not found – install one, set INVOICE_CHROME, or use -fpdf flag")
+		return ErrChromeNotFound
 	}
 
 	html, err := HTML(cfg, loc, docType, tmplPath, configDir)
@@ -523,7 +539,7 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 
 	var pdfBytes []byte
 	err = chromedp.Run(ctx,
-		chromedp.Navigate("file://"+filepath.ToSlash(tmpPath)),
+		chromedp.Navigate(fileURL(tmpPath)),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			data, _, err := page.PrintToPDF().
 				WithDisplayHeaderFooter(true).

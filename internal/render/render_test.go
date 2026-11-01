@@ -1,6 +1,7 @@
 package render
 
 import (
+	"html"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -263,7 +264,7 @@ func TestFooterTemplateHTMLHasThreeColumns(t *testing.T) {
 	// The footer must surface company/address, website/email/phone, and
 	// bank/tax-ID details — matching the reference three-column layout.
 	for _, want := range []string{"Test GmbH", "https://test.de", "info@test.de", "+49 30 123456", "Test Bank", "DE89370400440532013000"} {
-		if !strings.Contains(footerHTML, want) {
+		if !strings.Contains(html.UnescapeString(footerHTML), want) {
 			t.Errorf("footer template missing expected content %q", want)
 		}
 	}
@@ -273,9 +274,8 @@ func TestFooterTemplateHTMLHasThreeColumns(t *testing.T) {
 }
 
 func TestFooterTemplateHTMLPreservesPlainText(t *testing.T) {
-	// Regression test: an earlier html/template-based version mangled
-	// plain content like phone numbers via contextual autoescaping,
-	// turning "+49 30 123456" into "&#43;49 30 123456".
+	// html/template may encode "+" as "&#43;"; what matters is the text
+	// Chrome displays after decoding entities.
 	cfg := sampleConfig()
 	loc := resolveLoc(cfg)
 	data := PrepareTplData(cfg, loc, config.DocInvoice)
@@ -284,8 +284,71 @@ func TestFooterTemplateHTMLPreservesPlainText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("footerTemplateHTML failed: %v", err)
 	}
-	if !strings.Contains(footerHTML, "+49 30 123456") {
-		t.Errorf("expected phone number to appear unmangled, got: %s", footerHTML)
+	if !strings.Contains(html.UnescapeString(footerHTML), "+49 30 123456") {
+		t.Errorf("expected phone number to display unmangled, got: %s", footerHTML)
+	}
+}
+
+func TestHTMLEscapesConfigText(t *testing.T) {
+	cfg := sampleConfig()
+	cfg.Customer.Name = "Müller <Zweigstelle Nord> GmbH"
+	cfg.Items[0].Details = `<iframe src="file:///etc/hosts"></iframe>`
+	cfg.Company.Name = `A "quoted" & Co`
+	out, err := HTML(cfg, resolveLoc(cfg), config.DocInvoice, "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "<iframe") || strings.Contains(out, "<Zweigstelle") {
+		t.Errorf("config text must be HTML-escaped, got raw markup in: %s", out)
+	}
+	if !strings.Contains(out, "Müller &lt;Zweigstelle Nord&gt; GmbH") {
+		t.Error("expected escaped customer name to be present")
+	}
+	footer, err := footerTemplateHTML(PrepareTplData(cfg, resolveLoc(cfg), config.DocInvoice))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(footer, `"quoted"`) {
+		t.Errorf("footer must escape company name, got: %s", footer)
+	}
+}
+
+func TestHTMLQuoteUsesQuoteNumberLabel(t *testing.T) {
+	cfg := sampleConfig()
+	cfg.Language = "de"
+	out, err := HTML(cfg, resolveLoc(cfg), config.DocQuote, "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "Rechnung Nr.") || !strings.Contains(out, "Angebot Nr.") {
+		t.Error("quote must be labelled \"Angebot Nr.\", not \"Rechnung Nr.\"")
+	}
+}
+
+func TestPrepareTplDataNormalizesColorAndLogoURL(t *testing.T) {
+	cfg := sampleConfig()
+	cfg.Color = "1F4E79"
+	dir := filepath.Join(t.TempDir(), "Firma #2 100%")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Logo = filepath.Join(dir, "logo.png")
+	if err := os.WriteFile(cfg.Logo, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	d := PrepareTplData(cfg, resolveLoc(cfg), config.DocInvoice)
+	if d.Color != "#1f4e79" {
+		t.Errorf("Color = %q, want #1f4e79", d.Color)
+	}
+	if !strings.Contains(string(d.LogoPath), "Firma%20%232%20100%25") {
+		t.Errorf("logo URL must be percent-encoded, got %q", d.LogoPath)
+	}
+	out, err := HTML(cfg, resolveLoc(cfg), config.DocInvoice, "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "--ac: #1f4e79") || !strings.Contains(out, `src="file:///`) {
+		t.Errorf("color/logo not emitted as expected")
 	}
 }
 
@@ -364,7 +427,7 @@ func TestCustomPrintFooter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if footer != "<div>DE89370400440532013000 / +49 30 123456</div>" {
+	if html.UnescapeString(footer) != "<div>DE89370400440532013000 / +49 30 123456</div>" {
 		t.Fatalf("unexpected custom footer: %s", footer)
 	}
 	body, err := HTML(cfg, resolveLoc(cfg), config.DocInvoice, "", dir)

@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -19,6 +21,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
+
+	"github.com/kiefer-networks/invoice-generator/internal/config"
 )
 
 // Config holds the settings needed to upload a document to Paperless-ngx.
@@ -35,77 +39,77 @@ const maxConfigFileSize = 1 << 20 // 1 MiB
 // Load reads a Paperless config from a YAML or TOML file, selected by
 // file extension (defaulting to YAML for anything else).
 func Load(path string) (*Config, error) {
-	info, err := os.Stat(path)
-	if err != nil {
+	cfg := &Config{}
+	if err := decodeInto(cfg, path); err != nil {
 		return nil, err
 	}
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// decodeInto decodes path on top of cfg; keys absent from the file keep
+// their current value.
+func decodeInto(cfg *Config, path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
 	if info.Size() > maxConfigFileSize {
-		return nil, fmt.Errorf("paperless config file too large (%d bytes, max %d)", info.Size(), maxConfigFileSize)
+		return fmt.Errorf("paperless config file too large (%d bytes, max %d)", info.Size(), maxConfigFileSize)
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	cfg := &Config{}
 	if strings.ToLower(filepath.Ext(path)) == ".toml" {
 		err = toml.Unmarshal(data, cfg)
 	} else {
 		err = yaml.Unmarshal(data, cfg)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("could not parse paperless config: %w", err)
+		return fmt.Errorf("could not parse paperless config: %w", err)
 	}
-
-	if cfg.URL == "" {
-		return nil, fmt.Errorf("paperless config: missing required field \"url\"")
-	}
-	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("paperless config: missing required field \"api_key\"")
-	}
-	return cfg, nil
+	return nil
 }
 
-// LocalOverridePath mirrors config.LocalOverridePath: "paperless.yaml"
-// -> "paperless.local.yaml". Lets a real API key be kept out of version
-// control the same way real company/bank data is (see
-// internal/config.LoadWithLocalOverride) — *.local.* is gitignored by
-// default.
-func LocalOverridePath(path string) string {
-	ext := filepath.Ext(path)
-	base := strings.TrimSuffix(path, ext)
-	return base + ".local" + ext
+func (c *Config) validate() error {
+	if c.URL == "" {
+		return fmt.Errorf("paperless config: missing required field \"url\"")
+	}
+	if c.APIKey == "" {
+		return fmt.Errorf("paperless config: missing required field \"api_key\"")
+	}
+	return nil
 }
 
 // LoadWithLocalOverride loads path, then — if a sibling
-// "<name>.local.<ext>" file exists — loads that too and lets its
-// non-empty fields take precedence over the base file.
+// "<name>.local.<ext>" file exists (config.LocalOverridePath) — decodes
+// that on top, so every key it sets wins. Required fields are checked on
+// the merged result only: the tracked file may omit the API key and the
+// local file may contain nothing but the key.
 func LoadWithLocalOverride(path string) (*Config, string, error) {
-	base, err := Load(path)
-	if err != nil {
+	cfg := &Config{}
+	if err := decodeInto(cfg, path); err != nil {
 		return nil, "", err
 	}
 
-	overridePath := LocalOverridePath(path)
+	overridePath := config.LocalOverridePath(path)
 	if _, statErr := os.Stat(overridePath); statErr != nil {
-		return base, "", nil
-	}
-
-	override, err := Load(overridePath)
-	if err != nil {
+		if !errors.Is(statErr, fs.ErrNotExist) {
+			return nil, "", fmt.Errorf("error checking local override %s: %w", overridePath, statErr)
+		}
+		overridePath = ""
+	} else if err := decodeInto(cfg, overridePath); err != nil {
 		return nil, "", fmt.Errorf("error loading local override %s: %w", overridePath, err)
 	}
-	if override.URL == "" {
-		override.URL = base.URL
+
+	if err := cfg.validate(); err != nil {
+		return nil, "", err
 	}
-	if override.APIKey == "" {
-		override.APIKey = base.APIKey
-	}
-	if len(override.Tags) == 0 {
-		override.Tags = base.Tags
-	}
-	return override, overridePath, nil
+	return cfg, overridePath, nil
 }
 
 // uploadTimeout bounds the whole upload (tag resolution + file upload),
@@ -184,15 +188,22 @@ func resolveOrCreateTag(ctx context.Context, client *http.Client, cfg *Config, n
 	if err != nil {
 		return 0, fmt.Errorf("contacting Paperless: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("unexpected status %d looking up tag: %s", resp.StatusCode, readErrBody(resp.Body))
-	}
-
 	var list tagListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		return 0, fmt.Errorf("could not parse tag list response: %w", err)
+	// Close this body before the create request reuses the variable names:
+	// a deferred closure over resp would close the wrong response, and
+	// panic on a nil resp if the create request failed.
+	lookupErr := func() error {
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("unexpected status %d looking up tag: %s", resp.StatusCode, readErrBody(resp.Body))
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+			return fmt.Errorf("could not parse tag list response: %w", err)
+		}
+		return nil
+	}()
+	if lookupErr != nil {
+		return 0, lookupErr
 	}
 	for _, t := range list.Results {
 		if strings.EqualFold(t.Name, name) {
@@ -213,17 +224,17 @@ func resolveOrCreateTag(ctx context.Context, client *http.Client, cfg *Config, n
 	setAuth(req, cfg.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err = client.Do(req)
+	createResp, err := client.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("contacting Paperless: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _ = createResp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusCreated {
-		return 0, fmt.Errorf("unexpected status %d creating tag: %s", resp.StatusCode, readErrBody(resp.Body))
+	if createResp.StatusCode != http.StatusCreated {
+		return 0, fmt.Errorf("unexpected status %d creating tag: %s", createResp.StatusCode, readErrBody(createResp.Body))
 	}
 	var created tagCreateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
 		return 0, fmt.Errorf("could not parse tag creation response: %w", err)
 	}
 	return created.ID, nil

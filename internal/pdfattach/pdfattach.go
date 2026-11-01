@@ -18,16 +18,11 @@ func EmbedFacturX(pdfPath string, xml []byte) error {
 	if len(xml) == 0 {
 		return fmt.Errorf("cannot embed empty Factur-X XML")
 	}
-	tmpDir, err := os.MkdirTemp("", "invoice-factur-x-*")
-	if err != nil {
-		return fmt.Errorf("could not create Factur-X temp directory: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
+	// Without this, pdfcpu creates and reads a per-user config directory
+	// (writing a config file and a font into $HOME) and panics if that
+	// directory is not writable, e.g. with a read-only HOME in a container.
+	api.DisableConfigDir()
 
-	xmlPath := filepath.Join(tmpDir, "factur-x.xml")
-	if err := os.WriteFile(xmlPath, xml, 0600); err != nil {
-		return fmt.Errorf("could not stage Factur-X XML: %w", err)
-	}
 	in, err := os.Open(pdfPath)
 	if err != nil {
 		return fmt.Errorf("could not open rendered PDF: %w", err)
@@ -48,7 +43,7 @@ func EmbedFacturX(pdfPath string, xml []byte) error {
 
 	attachment := model.Attachment{
 		Reader: bytes.NewReader(xml),
-		ID:     filepath.Base(xmlPath),
+		ID:     "factur-x.xml",
 		Desc:   "Factur-X / ZUGFeRD e-invoice (CII XML, BASIC profile)",
 	}
 	fileSpec, err := ctx.NewFileSpecDictForAttachment(attachment)
