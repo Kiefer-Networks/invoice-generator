@@ -2,7 +2,6 @@ package pdfattach
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,18 +14,16 @@ import (
 )
 
 // TestMain points the user config dir at a broken pdfcpu config.yml for the
-// whole test binary. pdfcpu caches its default configuration per process, so
-// only a process-wide setup reliably catches a call that falls back to it:
-// such a call panics on the broken file instead of passing on a cached copy.
+// whole test binary. pdfcpu caches its default configuration per process,
+// so only a process-wide setup reliably catches a call that falls back to
+// it: such a call fails on the broken file (pdfcpu panics outside its API
+// entry points) instead of passing on a cached copy.
 func TestMain(m *testing.M) {
-	os.Exit(runWithBrokenPdfcpuConfig(m))
-}
-
-func runWithBrokenPdfcpuConfig(m *testing.M) int {
 	home, err := os.MkdirTemp("", "pdfattach-home-*")
 	if err != nil {
 		panic(err)
 	}
+	// ponytail: a panicking test skips this and leaves the temp dir behind.
 	defer func() { _ = os.RemoveAll(home) }()
 	for key, dir := range map[string]string{
 		"HOME":            home,
@@ -48,16 +45,7 @@ func runWithBrokenPdfcpuConfig(m *testing.M) int {
 	if err := os.WriteFile(filepath.Join(pdfcpuDir, "config.yml"), []byte("validationMode: [broken"), 0600); err != nil {
 		panic(err)
 	}
-	code := m.Run()
-	entries, err := os.ReadDir(pdfcpuDir)
-	if err != nil {
-		panic(err)
-	}
-	if len(entries) != 1 {
-		fmt.Fprintf(os.Stderr, "tests wrote into the user's pdfcpu config dir: %v\n", entries)
-		return 1
-	}
-	return code
+	m.Run()
 }
 
 func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
@@ -70,8 +58,8 @@ func TestEmbedFacturXPreservesPDFAndAddsNamedAttachment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Stateless, so the test neither reads nor creates the developer's
-	// pdfcpu config directory.
+	// Stateless: the default configuration fails on TestMain's broken
+	// config.yml.
 	conf := model.NewStatelessConfiguration()
 	f, err := os.Open(pdfPath)
 	if err != nil {
@@ -179,5 +167,40 @@ func TestEmbedFacturXHonoursCancelledContext(t *testing.T) {
 	cancel()
 	if err := EmbedFacturX(ctx, pdfPath, []byte("<invoice/>")); err == nil {
 		t.Fatal("expected a cancelled context to stop embedding")
+	}
+}
+
+func TestEmbedFacturXUpdatesSymlinkTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need extra privileges on Windows")
+	}
+	dir := t.TempDir()
+	realPath := filepath.Join(dir, "archive.pdf")
+	writeTestPDF(t, realPath)
+	link := filepath.Join(dir, "latest.pdf")
+	if err := os.Symlink(realPath, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := EmbedFacturX(t.Context(), link, []byte("<invoice/>")); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("EmbedFacturX replaced the symlink (err: %v)", err)
+	}
+	f, err := os.Open(realPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	pdfCtx, err := api.ReadAndValidate(t.Context(), f, model.NewStatelessConfiguration())
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachments, err := pdfCtx.ListAttachments(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("symlink target lacks the e-invoice: %+v", attachments)
 	}
 }

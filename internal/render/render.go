@@ -281,29 +281,33 @@ func fileURL(abs string) string {
 	return (&url.URL{Scheme: "file", Path: p}).String()
 }
 
-// writeTempHTML writes html to a new temp file and returns its absolute
-// path. A relative TMPDIR makes os.CreateTemp return a relative name,
-// which fileURL would turn into a root-anchored URL Chrome cannot open.
-// The path is returned even on a write error so the caller can remove it.
-func writeTempHTML(html string) (string, error) {
+// writeTempHTML writes html to a new temp file. It returns the name to
+// remove the file by and the absolute path Chrome has to load. A relative
+// TMPDIR makes os.CreateTemp return a relative name, which fileURL would
+// root at "/"; filepath.Abs alone also cleans ".." lexically and misses
+// the file when TMPDIR has a symlink before "..", so resolve symlinks
+// first. On any error the file is already removed.
+func writeTempHTML(html string) (name, path string, err error) {
 	tmpFile, err := os.CreateTemp("", "invoice-*.html")
 	if err != nil {
-		return "", fmt.Errorf("could not create temp file: %w", err)
+		return "", "", fmt.Errorf("could not create temp file: %w", err)
 	}
-	tmpPath, err := filepath.Abs(tmpFile.Name())
+	name = tmpFile.Name()
+	_, err = tmpFile.WriteString(html)
+	if closeErr := tmpFile.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		path, err = filepath.EvalSymlinks(name)
+	}
+	if err == nil {
+		path, err = filepath.Abs(path)
+	}
 	if err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpFile.Name())
-		return "", fmt.Errorf("could not resolve temp file path: %w", err)
+		_ = os.Remove(name)
+		return "", "", fmt.Errorf("could not write temp file: %w", err)
 	}
-	if _, err := tmpFile.WriteString(html); err != nil {
-		_ = tmpFile.Close()
-		return tmpPath, fmt.Errorf("could not write temp file: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return tmpPath, fmt.Errorf("could not close temp file: %w", err)
-	}
-	return tmpPath, nil
+	return name, path, nil
 }
 
 // HTML renders the invoice (or quote) as an HTML string.
@@ -500,13 +504,11 @@ func FromTemplate(cfg *config.Config, loc *locale.Locale, docType config.DocType
 		return err
 	}
 
-	tmpPath, err := writeTempHTML(html)
-	if tmpPath != "" {
-		defer func() { _ = os.Remove(tmpPath) }()
-	}
+	tmpName, tmpPath, err := writeTempHTML(html)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = os.Remove(tmpName) }()
 
 	// Chrome headless → PDF (bounded by chromeTimeout to avoid hangs).
 	// chromedp's exec allocator creates and cleans up its own isolated

@@ -75,7 +75,14 @@ func EmbedFacturX(ctx context.Context, pdfPath string, xml []byte) error {
 	}
 	catalog.Update("AF", types.Array{*ref})
 
-	out, err := os.CreateTemp(filepath.Dir(pdfPath), ".invoice-zugferd-*.pdf")
+	// Stage next to the real file: renderers write through a symlinked or
+	// "link/.." output path, while filepath.Dir cleans ".." lexically and
+	// renaming onto the link would replace it.
+	target, err := filepath.EvalSymlinks(pdfPath)
+	if err != nil {
+		return fmt.Errorf("could not resolve rendered PDF path: %w", err)
+	}
+	out, err := os.CreateTemp(filepath.Dir(target), ".invoice-zugferd-*.pdf")
 	if err != nil {
 		return fmt.Errorf("could not stage ZUGFeRD PDF: %w", err)
 	}
@@ -96,7 +103,7 @@ func EmbedFacturX(ctx context.Context, pdfPath string, xml []byte) error {
 	// os.CreateTemp creates the file with mode 0600, so the replaced PDF
 	// keeps owner-only permissions without a chmod that could fail after
 	// the rename on filesystems without Unix modes.
-	if err := os.Rename(outPath, pdfPath); err != nil {
+	if err := os.Rename(outPath, target); err != nil {
 		return fmt.Errorf("could not replace rendered PDF with ZUGFeRD PDF: %w", err)
 	}
 	keep = true

@@ -376,43 +376,55 @@ func handleGenerate(docType config.DocType, args []string) {
 		}
 	}
 
-	// Choose renderer
-	usedFpdf := false
-	if *useFpdf {
-		if err := pdfgen.Generate(cfg, loc, docType, out); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		usedFpdf = true
-	} else {
-		// HTML template → Chrome → PDF. Only a missing browser falls back;
-		// a real Chrome failure must not silently swap the layout.
-		err := render.FromTemplate(cfg, loc, docType, out, *tmplPath, configDir)
-		if errors.Is(err, render.ErrChromeNotFound) {
-			fmt.Fprintf(os.Stderr, "Note: %v\n", err)
-			fmt.Fprintln(os.Stderr, "Falling back to built-in renderer.")
-			if err := pdfgen.Generate(cfg, loc, docType, out); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			usedFpdf = true
-		} else if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+	htmlPath := strings.TrimSuffix(out, filepath.Ext(out)) + ".html"
+	// EqualFold: case-insensitive file systems (macOS, Windows) would
+	// otherwise overwrite x.HTML with the sidecar too.
+	if *htmlOut && strings.EqualFold(htmlPath, out) {
+		fmt.Fprintf(os.Stderr, "Error: -html would overwrite the PDF %s; use an -o path that does not end in .html\n", out)
+		os.Exit(1)
 	}
 
-	// Add the electronic invoice to whichever renderer produced the PDF,
-	// without changing any rendered pages. One path for all renderers, so
-	// the fallback can't drop the XML and every output gets the Factur-X
-	// /AF + /AFRelationship entries.
-	if *zugferdFlag {
-		if err := pdfattach.EmbedFacturX(context.Background(), out, zugferdXML); err != nil {
-			fmt.Fprintf(os.Stderr, "Error embedding ZUGFeRD XML: %v\n", err)
-			os.Exit(1)
+	// Render and embed into a staging file that replaces out only once the
+	// PDF is complete: a failed run leaves the previous output and its
+	// sidecars untouched instead of an incomplete PDF without the e-invoice.
+	usedFpdf := *useFpdf
+	err = writeReplacing(out, func(pdfPath string) error {
+		if !usedFpdf {
+			// HTML template → Chrome → PDF. Only a missing browser falls
+			// back; a real Chrome failure must not silently swap the layout.
+			err := render.FromTemplate(cfg, loc, docType, pdfPath, *tmplPath, configDir)
+			if errors.Is(err, render.ErrChromeNotFound) {
+				fmt.Fprintf(os.Stderr, "Note: %v\n", err)
+				fmt.Fprintln(os.Stderr, "Falling back to built-in renderer.")
+				usedFpdf = true
+			} else if err != nil {
+				return err
+			}
 		}
-		// Saved only after the PDF succeeded, so a failed run leaves no
-		// orphaned copy of the customer data behind.
+		if usedFpdf {
+			if err := pdfgen.Generate(cfg, loc, docType, pdfPath); err != nil {
+				return err
+			}
+		}
+		// Add the electronic invoice to whichever renderer produced the
+		// PDF, without changing any rendered pages. One path for all
+		// renderers, so the fallback can't drop the XML and every output
+		// gets the Factur-X /AF + /AFRelationship entries.
+		if *zugferdFlag {
+			if err := pdfattach.EmbedFacturX(context.Background(), pdfPath, zugferdXML); err != nil {
+				return fmt.Errorf("could not embed ZUGFeRD XML: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Sidecars are written only after the PDF is in place, so a failed run
+	// never leaves a copy of the customer data that does not match a PDF.
+	if *zugferdFlag {
 		xmlPath := strings.TrimSuffix(out, filepath.Ext(out)) + "_factur-x.xml"
 		if err := writePrivate(xmlPath, zugferdXML); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not save XML: %v\n", err)
@@ -423,7 +435,6 @@ func handleGenerate(docType config.DocType, args []string) {
 
 	// Optionally save HTML
 	if *htmlOut {
-		htmlPath := strings.TrimSuffix(out, filepath.Ext(out)) + ".html"
 		html, err := render.HTML(cfg, loc, docType, *tmplPath, configDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not render HTML: %v\n", err)
@@ -435,11 +446,6 @@ func handleGenerate(docType config.DocType, args []string) {
 			}
 		}
 	}
-
-	// Restrict the generated PDF to the owner: it contains customer/company
-	// PII and financial data. Best-effort — permission bits are largely a
-	// no-op on Windows/NTFS, but this is a real hardening on Unix systems.
-	_ = os.Chmod(out, 0600)
 
 	// Optionally upload to Paperless-ngx. Non-fatal: the PDF has already
 	// been generated and saved locally, so an unreachable/misconfigured
@@ -505,14 +511,46 @@ func main() {
 	}
 }
 
-// writePrivate writes a file that contains customer/company PII and
-// financial data with owner-only permissions. os.WriteFile keeps the mode
-// of an existing file, so the chmod also tightens a file left by an
-// earlier run. Best-effort like the PDF's chmod: a no-op on Windows/NTFS.
-func writePrivate(path string, data []byte) error {
-	if err := os.WriteFile(path, data, 0600); err != nil {
+// writeReplacing lets write fill a new 0600 file next to path and renames
+// it onto path only when write succeeded. The file is a fresh inode, so
+// it never inherits a looser mode or an open reader from an older file,
+// and a failure leaves the old file untouched. An existing symlink is
+// resolved first so the link keeps pointing at the updated file. Owner-only
+// permissions are a no-op on Windows/NTFS.
+func writeReplacing(path string, write func(tmp string) error) error {
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
+	}
+	// filepath.Split, not filepath.Dir: Dir cleans "link/.." lexically,
+	// while the OS resolves it through the symlink.
+	dir, base := filepath.Split(target)
+	if dir == "" {
+		dir = "."
+	}
+	f, err := os.CreateTemp(dir, "."+base+".*")
+	if err != nil {
+		return fmt.Errorf("could not create %s: %w", path, err)
+	}
+	tmp := f.Name()
+	err = f.Close()
+	if err == nil {
+		err = write(tmp)
+	}
+	if err == nil {
+		err = os.Rename(tmp, target)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
-	_ = os.Chmod(path, 0600)
 	return nil
+}
+
+// writePrivate writes a file that contains customer/company PII and
+// financial data with owner-only permissions.
+func writePrivate(path string, data []byte) error {
+	return writeReplacing(path, func(tmp string) error {
+		return os.WriteFile(tmp, data, 0600)
+	})
 }

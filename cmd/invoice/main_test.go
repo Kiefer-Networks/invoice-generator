@@ -121,12 +121,7 @@ func TestCLIInitAndGenerateInvoice(t *testing.T) {
 	requireFonts(t)
 	dir := t.TempDir()
 
-	if _, stderr, code := run(t, dir, "init", "company", "--lang", "en"); code != 0 {
-		t.Fatalf("init company failed: %s", stderr)
-	}
-	if _, stderr, code := run(t, dir, "init", "invoice", "--lang", "en"); code != 0 {
-		t.Fatalf("init invoice failed: %s", stderr)
-	}
+	initConfigs(t, dir, "company", "invoice")
 
 	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-fpdf", "invoice.yaml")
 	if code != 0 {
@@ -150,12 +145,7 @@ func TestCLIInitAndGenerateQuote(t *testing.T) {
 	requireFonts(t)
 	dir := t.TempDir()
 
-	if _, stderr, code := run(t, dir, "init", "company", "--lang", "en"); code != 0 {
-		t.Fatalf("init company failed: %s", stderr)
-	}
-	if _, stderr, code := run(t, dir, "init", "quote", "--lang", "en"); code != 0 {
-		t.Fatalf("init quote failed: %s", stderr)
-	}
+	initConfigs(t, dir, "company", "quote")
 
 	stdout, stderr, code := run(t, dir, "quote", "-company", "company.yaml", "-fpdf", "quote.yaml")
 	if code != 0 {
@@ -172,8 +162,7 @@ func TestCLIInitAndGenerateQuote(t *testing.T) {
 
 func TestCLIQuoteRejectsZugferd(t *testing.T) {
 	dir := t.TempDir()
-	run(t, dir, "init", "company", "--lang", "en")
-	run(t, dir, "init", "quote", "--lang", "en")
+	initConfigs(t, dir, "company", "quote")
 
 	_, stderr, code := run(t, dir, "quote", "-zugferd", "-company", "company.yaml", "quote.yaml")
 	if code == 0 {
@@ -187,8 +176,7 @@ func TestCLIQuoteRejectsZugferd(t *testing.T) {
 func TestCLILocalOverrideTakesPrecedence(t *testing.T) {
 	requireFonts(t)
 	dir := t.TempDir()
-	run(t, dir, "init", "company", "--lang", "en")
-	run(t, dir, "init", "invoice", "--lang", "en")
+	initConfigs(t, dir, "company", "invoice")
 
 	// Real, untracked override with a different company name.
 	err := os.WriteFile(filepath.Join(dir, "company.local.yaml"), []byte(`
@@ -234,8 +222,7 @@ func TestCLIInitPaperless(t *testing.T) {
 func TestCLIPaperlessUpload(t *testing.T) {
 	requireFonts(t)
 	dir := t.TempDir()
-	run(t, dir, "init", "company", "--lang", "en")
-	run(t, dir, "init", "invoice", "--lang", "en")
+	initConfigs(t, dir, "company", "invoice")
 
 	var uploaded bool
 	mux := http.NewServeMux()
@@ -276,7 +263,7 @@ func TestCLIPaperlessUpload(t *testing.T) {
 func TestCLIRejectsPathTraversalInInvoiceNumber(t *testing.T) {
 	requireFonts(t)
 	dir := t.TempDir()
-	run(t, dir, "init", "company", "--lang", "en")
+	initConfigs(t, dir, "company")
 
 	malicious := `
 language: "en"
@@ -306,6 +293,16 @@ items:
 	for _, e := range entries {
 		if strings.Contains(e.Name(), "evil") {
 			t.Errorf("path traversal via invoice number escaped the output directory: %s", e.Name())
+		}
+	}
+}
+
+// initConfigs runs `invoice init <kind>` for each kind in dir.
+func initConfigs(t *testing.T, dir string, kinds ...string) {
+	t.Helper()
+	for _, kind := range kinds {
+		if _, stderr, code := run(t, dir, "init", kind, "--lang", "en"); code != 0 {
+			t.Fatalf("init %s failed: %s", kind, stderr)
 		}
 	}
 }
@@ -351,14 +348,34 @@ func TestCLIZugferdKeepsHTMLTemplateRenderer(t *testing.T) {
 		t.Skip("Chrome is not available")
 	}
 	dir := t.TempDir()
-	run(t, dir, "init", "company", "--lang", "en")
-	run(t, dir, "init", "invoice", "--lang", "en")
+	initConfigs(t, dir, "company", "invoice")
 	custom := filepath.Join(dir, "custom.html")
 	if err := os.WriteFile(custom, []byte(`<html><body>HTML TEMPLATE {{.CompanyName}}</body></html>`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "zugferd.pdf")
-	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-zugferd", "-t", custom, "-o", out, "invoice.yaml")
+	arg := out
+	if runtime.GOOS != "windows" {
+		// The OS resolves "ro/link/.." through the symlink to dir/a, while
+		// lexical cleaning gives the read-only ro: every step must agree
+		// with the OS. Not filepath.Join, which would clean the path first.
+		ro := filepath.Join(dir, "ro")
+		for _, d := range []string{filepath.Join(dir, "a", "b"), ro} {
+			if err := os.MkdirAll(d, 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Symlink(filepath.Join(dir, "a", "b"), filepath.Join(ro, "link")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(ro, 0500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(ro, 0700) })
+		arg = filepath.Join(ro, "link") + "/../zugferd.pdf"
+		out = filepath.Join(dir, "a", "zugferd.pdf")
+	}
+	stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-zugferd", "-t", custom, "-o", arg, "invoice.yaml")
 	if code != 0 {
 		t.Fatalf("ZUGFeRD generation failed: %s / %s", stdout, stderr)
 	}
@@ -376,38 +393,18 @@ func TestCLIZugferdKeepsHTMLTemplateRenderer(t *testing.T) {
 	}
 }
 
-func TestCLIChromeOutputUsesTheGivenPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows resolves .. lexically, so the path is consistent there")
-	}
-	if render.FindChrome() == "" {
-		t.Skip("Chrome is not available")
-	}
-	dir := t.TempDir()
-	run(t, dir, "init", "company", "--lang", "en")
-	run(t, dir, "init", "invoice", "--lang", "en")
-	// The OS cannot resolve "missing/..", so every later step (embedding,
-	// chmod, upload) fails on this path. Chrome output must not silently
-	// land in a cleaned-up path instead and leave an incomplete PDF.
-	// Not filepath.Join: it would clean the path before the CLI sees it.
-	_, _, code := run(t, dir, "-company", "company.yaml", "-zugferd", "-o", "missing/../x.pdf", "invoice.yaml")
-	if code == 0 {
-		t.Fatal("expected the unresolvable output path to fail")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "x.pdf")); !os.IsNotExist(err) {
-		t.Errorf("Chrome wrote x.pdf to a cleaned path (stat err: %v)", err)
-	}
-}
-
 func TestCLIChromeFailureIsAnError(t *testing.T) {
 	// An existing executable that is not Chrome makes the browser fail to
 	// start. Only a missing browser may fall back to fpdf; a real Chrome
 	// failure must not silently swap the layout.
 	t.Setenv("INVOICE_CHROME", binPath)
 	dir := t.TempDir()
-	for _, kind := range []string{"company", "invoice"} {
-		if _, stderr, code := run(t, dir, "init", kind, "--lang", "en"); code != 0 {
-			t.Fatalf("init %s failed: %s", kind, stderr)
+	initConfigs(t, dir, "company", "invoice")
+	// Output of an earlier run for the same invoice number.
+	previous := map[string]string{"x.pdf": "previous PDF", "x_factur-x.xml": "<previous/>"}
+	for name, content := range previous {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
 		}
 	}
 	out := filepath.Join(dir, "x.pdf")
@@ -418,25 +415,33 @@ func TestCLIChromeFailureIsAnError(t *testing.T) {
 	if strings.Contains(stderr, "Falling back to built-in renderer") {
 		t.Fatalf("a failing Chrome must not fall back to fpdf: %s", stderr)
 	}
-	// A failed run must not leave customer data behind.
-	for _, name := range []string{"x.pdf", "x_factur-x.xml"} {
-		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-			t.Errorf("failed run left %s behind (stat err: %v)", name, err)
+	// A failed run keeps the earlier output and leaves no staging files.
+	for name, content := range previous {
+		if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != content {
+			t.Errorf("failed run changed %s: %q, %v", name, got, err)
 		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 4 {
+		t.Errorf("failed run left extra files: %v", entries)
 	}
 }
 
-func TestCLISidecarsAreOwnerOnlyOnRerun(t *testing.T) {
+func TestCLIOutputsAreOwnerOnlyOnRerun(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix permission bits")
 	}
 	requireFonts(t)
 	dir := t.TempDir()
-	run(t, dir, "init", "company", "--lang", "en")
-	run(t, dir, "init", "invoice", "--lang", "en")
-	// Files left by an earlier run, or created under a loose umask.
-	sidecars := []string{"x.html", "x_factur-x.xml"}
-	for _, name := range sidecars {
+	initConfigs(t, dir, "company", "invoice")
+	// Files left by an earlier run, or created under a loose umask. The
+	// chmod matters: WriteFile applies the umask, and under 077 the files
+	// would already be 0600, so the test would pass without checking.
+	outputs := []string{"x.pdf", "x.html", "x_factur-x.xml"}
+	for _, name := range outputs {
 		if err := os.WriteFile(filepath.Join(dir, name), nil, 0644); err != nil {
 			t.Fatal(err)
 		}
@@ -448,7 +453,7 @@ func TestCLISidecarsAreOwnerOnlyOnRerun(t *testing.T) {
 	if stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-fpdf", "-zugferd", "-html", "-o", out, "invoice.yaml"); code != 0 {
 		t.Fatalf("generation failed: %s / %s", stdout, stderr)
 	}
-	for _, name := range sidecars {
+	for _, name := range outputs {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatal(err)
@@ -456,6 +461,42 @@ func TestCLISidecarsAreOwnerOnlyOnRerun(t *testing.T) {
 		if perm := info.Mode().Perm(); perm != 0600 {
 			t.Errorf("%s has mode %o, want 600: it contains customer data", name, perm)
 		}
+	}
+}
+
+func TestCLIOutputThroughSymlinkUpdatesTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need extra privileges on Windows")
+	}
+	requireFonts(t)
+	dir := t.TempDir()
+	initConfigs(t, dir, "company", "invoice")
+	target := filepath.Join(dir, "archive.pdf")
+	if err := os.WriteFile(target, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "latest.pdf")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := run(t, dir, "-company", "company.yaml", "-fpdf", "-zugferd", "-o", link, "invoice.yaml"); code != 0 {
+		t.Fatalf("generation failed: %s / %s", stdout, stderr)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the run replaced the symlink (err: %v)", err)
+	}
+	readFacturXPDF(t, target)
+}
+
+func TestCLIRefusesHTMLOverwritingThePDF(t *testing.T) {
+	dir := t.TempDir()
+	initConfigs(t, dir, "company", "invoice")
+	_, stderr, code := run(t, dir, "-company", "company.yaml", "-fpdf", "-html", "-o", "x.HTML", "invoice.yaml")
+	if code != 1 || !strings.Contains(stderr, "-html would overwrite the PDF") {
+		t.Fatalf("expected -html to be refused, got %d: %s", code, stderr)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 2 {
+		t.Errorf("refused run wrote files: %v", entries)
 	}
 }
 
@@ -476,8 +517,7 @@ func TestCLIInitHonorsLangAfterSubcommand(t *testing.T) {
 func TestCLIFlagsAfterConfigFileAndZugferdWithFpdf(t *testing.T) {
 	requireFonts(t)
 	dir := t.TempDir()
-	run(t, dir, "init", "company", "--lang", "en")
-	run(t, dir, "init", "invoice", "--lang", "en")
+	initConfigs(t, dir, "company", "invoice")
 	out := filepath.Join(dir, "x.pdf")
 
 	// Flags after the positional argument, as the help documents.

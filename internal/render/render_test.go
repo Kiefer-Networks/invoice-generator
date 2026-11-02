@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -415,7 +416,7 @@ func TestWriteTempHTMLReturnsAbsolutePathForRelativeTMPDIR(t *testing.T) {
 		t.Setenv(key, "tmp")
 	}
 
-	path, err := writeTempHTML("<p>x</p>")
+	_, path, err := writeTempHTML("<p>x</p>")
 	if err != nil {
 		t.Fatalf("writeTempHTML: %v", err)
 	}
@@ -428,6 +429,37 @@ func TestWriteTempHTMLReturnsAbsolutePathForRelativeTMPDIR(t *testing.T) {
 	}
 	if string(got) != "<p>x</p>" {
 		t.Errorf("temp file content = %q", got)
+	}
+}
+
+func TestWriteTempHTMLResolvesSymlinkBeforeDotDot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows resolves .. lexically")
+	}
+	base := t.TempDir()
+	for _, dir := range []string{"real/sub", "real/tmp"} {
+		if err := os.MkdirAll(filepath.Join(base, dir), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(base, "real", "sub"), filepath.Join(base, "link")); err != nil {
+		t.Fatal(err)
+	}
+	// Not filepath.Join: it would clean "link/.." before the OS sees it.
+	t.Setenv("TMPDIR", filepath.Join(base, "link")+"/../tmp")
+
+	name, path, err := writeTempHTML("<p>x</p>")
+	if err != nil {
+		t.Fatalf("writeTempHTML: %v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "<p>x</p>" {
+		t.Fatalf("path %q does not hold the temp file: %q, %v", path, got, err)
+	}
+	if err := os.Remove(name); err != nil {
+		t.Fatalf("name %q does not remove the temp file: %v", name, err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(base, "real", "tmp")); len(entries) != 0 {
+		t.Fatalf("temp HTML left behind: %v", entries)
 	}
 }
 
