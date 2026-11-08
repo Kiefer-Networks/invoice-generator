@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/chromedp/cdproto v0.159.0
-	github.com/chromedp/chromedp v0.21.1
+	github.com/chromedp/chromedp v0.22.1
 	github.com/go-pdf/fpdf v0.9.0
 	github.com/pdfcpu/pdfcpu v0.16.4
 	gopkg.in/yaml.v3 v3.0.1
